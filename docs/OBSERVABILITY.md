@@ -1,5 +1,11 @@
 # Darkula Observability
 
+## PR 2 status — decorator contract only
+
+PR 2 delivered the decorator-name/signature contract in `darkula/telemetry/decorators.py`: `traced`, `timed`, and `counted` for stabilized operation boundaries (sync and async). In PR 2 these are **contract-only no-ops**: they validate static names/attributes at decoration time and preserve call behavior, exceptions, cancellation, and function metadata exactly, but emit no telemetry.
+
+PR 3 owns the testable OTEL-API-backed instrumentation primitives (tracer/meter resolution, exporters, span/duration/counter emission, provider composition). These decorators remain a thin OTEL convenience, never a replacement observability framework.
+
 ## Operational telemetry
 Darkula standardizes client-side operational telemetry on OpenTelemetry:
 ```text
