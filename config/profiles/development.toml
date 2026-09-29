@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Darkula development profile (the deterministic default profile).
+#
+# Selected when DARKULA_CONFIG_PROFILE is unset/empty (see
+# src/darkula/config/loader.py). Local artifact writes are confined to
+# `var/darkula/objects` under the process working directory.
+
+[object_store]
+driver = "local"
+local_root = "var/darkula/objects"
+
+[telemetry]
+service_name = "darkula-development"

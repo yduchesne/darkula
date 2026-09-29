@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Darkula test profile: fully in-process and deterministic.
+
+[object_store]
+driver = "in_memory"
+
+[llm]
+timeout_seconds = 30.0
+
+[telemetry]
+service_name = "darkula-test"

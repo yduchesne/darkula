@@ -17,6 +17,10 @@ PR 2 was implemented from `.plans/DARKULA_PR_2_DETAILED_PLAN.md` (commit baselin
 ## PR 3 — Configuration, observability, and test fakes
 Implement Pydantic Settings layering/profile/empty-env semantics, composition foundation, FakeLlmClient, FakeDataStream, InMemory/LocalFile ObjectStore baseline, and OTEL testable instrumentation primitives.
 
+### Status — delivered
+
+PR 3 was implemented from `.plans/DARKULA_PR_3_DETAILED_PLAN.md` (commit baseline: `09d856ab4e30ed02b543791b8c788cbeaecfc208`). Delivered: full layered TOML settings resolution in `config/` + `darkula/config/loader.py` with env-last precedence and redacted diagnostics; `darkula/testing/` FakeLlmClient + FakeDataStream; `darkula/infrastructure/object_store/` InMemoryObjectStore + LocalFileObjectStore (root-confined, streaming); OTEL SDK-backed `traced`/`timed`/`counted` with `attributes`/`tracing`/`metrics`/`setup` support modules and in-memory telemetry tests; and the narrow `darkula/composition.py` that fails fast on unavailable production drivers. No real infrastructure, no `--intg`, no OTLP exporters/Collectors.
+
 ## PR 4 — Source domain and persistence foundation
 Implement SourceCandidate, event history, Source, SourceEndpoint, reconnaissance/assessment domain records and initial PostgreSQL persistence SPI/adapter. Detailed schema and migration plan must be designed from fresh main.
 

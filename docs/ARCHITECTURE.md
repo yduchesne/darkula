@@ -89,5 +89,17 @@ PR 2 delivered the Python project/tooling foundation and the foundational contra
 
 All concrete adapters (Redpanda, PostgreSQL, S3/R2, LangChain, LangSmith/Langfuse, crawler) remain future work behind these interfaces.
 
+# PR 3 update — configuration, observability, and deterministic fakes
+
+PR 3 made the in-process foundational runtime usable and deterministically testable without any real infrastructure:
+
+- **Configuration** (`darkula/config/loader.py` + shipped TOML under `config/`): exact precedence `defaults < base < profile < local < non-empty environment`; env applied last via Pydantic source reordering; empty env is a no-op; deep merge with wholesale scalar/list replacement; fail-closed bounded errors; secret-like diagnostic redaction. Shipped profiles `development` (default), `test`, `production` (loads; `production` selections fail fast at composition until PR 5/8).
+- **Deterministic fakes** (real interfaces, no parallel architecture): `darkula/testing/fake_llm.py` (`FakeLlmClient` implementing the untouched `_generate_structured` hook with scripted FIFO/factory/default outcomes, exact call recording, fail-closed unscripted calls) and `darkula/testing/fake_data_stream.py` (`FakeDataStream` with per-lane monotonic positions, per-consumer explicit ack, polling that never acknowledges, scripted failures, and a replay seam).
+- **ObjectStore implementations** (`darkula/infrastructure/object_store/`): `InMemoryObjectStore` (streaming, instance-isolated, SHA-256 representation hash) and `LocalFileObjectStore` (streaming temp-file + atomic replace, bounded read chunks, root confinement with traversal/symlink-escape rejection, frozen missing semantics).
+- **Observability** (`darkula/telemetry/`): `traced`/`timed`/`counted` now emit OTEL via the SDK (`opentelemetry-sdk` pinned), with seconds `.duration` histograms, bounded outcome attributes, no argument/result capture, cancellation-propagation, and no-op-safe unconfigured behavior. New support modules `attributes.py`, `tracing.py`, `metrics.py`, `setup.py`; telemetry tests use in-memory SDK components only.
+- **Composition** (`darkula/composition.py`): narrow central composition of only delivered implementations; selecting unavailable production drivers (Redpanda, S3/R2, LangSmith/Langfuse, provider LLM) raises `UnavailableDriverError` — never a silent fake substitution.
+
+PR 3 adds no real infrastructure, no `--intg`, no OTLP exporters, and no vendor dependencies beyond `opentelemetry-sdk`.
+
 ## Intentionally undecided in PR 1
 Exact Python package layout; PostgreSQL schema/stored-function strategy; stream topic names and serialization; crawler/browser/Tor technologies; sandbox technology; object-key layout; exact extraction ontology; scheduling implementation; deployment topology; detailed secret backend; exact provider selection; and multi-tenancy.

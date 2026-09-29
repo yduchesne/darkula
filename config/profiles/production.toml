@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Darkula production profile.
+#
+# The selections below target adapters that do not exist yet in PR 3
+# (Redpanda = PR 5, S3 = PR 8). The profile loads and validates, but
+# composition fails fast until those drivers ship: Darkula never silently
+# substitutes a fake for an explicitly selected production driver.
+
+[datastream]
+driver = "redpanda"
+
+[object_store]
+driver = "s3"
+
+[telemetry]
+service_name = "darkula-production"
