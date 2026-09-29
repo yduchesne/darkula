@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Typed configuration skeleton (PR 2).
+"""Typed configuration (PR 2 skeleton extended by PR 3).
 
-PR 2 freezes only the typed, immutable subsystem grouping and the Pydantic
-Settings contract. It explicitly does **not** implement the full profile /
-file / dotenv / local-override merge machinery:
+PR 2 froze the typed, immutable subsystem grouping and the Pydantic
+Settings contract. PR 3 extends the field set (local object-store root,
+telemetry service name, deterministic fake drivers) and adds the layered
+profile/merge machinery in :mod:`darkula.config.loader`; this module still
+performs **no** file loading.
 
-- profile-file loading and merging, dotenv, and local-user override
-  resolution are owned by PR 3;
+Frozen contract:
+
 - environment variables are the ultimate override: a non-empty
   ``DARKULA_*`` variable wins, while an unset or **empty** environment
   variable has no override effect (``env_ignore_empty = True``);
@@ -14,13 +16,14 @@ file / dotenv / local-override merge machinery:
 - nested environment variables use the ``__`` delimiter, so the
   ``DARKULA_DATASTREAM__DRIVER`` variable selects the stream driver.
 
-The profile selector concept is frozen as ``config_profile``, which is read
-from the documented ``DARKULA_CONFIG_PROFILE`` variable; no profile
-resolution is performed here.
+The profile selector concept is frozen as ``config_profile``, read from
+the documented ``DARKULA_CONFIG_PROFILE`` variable; loading/merging is
+owned by :mod:`darkula.config.loader`.
 """
 
 from __future__ import annotations
 
+import pathlib
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
@@ -32,15 +35,26 @@ CONFIG_PROFILE_ENV_VAR = "DARKULA_CONFIG_PROFILE"
 
 
 class DataStreamDriver(StrEnum):
-    """Selected DataStream implementation driver (PR 5 owns the adapter)."""
+    """Selected DataStream implementation driver.
+
+    ``FAKE`` is the deterministic, offline :class:`FakeDataStream` delivered
+    by PR 3. ``REDPANDA`` remains the future adapter (PR 5); selecting it in
+    PR 3 validates but fails fast at composition.
+    """
 
     REDPANDA = "redpanda"
+    FAKE = "fake"
 
 
 class ObjectStoreDriver(StrEnum):
-    """Selected ObjectStore implementation driver (PR 8 owns adapters)."""
+    """Selected ObjectStore implementation driver.
+
+    ``LOCAL``/``IN_MEMORY`` are delivered by PR 3; ``S3``/``R2`` remain
+    future adapters (PR 8) that validate but fail fast at composition.
+    """
 
     LOCAL = "local"
+    IN_MEMORY = "in_memory"
     S3 = "s3"
     R2 = "r2"
 
@@ -51,6 +65,17 @@ class AgentObservabilityBackend(StrEnum):
     NONE = "none"
     LANGSMITH = "langsmith"
     LANGFUSE = "langfuse"
+
+
+class LlmDriver(StrEnum):
+    """Selected LlmClient implementation driver.
+
+    ``FAKE`` is the only PR 3 implementation: the deterministic, offline
+    :class:`FakeLlmClient`. Production/provider drivers are future work
+    (PR 10); any unavailable selection fails closed at validation/composition.
+    """
+
+    FAKE = "fake"
 
 
 class DatabaseSettings(BaseModel):
@@ -72,11 +97,18 @@ class DataStreamSettings(BaseModel):
 
 
 class ObjectStoreSettings(BaseModel):
-    """Large/raw artifact storage selection."""
+    """Large/raw artifact storage selection.
+
+    ``local_root`` is the filesystem root to which the PR 3
+    :class:`LocalFileObjectStore` confines every key. It is required
+    (composition fails fast) when ``driver`` is ``LOCAL`` and optional
+    otherwise.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     driver: ObjectStoreDriver = ObjectStoreDriver.LOCAL
+    local_root: pathlib.Path | None = None
 
 
 class CrawlerSettings(BaseModel):
@@ -88,10 +120,16 @@ class CrawlerSettings(BaseModel):
 
 
 class LlmSettings(BaseModel):
-    """LLM invocation group; provider selection is owned by PR 10."""
+    """LLM invocation group.
+
+    ``driver`` selects the LlmClient implementation centrally; PR 3 ships
+    only :class:`~darkula.testing.fake_llm.FakeLlmClient`. Provider drivers
+    are PR 10 work.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    driver: LlmDriver = LlmDriver.FAKE
     timeout_seconds: float | None = None
 
 
@@ -104,11 +142,17 @@ class AgentObservabilitySettings(BaseModel):
 
 
 class TelemetrySettings(BaseModel):
-    """Operational OpenTelemetry group; PR 3 owns provider/exporter setup."""
+    """Operational OpenTelemetry group.
+
+    PR 3 wires local tracer/meter providers when ``enabled`` is true. External
+    OTLP export remains future work; ``otlp_endpoint`` is reserved metadata
+    and is never contacted by PR 3.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     enabled: bool = True
+    service_name: str = "darkula"
     otlp_endpoint: str | None = None
 
 
@@ -141,7 +185,7 @@ class Settings(BaseSettings):
     )
 
     config_profile: str | None = None
-    """Selected profile name (documented concept only; PR 3 resolves it)."""
+    """Selected profile name (documented concept only; loader.py resolves it)."""
 
     database: DatabaseSettings = DatabaseSettings()
     datastream: DataStreamSettings = DataStreamSettings()
@@ -164,6 +208,7 @@ __all__ = [
     "DataStreamSettings",
     "DatabaseSettings",
     "ExtractionSettings",
+    "LlmDriver",
     "LlmSettings",
     "ObjectStoreDriver",
     "ObjectStoreSettings",

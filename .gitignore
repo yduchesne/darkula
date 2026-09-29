@@ -4,6 +4,10 @@
 .env.bak
 out/
 
+# Local configuration override (PR 3) and local artifact root
+config/local.toml
+var/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

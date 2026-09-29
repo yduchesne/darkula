@@ -19,6 +19,7 @@ dependencies = [
   # Operational telemetry API. PR 2 freezes only the decorator contract; the
   # SDK/exporter composition is owned by PR 3.
   "opentelemetry-api>=1.37,<2",
+  "opentelemetry-sdk>=1.37,<2",
 ]
 
 [dependency-groups]
@@ -57,7 +58,7 @@ files = ["src", "tests"]
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 addopts = [
   "--strict-markers",
   "--cov=darkula",

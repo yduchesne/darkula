@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Darkula shipped baseline configuration (lowest file layer).
+#
+# Precedence: code defaults < base < selected profile < local override <
+# non-empty environment. This file is the framework baseline: it overrides
+# code defaults and is overridden by every upper layer.
+#
+# PR 3 ships no real infrastructure, so the baseline deterministically
+# selects the offline fake drivers. Future PRs flip these selections as the
+# production adapters arrive (Redpanda = PR 5, S3/R2 = PR 8, provider LLM =
+# PR 10); selecting an unavailable driver validates but fails fast at
+# composition.
+
+[database]
+host = "darkula-postgres"
+
+[datastream]
+driver = "fake"
+
+[object_store]
+driver = "local"
+
+[llm]
+driver = "fake"

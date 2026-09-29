@@ -4,7 +4,22 @@
 
 PR 2 delivered the decorator-name/signature contract in `darkula/telemetry/decorators.py`: `traced`, `timed`, and `counted` for stabilized operation boundaries (sync and async). In PR 2 these are **contract-only no-ops**: they validate static names/attributes at decoration time and preserve call behavior, exceptions, cancellation, and function metadata exactly, but emit no telemetry.
 
-PR 3 owns the testable OTEL-API-backed instrumentation primitives (tracer/meter resolution, exporters, span/duration/counter emission, provider composition). These decorators remain a thin OTEL convenience, never a replacement observability framework.
+## PR 3 status — OTEL SDK emission delivered
+
+PR 3 upgraded the three decorators to emit real OpenTelemetry while keeping every PR 2 preservation guarantee, added the support modules
+`telemetry/attributes.py`, `telemetry/tracing.py`, `telemetry/metrics.py`, and `telemetry/setup.py`, and pinned `opentelemetry-sdk` (API + SDK only; **no** OTLP exporters, Collectors, or vendor backends).
+
+Delivered decorator behavior:
+
+- `traced` — exactly one span per invocation (sync/async), marked `ERROR` on an ordinary exception (which propagates unchanged); cancellation propagates and is never an ordinary error; only validated static attributes are attached; arguments/results are **never** captured.
+- `timed` — one `time.perf_counter()` seconds histogram point tagged `darkula.outcome = success|error`; cancellation records no point; the metric name must use the canonical `<operation>.duration` suffix and the seconds unit; the same exception propagates after its error point is recorded.
+- `counted` — increments exactly once **at operation entry**, so success, failure, and cancellation each count as one invocation.
+- Static attributes are bounded (key <= 200 chars; value <= 256 chars), control-free, and reject secret-like names/values at decoration time, so prompts/tokens/credentials/unbounded content can never reach telemetry through the decorators.
+- Disabled/unconfigured OTEL falls back to the API no-op proxy: all decorators remain behavior-preserving.
+
+Tracer/meter resolution goes through the injectable module seams `get_tracer` / `get_histogram` / `get_counter`; deterministic tests bind in-memory SDK providers through those seams (`tests/unit/conftest.py`, `tests/support/otel.py`) and never touch global OTel state or any external service. `configure_telemetry` composes local `TracerProvider`/`MeterProvider` for the configured `service.name` without exporters, network, or background threads.
+
+Explicitly deferred: OTLP exporters/Collector deployment, Prometheus/Loki/Jaeger/Grafana wiring, and vendor agent observability (LangSmith/Langfuse) remain future PRs.
 
 ## Operational telemetry
 Darkula standardizes client-side operational telemetry on OpenTelemetry:
