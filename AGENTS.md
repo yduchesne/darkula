@@ -36,5 +36,15 @@ Before changing architecture or domain behavior, read docs/ARCHITECTURE.md, docs
 ## Testing
 Unit tests are fast and deterministic. Scenario/integration tests reuse Fake World scenarios and normally fake at infrastructure/LLM boundaries, not by replacing the behavior under test. Live-model behavior belongs in evaluations. Add infrastructure integration coverage for PostgreSQL, Redpanda, ObjectStore adapters, OTEL export, and sandbox boundaries as those components arrive.
 
+## Tooling and quality gates
+Darkula is a Python 3.14 project managed by `uv` with a `src/` layout. Reproduce the environment with `uv sync --locked` (committed `uv.lock`). The repository-owned quality path is:
+
+```text
+./build.sh --qa      ruff format --check, ruff check, strict mypy, pytest (coverage >= 85%)
+./build.sh --sec     bandit source scan + pip-audit
+```
+
+`uv run pytest` runs the same unit suite. Async tests use pytest-asyncio strict mode (`@pytest.mark.asyncio`). Pre-commit runs fast lint/format hooks only; it is not a substitute for `./build.sh --qa`. PR CI (`.github/workflows/ci.yml`) executes the same QA and security commands under Python 3.14. Do not add infrastructure dependencies (aiokafka, boto3, psycopg, langchain, fastapi, ...) without an explicit PR scope that requires them; application contracts must stay provider-neutral.
+
 ## ATI reuse
 Agentic Threat Investigator (ATI) is an implementation reference for compatible patterns including configuration layering, DataStream, LlmClient/FakeLlmClient, OTEL conventions, and eval/test fixture reuse. Darkula must remain self-contained: inspect fresh ATI main before deliberately reusing a pattern; do not create an undocumented runtime dependency on ATI.

@@ -1,5 +1,18 @@
 # Darkula Testing Strategy
 
+## PR 2 commands
+
+PR 2 establishes the deterministic local quality gate:
+
+```text
+uv sync --locked
+./build.sh --qa       ruff format check, ruff lint, strict mypy, unit tests, coverage >= 85%
+./build.sh --sec      bandit source scan + pip-audit dependency audit
+~/.venv/bin/pre-commit run --all-files   optional local dev gate
+```
+
+Async tests use pytest-asyncio **strict mode**: every async test is marked explicitly with `@pytest.mark.asyncio`. Coverage measures the `darkula` package with a hard `fail_under = 85` gate in CI and locally. There is no infrastructure integration coverage yet; the PR 2 suite is unit/contract level only.
+
 ## Principles
 Testing must be deterministic by default, exercise real application/domain code, and reuse realistic Fake World scenarios. Fake at external/variable boundaries rather than replacing the behavior under test.
 

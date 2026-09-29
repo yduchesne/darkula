@@ -1,5 +1,23 @@
 # Darkula Configuration
 
+## PR 2 status — skeleton only
+
+PR 2 delivered the typed skeleton in `darkula/config/settings.py`: a frozen root `Settings` (Pydantic `BaseSettings`) with the documented subsystem groups, immutable `extra = "forbid"` nested models, driver enums, and the profile-selector concept (`config_profile` / `DARKULA_CONFIG_PROFILE`).
+
+Explicitly **not** implemented in PR 2 (owned by PR 3):
+
+- profile-file loading and base/profile/local-override merging;
+- dotenv and local user-override resolution;
+- secret resolution.
+
+Frozen contract already in force:
+
+- environment variables are the ultimate override;
+- unset or **empty** environment variables have no effect (`env_ignore_empty = True`);
+- environment prefix is `DARKULA_`;
+- nested environment variables use the `__` delimiter (for example `DARKULA_DATASTREAM__DRIVER`);
+- unknown settings fields fail closed (`extra = "forbid"`).
+
 ## Framework
 Use Pydantic Settings for typed configuration. Darkula should reuse ATI's proven configuration concepts after inspecting fresh ATI main, while remaining self-contained.
 

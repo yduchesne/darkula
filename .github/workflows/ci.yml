@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Repository-owned QA
+        run: ./build.sh --qa
+
+  security:
+    name: Security gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Repository-owned security scan
+        run: ./build.sh --sec

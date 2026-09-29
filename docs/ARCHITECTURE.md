@@ -80,5 +80,14 @@ Pydantic Settings provides typed configuration. Profiles/layers resolve centrall
 ## Observability
 Application telemetry uses OTEL SDK/API -> OTEL Collector -> Prometheus (metrics), Loki (logs), Jaeger (traces). Grafana is the expected visualization layer. Agent observability correlates with OTEL through trace/run/domain identifiers. See OBSERVABILITY.md.
 
+## PR 2 update — executable foundation
+
+PR 2 delivered the Python project/tooling foundation and the foundational contracts named above:
+
+- Python 3.14 project managed by `uv` (`pyproject.toml`, committed `uv.lock`, `src/` layout), gated by Ruff, strict mypy, pytest (strict async), coverage >= 85%, `build.sh`, pre-commit, and pull-request CI (`./build.sh --qa`, `./build.sh --sec`).
+- Foundational interface modules: `darkula.app.llm` (`LlmClient`), `darkula.app.data_stream` (`DataStream`), `darkula.app.object_store` (`ObjectStore`), `darkula.app.persistence` (`UnitOfWork`/`DarkulaSpi`), `darkula.app.agent_observability` (`AgentObservability`), plus `darkula.domain.identifiers` and the `darkula.config.settings` skeleton and `darkula.telemetry.decorators` contract.
+
+All concrete adapters (Redpanda, PostgreSQL, S3/R2, LangChain, LangSmith/Langfuse, crawler) remain future work behind these interfaces.
+
 ## Intentionally undecided in PR 1
 Exact Python package layout; PostgreSQL schema/stored-function strategy; stream topic names and serialization; crawler/browser/Tor technologies; sandbox technology; object-key layout; exact extraction ontology; scheduling implementation; deployment topology; detailed secret backend; exact provider selection; and multi-tenancy.
