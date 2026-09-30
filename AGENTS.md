@@ -33,6 +33,15 @@ Before changing architecture or domain behavior, read docs/ARCHITECTURE.md, docs
 - Keep docs synchronized with architectural changes.
 - Do not prematurely freeze details explicitly marked TBD in the architecture documents.
 
+## Local Podman infrastructure
+- Darkula owns only Podman resources explicitly provisioned for Darkula. Containers, pods, networks, volumes, and other named Podman resources must use an unambiguous `darkula` namespace/prefix. Darkula scripts, tests, cleanup commands, and developer tooling must never discover, stop, remove, recreate, prune, or otherwise control resources belonging to another application.
+- Do not use broad Podman cleanup/discovery commands whose selection could include non-Darkula resources. Select resources by exact Darkula-owned names or equally strict Darkula-owned labels. Never use global prune operations from Darkula automation.
+- Darkula's local host-port namespace uses application prefix `3`. Keep the standard service port inside the Podman network/container, and publish the corresponding Darkula-prefixed port on the host. Example: PostgreSQL container port `5432` is published as host port `35432` (`35432:5432`).
+- Apply the prefix consistently to every host-published Darkula service port. Do not change the service's internal/container port merely to obtain host isolation. Before assigning a new published port, document the standard container port and derive the Darkula host port from the prefix-`3` convention rather than choosing an arbitrary free port.
+- Container-to-container communication must use the normal service/container ports on the Darkula Podman network, not the prefixed host ports. The prefix exists to isolate host bindings between independently running local application stacks.
+- A host-port collision or a pre-existing non-Darkula Podman resource is not permission to modify or remove that resource. Fail safely and report the conflict instead.
+- Infrastructure integration tests must create, inspect, and clean up only the Darkula resources they own. Cleanup must be safe when other unrelated Podman stacks are running concurrently.
+
 ## Testing
 Unit tests are fast and deterministic. Scenario/integration tests reuse Fake World scenarios and normally fake at infrastructure/LLM boundaries, not by replacing the behavior under test. Live-model behavior belongs in evaluations. Add infrastructure integration coverage for PostgreSQL, Redpanda, ObjectStore adapters, OTEL export, and sandbox boundaries as those components arrive.
 
