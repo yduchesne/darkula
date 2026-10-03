@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Narrow central composition root (PR 3).
+"""Narrow central composition root (PR 3, extended by PR 4).
 
 Receives the resolved :class:`~darkula.config.settings.Settings` and
-constructs only implementations that exist after PR 3:
+constructs only implementations that exist:
 
 - ``FakeDataStream`` when the fake stream driver is selected;
 - ``InMemoryObjectStore`` / ``LocalFileObjectStore`` for the delivered
   object-store drivers;
-- ``FakeLlmClient`` (the only PR 3 LLM driver);
+- ``FakeLlmClient`` (the only LLM driver);
 - ``NoOpAgentObservability`` for the ``NONE`` backend;
+- ``PostgresDarkulaSpi`` when the PostgreSQL persistence driver is
+  selected (PR 4: the only delivered driver);
 - the local telemetry runtime via
   :func:`~darkula.telemetry.setup.configure_telemetry`.
 
@@ -17,6 +19,10 @@ driver settings. Selecting an unavailable production driver (Redpanda,
 S3/R2, LangSmith/Langfuse, future providers) raises
 :class:`UnavailableDriverError` immediately; Darkula never silently
 substitutes a fake for an explicitly selected production driver.
+
+The composed :class:`PostgresDarkulaSpi` is lazy: constructing it opens no
+connections. Callers start it explicitly (``await spi.start()``) before
+first use, keeping unit/QA paths infrastructure-free.
 """
 
 from __future__ import annotations
@@ -27,8 +33,10 @@ from darkula.app.agent_observability import AgentObservability
 from darkula.app.data_stream import DataStream
 from darkula.app.llm import LlmClient
 from darkula.app.object_store import ObjectStore
+from darkula.app.persistence import DarkulaSpi
 from darkula.config.settings import (
     AgentObservabilityBackend,
+    DatabaseDriver,
     DataStreamDriver,
     LlmDriver,
     ObjectStoreDriver,
@@ -39,6 +47,7 @@ from darkula.infrastructure.object_store import (
     LocalFileObjectStore,
 )
 from darkula.infrastructure.observability import NoOpAgentObservability
+from darkula.infrastructure.persistence.postgresql.spi import PostgresDarkulaSpi
 from darkula.telemetry.setup import TelemetryRuntime, configure_telemetry
 from darkula.testing.fake_data_stream import FakeDataStream
 from darkula.testing.fake_llm import FakeLlmClient
@@ -54,12 +63,17 @@ class UnavailableDriverError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class Runtime:
-    """The composed PR 3 runtime: every delivery-bound implementation."""
+    """The composed runtime: every delivery-bound implementation.
+
+    ``persistence`` is lazy: opening it requires an explicit
+    ``await runtime.persistence.start()`` before first use.
+    """
 
     data_stream: DataStream
     object_store: ObjectStore
     llm: LlmClient
     agent_observability: AgentObservability
+    persistence: DarkulaSpi
     telemetry: TelemetryRuntime
 
 
@@ -126,13 +140,22 @@ def _compose_observability(settings: Settings) -> AgentObservability:
     )  # defensive; validation rejects unknowns
 
 
+def _compose_persistence(settings: Settings) -> DarkulaSpi:
+    if settings.database.driver is DatabaseDriver.POSTGRESQL:
+        return PostgresDarkulaSpi.from_settings(settings.database)
+    raise UnavailableDriverError(  # defensive; validation rejects unknowns
+        f"unsupported persistence driver: {settings.database.driver}"
+    )
+
+
 def compose(*, settings: Settings) -> Runtime:
-    """Compose every PR 3 runtime implementation from resolved settings."""
+    """Compose every runtime implementation from resolved settings."""
     return Runtime(
         data_stream=_compose_data_stream(settings),
         object_store=_compose_object_store(settings),
         llm=_compose_llm(settings),
         agent_observability=_compose_observability(settings),
+        persistence=_compose_persistence(settings),
         telemetry=configure_telemetry(
             enabled=settings.telemetry.enabled,
             service_name=settings.telemetry.service_name,

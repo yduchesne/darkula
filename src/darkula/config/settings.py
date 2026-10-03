@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import pathlib
 from enum import StrEnum
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: Documented environment variable that selects a configuration profile.
@@ -78,14 +79,68 @@ class LlmDriver(StrEnum):
     FAKE = "fake"
 
 
+class DatabaseDriver(StrEnum):
+    """Selected structured-domain persistence driver (PR 4).
+
+    ``POSTGRESQL`` is the only delivered driver. There is deliberately no
+    fake/in-memory production fallback: an unavailable driver fails closed.
+    """
+
+    POSTGRESQL = "postgresql"
+
+
 class DatabaseSettings(BaseModel):
-    """Structured-domain persistence group (PostgreSQL; PR 4 owns schema)."""
+    """Structured-domain persistence group (PostgreSQL; PR 4).
+
+    ``password`` is optional so operator environments can inject it via a
+    non-empty ``DARKULA_DATABASE__PASSWORD`` variable; diagnostic rendering
+    redacts password-like keys. Connection strings are never echoed.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    driver: DatabaseDriver = DatabaseDriver.POSTGRESQL
     host: str = "localhost"
-    port: int = 5432
+    #: Host-published Darkula PostgreSQL port (container port 5432).
+    port: int = 35432
     name: str = "darkula"
+    user: str = "darkula"
+    password: str | None = None
+    connect_timeout_seconds: float = 10.0
+    pool_min_size: int = 1
+    pool_max_size: int = 4
+
+    def conninfo(self) -> str:
+        """Return the libpq connection string for these settings.
+
+        Includes the password when configured. Callers must never log or
+        echo this value; it may contain credentials.
+        """
+        parts = [
+            f"host={self.host}",
+            f"port={self.port}",
+            f"dbname={self.name}",
+            f"user={self.user}",
+            f"connect_timeout={self.connect_timeout_seconds:g}",
+        ]
+        if self.password is not None:
+            parts.append(f"password={self.password}")
+        return " ".join(parts)
+
+    @field_validator("connect_timeout_seconds")
+    @classmethod
+    def _validate_connect_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("connect_timeout_seconds must be positive")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_pool_bounds(self) -> Self:
+        if self.pool_min_size < 1 or self.pool_max_size < self.pool_min_size:
+            raise ValueError(
+                "pool sizes must satisfy 1 <= pool_min_size <= pool_max_size"
+            )
+        return self
 
 
 class DataStreamSettings(BaseModel):
@@ -206,6 +261,7 @@ __all__ = [
     "CrawlerSettings",
     "DataStreamDriver",
     "DataStreamSettings",
+    "DatabaseDriver",
     "DatabaseSettings",
     "ExtractionSettings",
     "LlmDriver",

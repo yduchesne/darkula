@@ -1,11 +1,38 @@
 # Darkula Configuration
 
-## PR 3 status — layered resolution delivered
+## PR 4 status — layered resolution + PostgreSQL fields
 
 PR 3 implemented the full layered Pydantic Settings resolution in
 `darkula/config/settings.py` (typed field definitions) and
 `darkula/config/loader.py` (file loading, deep merge, env-last semantics,
-safe diagnostics).
+safe diagnostics). PR 4 extended the typed field set with the PostgreSQL
+database group.
+
+### Database group (PR 4)
+
+`[database]` (Pydantic `DatabaseSettings`) — the only delivered driver is
+`postgresql`:
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `driver` | `postgresql` | Only delivered driver; no fake fallback |
+| `host` | `localhost` (dev) / `darkula-postgres` (base container name) | |
+| `port` | `35432` (dev: host-published Darkula port; container port stays `5432`) | |
+| `name` | `darkula` | |
+| `user` | `darkula` | |
+| `password` | `None` (optional) | Redacted in diagnostics; inject via `DARKULA_DATABASE__PASSWORD` |
+| `connect_timeout_seconds` | `10.0` | Must be positive |
+| `pool_min_size` | `1` | Must be `>= 1` |
+| `pool_max_size` | `4` | Must be `>= pool_min_size` |
+
+Invalid pool bounds and non-positive timeouts fail fast at validation.
+Environment overrides follow the same rules as every other field
+(`DARKULA_DATABASE__HOST`, `DARKULA_DATABASE__PASSWORD`, ...).
+
+The `development` profile (default) targets the Darkula-owned Podman
+PostgreSQL through the host-published port `35432`; inside the Darkula
+Podman network the service keeps its standard port `5432` (base layer
+`host = "darkula-postgres"`, `port = 5432`).
 
 ### File layout (repo-local, stdlib TOML)
 

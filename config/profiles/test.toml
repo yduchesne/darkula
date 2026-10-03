@@ -1,5 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Darkula test profile: fully in-process and deterministic.
+# Darkula test profile: fully in-process and deterministic for unit QA.
+#
+# The integration suite does not select this profile; it connects to the
+# Darkula-owned Podman PostgreSQL using the development profile's
+# host-published 35432 port (see tests/integration/conftest.py). Unit QA
+# never opens a database connection.
+
+[database]
+host = "localhost"
+port = 35432
 
 [object_store]
 driver = "in_memory"

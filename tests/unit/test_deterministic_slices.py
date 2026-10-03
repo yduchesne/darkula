@@ -25,6 +25,7 @@ from darkula.composition import UnavailableDriverError, compose
 from darkula.config.loader import load_settings
 from darkula.domain.identifiers import ConsumerId, MessageId, ObjectKey, StreamName
 from darkula.infrastructure.object_store import LocalFileObjectStore
+from darkula.infrastructure.persistence.postgresql.spi import PostgresDarkulaSpi
 from darkula.testing.fake_data_stream import FakeDataStream
 from darkula.testing.fake_llm import FakeLlmClient
 
@@ -72,10 +73,13 @@ class TestSliceAConfigToComposition:
         settings = load_settings(config_dir=_SHIPPED_CONFIG)
         # precedence: base < development profile < env
         assert settings.database.host == "env-host"
+        assert settings.database.port == 35432
         assert settings.datastream.driver.value == "fake"
 
         runtime = compose(settings=settings)
         assert isinstance(runtime.data_stream, FakeDataStream)
+        assert isinstance(runtime.persistence, PostgresDarkulaSpi)
+        assert not isinstance(runtime.persistence, FakeDataStream)
 
     def test_slice_a_fail_fast_and_no_network(self, monkeypatch: MonkeyPatch) -> None:
         monkeypatch.setenv("DARKULA_DATASTREAM__DRIVER", "redpanda")

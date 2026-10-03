@@ -5,6 +5,8 @@
 # Usage:
 #   ./build.sh --qa     ruff format check, ruff lint, strict mypy, unit tests + coverage gate
 #   ./build.sh --sec    bandit source scan and pip-audit vulnerability audit
+#   ./build.sh --intg   provision Darkula-owned PostgreSQL, apply migrations, run
+#                       the real-PostgreSQL integration suite, then clean up
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -23,6 +25,19 @@ run_sec() {
   uv run pip-audit
 }
 
+run_intg() {
+  echo "==> provisioning Darkula-owned PostgreSQL (35432:5432)"
+  ./scripts/darkula_postgres.sh start
+  echo "==> applying migrations"
+  ./scripts/darkula_postgres.sh migrate --apply
+  echo "==> running integration suite"
+  status=0
+  uv run pytest tests/integration -m integration --no-cov -q || status=$?
+  echo "==> cleaning up Darkula-owned PostgreSQL (preserving exit status $status)"
+  ./scripts/darkula_postgres.sh clean >/dev/null 2>&1 || true
+  exit "$status"
+}
+
 case "${1:-}" in
   --qa)
     run_qa
@@ -30,13 +45,16 @@ case "${1:-}" in
   --sec)
     run_sec
     ;;
+  --intg)
+    run_intg
+    ;;
   "")
-    echo "usage: $0 [--qa|--sec]" >&2
+    echo "usage: $0 [--qa|--sec|--intg]" >&2
     exit 2
     ;;
   *)
     echo "unknown mode: $1" >&2
-    echo "usage: $0 [--qa|--sec]" >&2
+    echo "usage: $0 [--qa|--sec|--intg]" >&2
     exit 2
     ;;
 esac

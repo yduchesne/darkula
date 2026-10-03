@@ -7,15 +7,58 @@ The deterministic local quality gate:
 ```text
 uv sync --locked
 ./build.sh --qa       ruff format check, ruff lint, strict mypy, unit tests, coverage >= 85%
+./build.sh --intg     Darkula-owned Podman PostgreSQL at 35432:5432, migrations, real-PostgreSQL integration tests
 ./build.sh --sec      bandit source scan + pip-audit dependency audit
 uv run pre-commit run --all-files   optional local dev gate
 ```
 
-Async tests use pytest-asyncio **strict mode** (`@pytest.mark.asyncio`).
-Coverage measures the `darkula` package with a hard `fail_under = 85` gate
-in CI and locally. There is no infrastructure integration coverage yet
-(`--intg` and Podman arrive in PR 4); the PR 3 suite runs entirely offline
-and deterministically.
+Async tests use pytest-asyncio **strict mode** (`@pytest.mark.asyncio`);
+async fixtures use `pytest_asyncio.fixture`. The unit suite (`--qa`) runs
+fully offline and deterministically (integration tests carry the
+`integration` marker and are deselected by default). Coverage measures the
+`darkula` package with a hard `fail_under = 85` gate in CI and locally.
+
+## PostgreSQL integration (PR 4)
+
+`./build.sh --intg` runs the real-PostgreSQL integration suite:
+
+1. verifies Podman availability;
+2. starts/provisions **only** Darkula-owned resources
+   (`scripts/darkula_postgres.sh start`: container `darkula-postgres` with
+   `darkula.owned=true`, pinned `docker.io/library/postgres:18.2`, volume
+   `darkula-postgres-data`, exact host mapping `35432` → container `5432`);
+3. waits for `pg_isready`; applies migrations
+   (`scripts/darkula_migrate.py`, ledger `darkula_schema_migrations`);
+4. runs `uv run pytest tests/integration -m integration --no-cov -q`;
+5. cleans up exactly the Darkula-owned resources while preserving the
+   original exit status (`scripts/darkula_postgres.sh clean`).
+
+The lifecycle tool fails fast if host port `35432` is occupied by a
+non-Darkula listener, if a resource bears a Darkula name without Darkula
+labels, or if Podman cannot run; it never prunes, never touches foreign
+resources, and never chooses another port. Developers wanting a persistent
+local instance may run `scripts/darkula_postgres.sh start|stop|clean`
+manually; `./build.sh --intg` always tears its own resources down.
+
+### PostgreSQL persistence tests
+
+Production persistence tests (`tests/integration/persistence/`) exercise
+the real path:
+
+```text
+PostgresDarkulaSpi -> PostgresUnitOfWork -> repository -> stored function -> PostgreSQL
+```
+
+Test-only SQL is permitted for setup/cleanup, fixture maintenance,
+verification/assertions, fault injection, and independent DB-state
+inspection; it must not become a second production persistence path.
+Integration fixtures reset table state between tests (advisory-locked
+`TRUNCATE`) so order never matters. The migration matrix checks that a
+fresh/empty database provisions tables, functions, and constraints
+correctly, and that the server is reached on host port `35432` while its
+container port remains `5432`. The canonical vertical slice walks a
+candidate through create → transition → recon, then a distinct Source
+through create → endpoint → assessment, across real transactions.
 
 ## Principles
 Testing must be deterministic by default, exercise real application/domain
