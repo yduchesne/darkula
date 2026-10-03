@@ -20,6 +20,8 @@ dependencies = [
   # SDK/exporter composition is owned by PR 3.
   "opentelemetry-api>=1.37,<2",
   "opentelemetry-sdk>=1.37,<2",
+  "psycopg[binary]>=3.3,<3.4",
+  "psycopg-pool>=3.3,<3.4",
 ]
 
 [dependency-groups]
@@ -58,15 +60,17 @@ files = ["src", "tests"]
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
 testpaths = ["tests"]
-pythonpath = ["src", "."]
+pythonpath = ["src", ".", "scripts"]
 addopts = [
   "--strict-markers",
+  "-m", "not integration",
   "--cov=darkula",
   "--cov-report=term-missing",
   "--cov-fail-under=85",
 ]
 markers = [
   "asyncio: mark a test as running through pytest-asyncio (strict mode)",
+  "integration: real-PostgreSQL integration test (requires the Darkula Podman PostgreSQL at 35432)",
 ]
 
 [tool.coverage.run]

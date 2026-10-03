@@ -10,6 +10,7 @@ from typing import Self
 import pytest
 
 from darkula.app.persistence import DarkulaSpi, UnitOfWork
+from darkula.app.repositories import SourceCandidateRepository, SourceRepository
 
 
 class _RecordingUnitOfWork(UnitOfWork):
@@ -29,6 +30,14 @@ class _RecordingUnitOfWork(UnitOfWork):
 
     async def rollback(self) -> None:
         self.rollbacks += 1
+
+    @property
+    def source_candidates(self) -> SourceCandidateRepository:
+        raise AssertionError("recording stub exposes no candidates repository")
+
+    @property
+    def sources(self) -> SourceRepository:
+        raise AssertionError("recording stub exposes no sources repository")
 
 
 class _RecordingSpi(DarkulaSpi):

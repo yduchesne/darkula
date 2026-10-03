@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Darkula cross-cutting identifier and bounded-name value types.
 
-PR 2 introduces only the value types required to define the foundational
-application contracts cleanly and to keep names that may enter telemetry or
-logs safe and bounded:
+PR 2 introduces the foundational value types (message/stream/consumer/
+operation/object-key identifiers); PR 4 adds the source-domain persistence
+identity types (candidate/event/source/endpoint/recon/source-assessment).
 
 - ``MessageId`` / ``CorrelationId`` / ``CausationId`` are UUID-backed
   identifiers with deterministic equality and hashing. They are identity
@@ -14,6 +14,10 @@ logs safe and bounded:
   the ``LlmClient`` and observability contracts.
 - ``ObjectKey`` is a logical object-store address: not a filesystem path and
   not an S3/R2 URI.
+- ``SourceCandidateId`` / ``CandidateEventId`` / ``SourceId`` /
+  ``SourceEndpointId`` / ``ReconAssessmentId`` / ``SourceAssessmentId`` are
+  the PR 4 structured-domain persistence identities referenced by the
+  source-domain records and their repositories.
 
 Rules frozen here:
 
@@ -129,6 +133,39 @@ class CausationId(_UuidId):
     """
 
 
+class SourceCandidateId(_UuidId):
+    """Persistence identity of one :class:`~darkula.domain.source.SourceCandidate`.
+
+    A discovered resource, distinct from a managed
+    :class:`~darkula.domain.source.Source`. Candidate identity is not the
+    entrypoint text.
+    """
+
+
+class CandidateEventId(_UuidId):
+    """Identity of one immutable candidate lifecycle history record."""
+
+
+class SourceId(_UuidId):
+    """Persistence identity of one managed :class:`~darkula.domain.source.Source`.
+
+    A logical managed source, not a URL: identity survives endpoint/mirror
+    rotation.
+    """
+
+
+class SourceEndpointId(_UuidId):
+    """Identity of one :class:`~darkula.domain.source.SourceEndpoint`."""
+
+
+class ReconAssessmentId(_UuidId):
+    """Identity of one immutable recon assessment record."""
+
+
+class SourceAssessmentId(_UuidId):
+    """Identity of one immutable, time-windowed source assessment record."""
+
+
 @dataclass(frozen=True, slots=True)
 class _BoundedName:
     """Immutable bounded-name base for logical Darkula names."""
@@ -195,11 +232,17 @@ class ObjectKey(_BoundedName):
 __all__ = [
     "MAX_LOGICAL_NAME_LENGTH",
     "MAX_OBJECT_KEY_LENGTH",
+    "CandidateEventId",
     "CausationId",
     "ConsumerId",
     "CorrelationId",
     "MessageId",
     "ObjectKey",
     "OperationName",
+    "ReconAssessmentId",
+    "SourceAssessmentId",
+    "SourceCandidateId",
+    "SourceEndpointId",
+    "SourceId",
     "StreamName",
 ]

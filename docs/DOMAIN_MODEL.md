@@ -2,6 +2,35 @@
 
 This document defines semantic concepts, not a relational schema.
 
+## PR 4 frozen status
+
+PR 4 gave the following concepts their first executable form in
+`src/darkula/domain/source.py` and persisted them through the PostgreSQL
+adapter:
+
+- `CandidateStatus` — `DISCOVERED`, `RECONNAISSANCE_PENDING`, `UNDER_RECONNAISSANCE`, `QUALIFIED`, `REJECTED`, `PROMOTED`.
+- `CandidateEventType` — explicit event semantics (`DISCOVERED`, `RECONNAISSANCE_STARTED`, `RECONNAISSANCE_COMPLETED`, `NEEDS_MORE_RECON`, `QUALIFIED`, `REJECTED`, `PROMOTED`); event types are historical occurrences and never stand in for current status.
+- `SourceStatus` — minimal managed lifecycle `ACTIVE` / `INACTIVE`.
+- `EndpointType` — `ONION`, `CLEARNET`, `MIRROR`, `API`, `FEED`.
+- `EndpointStatus` — minimal lifecycle `ACTIVE` / `INACTIVE` (no health semantics).
+- `ReconDisposition` — `QUALIFY`, `NEEDS_MORE_RECON`, `REJECT`.
+- One bounded `Confidence` representation: a float in inclusive `[0, 1]` shared by all PR 4 assessment records.
+
+Identity rules frozen in code:
+
+- candidate identity is a `SourceCandidateId` (UUID), never the entrypoint text;
+- Source identity is a `SourceId` (UUID) and survives endpoint/mirror rotation;
+- endpoint URIs are locators, not identity (no global URI->Source uniqueness is asserted);
+- event/assessment IDs (`CandidateEventId`, `ReconAssessmentId`, `SourceAssessmentId`) identify immutable historical observations.
+
+History semantics frozen in code and persistence:
+
+- `SourceCandidateEventHistory` is append-only; production provides no update/delete.
+- `ReconAssessment` and `SourceAssessment` are immutable; production provides no update/delete; `SourceAssessment` is time-windowed (`window_start <= window_end`).
+- All times are timezone-aware UTC (`timestamptz`); naive datetimes are rejected.
+- Structured JSON fields (`discovery_context`, `context`, `metadata`, `characteristics`) are validated JSON documents; keys and string values must not embed credentials/secrets.
+- Status changes are explicit expected-state transitions, atomic with exactly one history event (see PR 4 persistence).
+
 ## Discovery and reconnaissance
 ### SourceCandidate
 A discovered resource not yet accepted as a managed Source. It has identity, discovery provenance, entrypoint, timestamps, and lifecycle status.

@@ -1,26 +1,37 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Darkula persistence ownership boundary.
 
-PR 2 freezes **transaction ownership**, not repositories and not schema.
+PR 2 freezes **transaction ownership**. PR 4 adds the bounded error subtypes
+and repository exposure required by the source-domain persistence
+foundation:
 
-- One :class:`UnitOfWork` represents one real future PostgreSQL transaction.
+- One :class:`UnitOfWork` represents one real PostgreSQL transaction.
 - Commit is explicit.
 - An exceptional exit from the context manager rolls back unless the
   transaction was already safely resolved.
 - External LLM/network/crawler work must not occur inside long-lived
   persistence transactions.
-- Future repositories are accessed through this boundary rather than by
-  constructing database clients directly (repository exposure is PR 4 work).
+- Repository contracts (:class:`~darkula.app.repositories.SourceCandidateRepository`
+  and :class:`~darkula.app.repositories.SourceRepository`) are exposed
+  through :class:`UnitOfWork`; application/domain code never constructs
+  database clients directly.
 
-No SQLAlchemy ``Session``, no ``psycopg`` connection, and no domain
-repository methods exist in PR 2.
+No SQLAlchemy ``Session`` and no ``psycopg`` connection appear here: this
+module stays provider-neutral and imports repository contracts only for
+annotation purposes.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from types import TracebackType
-from typing import Self
+from typing import TYPE_CHECKING, Self
+
+if TYPE_CHECKING:
+    from darkula.app.repositories import (
+        SourceCandidateRepository,
+        SourceRepository,
+    )
 
 
 class PersistenceError(RuntimeError):
@@ -29,6 +40,30 @@ class PersistenceError(RuntimeError):
     Public messages never echo database provider exception text or stored
     content.
     """
+
+
+class NotFoundError(PersistenceError):
+    """A requested persisted record does not exist."""
+
+
+class ConflictError(PersistenceError):
+    """A controlled persistence conflict: duplicate identity or an invalid
+    expected-state lifecycle transition. No data was changed."""
+
+
+class IntegrityError(PersistenceError):
+    """A database integrity violation (for example a foreign-key or check
+    constraint). The message never echoes provider text or stored values."""
+
+
+class PersistenceUnavailableError(PersistenceError):
+    """The persistence backend cannot be reached or a connection cannot be
+    obtained. Never contains DSNs, credentials, or raw driver messages."""
+
+
+class MappingError(PersistenceError):
+    """A persisted value cannot be mapped to a documented domain value
+    (for example an unsupported enum label). Bounded and data-free."""
 
 
 class UnitOfWork(ABC):
@@ -73,6 +108,16 @@ class UnitOfWork(ABC):
     async def rollback(self) -> None:
         """Discard the transaction explicitly (safe to call once)."""
 
+    @property
+    @abstractmethod
+    def source_candidates(self) -> SourceCandidateRepository:
+        """Return the candidate repository bound to this transaction."""
+
+    @property
+    @abstractmethod
+    def sources(self) -> SourceRepository:
+        """Return the source repository bound to this transaction."""
+
 
 class DarkulaSpi(ABC):
     """Darkula-owned persistence service boundary.
@@ -86,4 +131,13 @@ class DarkulaSpi(ABC):
         """Return one fresh UnitOfWork representing one transaction."""
 
 
-__all__ = ["DarkulaSpi", "PersistenceError", "UnitOfWork"]
+__all__ = [
+    "ConflictError",
+    "DarkulaSpi",
+    "IntegrityError",
+    "MappingError",
+    "NotFoundError",
+    "PersistenceError",
+    "PersistenceUnavailableError",
+    "UnitOfWork",
+]

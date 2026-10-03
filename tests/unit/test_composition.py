@@ -23,6 +23,7 @@ from darkula.infrastructure.object_store import (
     LocalFileObjectStore,
 )
 from darkula.infrastructure.observability import NoOpAgentObservability
+from darkula.infrastructure.persistence.postgresql.spi import PostgresDarkulaSpi
 from darkula.testing.fake_data_stream import FakeDataStream
 from darkula.testing.fake_llm import FakeLlmClient
 
@@ -51,8 +52,15 @@ class TestDelivered:
         assert isinstance(runtime.object_store, LocalFileObjectStore)
         assert isinstance(runtime.llm, FakeLlmClient)
         assert isinstance(runtime.agent_observability, NoOpAgentObservability)
+        assert isinstance(runtime.persistence, PostgresDarkulaSpi)
         assert runtime.telemetry.tracer_provider is not None
         assert runtime.telemetry.meter_provider is not None
+
+    def test_persistence_is_lazy_never_connected_at_compose(self) -> None:
+        runtime = compose(settings=_shipped())
+        spi = runtime.persistence
+        assert isinstance(spi, PostgresDarkulaSpi)
+        assert spi.is_started is False
 
     def test_test_profile_composes_in_memory_object_store(self) -> None:
         with pytest.MonkeyPatch.context() as monkeypatch:

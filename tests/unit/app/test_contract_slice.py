@@ -50,6 +50,7 @@ from darkula.app.data_stream import (
 )
 from darkula.app.llm import LlmClient, ResponseT
 from darkula.app.persistence import UnitOfWork
+from darkula.app.repositories import SourceCandidateRepository, SourceRepository
 from darkula.domain.identifiers import ConsumerId, MessageId, StreamName
 
 _MOMENT = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
@@ -123,6 +124,14 @@ class _SliceUnitOfWork(UnitOfWork):
     async def rollback(self) -> None:
         self._ordering.append("rollback")
 
+    @property
+    def source_candidates(self) -> SourceCandidateRepository:
+        raise AssertionError("slice stub exposes no candidates repository")
+
+    @property
+    def sources(self) -> SourceRepository:
+        raise AssertionError("slice stub exposes no sources repository")
+
 
 def _slice_message() -> StreamMessage:
     return StreamMessage(
@@ -176,9 +185,13 @@ class TestPollPersistCommitAcknowledge:
         assert ordering == ["poll", "commit", "ack"]
 
     def test_no_kafka_or_postgresql_implementation_required(self) -> None:
-        # The slice above runs with zero infrastructure installed.
+        # The slice above runs through stub/in-memory boundaries: importing it
+        # never opens a stream broker or a database connection. A PostgreSQL
+        # driver IS a PR 4 project dependency, but the slice itself does not
+        # exercise it (no real connections, no real infrastructure).
         assert importlib.util.find_spec("aiokafka") is None
-        assert importlib.util.find_spec("psycopg") is None
+        assert importlib.util.find_spec("psycopg") is not None
+        assert not hasattr(self, "_database_connection_opened")
 
 
 class _SliceLlmClient(LlmClient):

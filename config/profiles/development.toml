@@ -4,6 +4,17 @@
 # Selected when DARKULA_CONFIG_PROFILE is unset/empty (see
 # src/darkula/config/loader.py). Local artifact writes are confined to
 # `var/darkula/objects` under the process working directory.
+#
+# PostgreSQL is reached from the host through the Darkula-prefixed,
+# host-published port 35432 (container port 5432). Container-to-container
+# consumers stay on the base layer (host `darkula-postgres`, port 5432).
+# The integration password is never shipped in TOML: it is injected by the
+# container lifecycle tooling and by integration fixtures through
+# DARKULA_DATABASE__PASSWORD.
+
+[database]
+host = "localhost"
+port = 35432
 
 [object_store]
 driver = "local"

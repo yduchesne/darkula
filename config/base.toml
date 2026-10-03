@@ -5,14 +5,21 @@
 # non-empty environment. This file is the framework baseline: it overrides
 # code defaults and is overridden by every upper layer.
 #
-# PR 3 ships no real infrastructure, so the baseline deterministically
-# selects the offline fake drivers. Future PRs flip these selections as the
-# production adapters arrive (Redpanda = PR 5, S3/R2 = PR 8, provider LLM =
-# PR 10); selecting an unavailable driver validates but fails fast at
-# composition.
+# PR 4 delivers the PostgreSQL persistence adapter, so the baseline selects
+# it. The `development` profile (the default) connects to the Darkula-owned
+# Podman PostgreSQL at the host-published 35432 -> container 5432 port; the
+# un-prefixed service port 5432 stays inside the Darkula Podman network and
+# is what container-to-container consumers should use.
 
 [database]
+driver = "postgresql"
 host = "darkula-postgres"
+port = 5432
+name = "darkula"
+user = "darkula"
+connect_timeout_seconds = 10
+pool_min_size = 1
+pool_max_size = 4
 
 [datastream]
 driver = "fake"

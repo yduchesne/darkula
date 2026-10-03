@@ -24,6 +24,10 @@ PR 3 was implemented from `.plans/DARKULA_PR_3_DETAILED_PLAN.md` (commit baselin
 ## PR 4 — Source domain and persistence foundation
 Implement SourceCandidate, event history, Source, SourceEndpoint, reconnaissance/assessment domain records and initial PostgreSQL persistence SPI/adapter. Detailed schema and migration plan must be designed from fresh main.
 
+### Status — delivered
+
+PR 4 was implemented from `~/Downloads/DARKULA_PR_4_DETAILED_PLAN.md` (commit baseline: `028f012aa0d799e8de930c147fd4489f939075a6`). Delivered: executable source-domain model (`domain/source.py`) with frozen enums/identity/time/JSON validation; aggregate-oriented repository contracts exposed through the existing `UnitOfWork`; versioned PostgreSQL schema + `*_v1` stored functions in `migrations/0001_initial.sql` (production SQL lives only in DB artifacts; repository Python carries only stored-function invocations); async PostgreSQL `PostgresDarkulaSpi`/`PostgresUnitOfWork`/repositories/mapping/errors with bounded, no-leak errors and cancellation-safe transactions; `PersistenceError` subtypes; database settings/composition; Darkula-owned Podman PostgreSQL pinned at `docker.io/library/postgres:18.2` published exactly `35432:5432`; `./build.sh --intg` + integration CI job; migrations tooling; unit + real-PostgreSQL test matrices (domain D*, UoW U*, mapping/errors M*, migrations P*, candidate C*, source S*, transactions T*, vertical slice). No Redpanda/outbox/crawler/collection/agent/extraction, no ORM.
+
 ## PR 5 — DataStream/Redpanda and reliable messaging
 Implement producer/consumer DataStream semantics, Redpanda adapter, message envelope/versioning/correlation, idempotency foundations, transactional outbox, retries/failure semantics, and OTEL propagation/metrics. Use ATI as an implementation reference after inspecting its fresh main.
 

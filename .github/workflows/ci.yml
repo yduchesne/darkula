@@ -29,3 +29,27 @@ jobs:
         run: uv sync --locked
       - name: Repository-owned security scan
         run: ./build.sh --sec
+
+  integration:
+    name: Integration gates (Podman PostgreSQL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+      - name: Install Podman (rootless)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap
+          # Rootless podman for the github runner user requires subuid/
+          # subgid ranges and a slirp-enabled network stack.
+          echo "$(id -un):100000:65536" | sudo tee -a /etc/subuid
+          echo "$(id -un):100000:65536" | sudo tee -a /etc/subgid
+          XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user enable --now podman.socket 2>/dev/null || true
+      - name: Verify Podman
+        run: podman info >/dev/null && podman ps >/dev/null
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Repository-owned integration
+        run: ./build.sh --intg
