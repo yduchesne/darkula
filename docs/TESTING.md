@@ -26,7 +26,8 @@ fully offline and deterministically (integration tests carry the
 2. starts/provisions **only** Darkula-owned resources
    (`scripts/darkula_postgres.sh start`: container `darkula-postgres` with
    `darkula.owned=true`, pinned `docker.io/library/postgres:18.2`, volume
-   `darkula-postgres-data`, exact host mapping `35432` → container `5432`);
+   `darkula-postgres-data` created with its own `darkula.owned=true` label,
+   exact host mapping `35432` → container `5432`);
 3. waits for `pg_isready`; applies migrations
    (`scripts/darkula_migrate.py`, ledger `darkula_schema_migrations`);
 4. runs `uv run pytest tests/integration -m integration --no-cov -q`;
@@ -39,6 +40,44 @@ labels, or if Podman cannot run; it never prunes, never touches foreign
 resources, and never chooses another port. Developers wanting a persistent
 local instance may run `scripts/darkula_postgres.sh start|stop|clean`
 manually; `./build.sh --intg` always tears its own resources down.
+
+### PostgreSQL SQL boundary guard (PR 5B)
+
+Production Python contains no database-behavior/data-access SQL. A positive
+static guard (`tests/unit/infrastructure/persistence/postgresql/test_sql_boundary.py`)
+scans the whole production PostgreSQL persistence package and allows only
+fixed, parameterized invocations of approved versioned stored functions:
+
+```text
+SELECT * FROM <name>_v<positive integer>(<zero or more %s placeholders>)
+```
+
+Whitespace/newlines may vary; everything else is rejected (SQL1–SQL13):
+direct table `SELECT`s, `INSERT`/`UPDATE`/`DELETE`, DDL/`TRUNCATE`, CTEs,
+transaction SQL, non-versioned function names, embedded literal arguments,
+f-string SQL, concatenated/`.format()`/`%`-formatted SQL, and multiple
+statements. SQL used by test-only code outside the production package is
+unaffected (SQL14). The guard inspects the actual production package rather
+than a fixed file list, so new repository modules are covered automatically.
+
+### Podman lifecycle ownership (PR 5B)
+
+`scripts/darkula_postgres.sh` never treats an exact Darkula-looking name as
+proof of ownership. Newly created `darkula-postgres-data` volumes receive
+`darkula.owned=true` at creation; `start` positively verifies the exact
+container and exact volume metadata before reuse/provisioning; `clean`
+preflights every existing Darkula-named resource before any destructive
+action; and any unlabeled, wrongly labeled, or unverifiable resource fails
+closed — no auto-adoption, no relabeling, no deletion.
+
+Deterministic unit tests (`tests/unit/scripts/test_darkula_postgres_script.py`)
+run the real script against a fake `podman`/`ss` earlier on `PATH` and cover
+the P1–P12 lifecycle matrix (create labeled volume, reuse owned volume, refuse
+unlabeled/wrongly labeled volume, preflight `clean`, safe no-op `clean`,
+foreign-port refusal, foreign-resource non-interference, fail-closed inspect
+failures, idempotent repeated start/clean) without a live Podman daemon. Real
+`--intg` additionally asserts both ownership labels and the `35432:5432`
+mapping from exact-resource Podman metadata.
 
 ### PostgreSQL persistence tests
 

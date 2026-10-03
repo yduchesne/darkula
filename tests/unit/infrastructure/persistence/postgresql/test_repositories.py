@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Any, ClassVar, Self
+from typing import Any, Self
 
 import pytest
 
@@ -391,68 +391,3 @@ class TestClosedScope:
         )
         with pytest.raises(PersistenceError, match="closed"):
             await repo.create(_candidate(), event=_event())
-
-
-class TestSqlBoundary:
-    """Production repository modules contain only stored-function invocation
-    strings — never data-access SQL statements."""
-
-    MODULES: ClassVar[list[str]] = [
-        "src/darkula/infrastructure/persistence/postgresql/candidate_repository.py",
-        "src/darkula/infrastructure/persistence/postgresql/source_repository.py",
-    ]
-
-    @staticmethod
-    def _sql_literals(source: str) -> list[str]:
-        import ast
-
-        tree = ast.parse(source)
-        literals: list[str] = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                literals.append(node.value)
-        return literals
-
-    @staticmethod
-    def _read_module(path: str) -> str:
-        with open(path, encoding="utf-8") as handle:
-            return handle.read()
-
-    def test_no_data_access_sql_keywords(self) -> None:
-        # The invariant: no SQL *statement* begins with a data-access verb.
-        # Function names may legitimately contain such words
-        # (candidate_create_v1), so only the statement head is scanned.
-        forbidden_heads = (
-            "INSERT ",
-            "INSERT INTO",
-            "UPDATE ",
-            "UPDATE SET",
-            "DELETE FROM",
-            "CREATE ",
-            "ALTER ",
-            "DROP TABLE",
-            "TRUNCATE",
-        )
-        for module in self.MODULES:
-            source = self._read_module(module)
-            for literal in self._sql_literals(source):
-                head = literal.lstrip().upper()
-                if not head.startswith("SELECT "):
-                    continue
-                for token in forbidden_heads:
-                    assert not head.startswith(token), (
-                        f"{module} contains SQL token {token}"
-                    )
-
-    def test_all_sql_constants_are_function_invocations(self) -> None:
-        for module in self.MODULES:
-            source = self._read_module(module)
-            for literal in self._sql_literals(source):
-                if not literal.lstrip().upper().startswith("SELECT * FROM "):
-                    continue
-                invocation = literal.lstrip()
-                assert invocation.startswith("SELECT * FROM ")
-                function = invocation[len("SELECT * FROM ") :].split("(")[0]
-                assert function.endswith(("_v1", "_v2"))
-                assert " WHERE " not in invocation.upper()
-                assert " JOIN " not in invocation.upper()
