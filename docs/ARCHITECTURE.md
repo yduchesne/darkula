@@ -84,6 +84,11 @@ AgentObservability abstracts AI-specific observability semantics so LangSmith, L
 ## Security boundary
 Hostile network interaction and dangerous parsing/rendering should occur inside the strongest practical sandbox boundary. Normalized content remains untrusted. SourceAnalyst and ordinary application code receive constrained artifacts/data, not arbitrary browsing capability. See SECURITY.md.
 
+## Local infrastructure isolation
+Darkula's locally published service ports use application prefix `3` to avoid collisions with independently running application stacks. The prefix applies only to host-published ports: services retain their standard ports inside containers and on the Darkula Podman network. For example, PostgreSQL uses container port `5432` and is published on the host as `35432` (`35432:5432`).
+
+Apply this convention consistently to every Darkula service that publishes a host port. Derive the host port from the service's standard container port and the Darkula prefix rather than selecting an arbitrary available port. Container-to-container communication continues to use the standard service port. Darkula Podman resources must also be unambiguously Darkula-owned/namespaced; local tooling must fail safely on collisions and must never modify or remove unrelated resources.
+
 ## Configuration and composition
 Pydantic Settings provides typed configuration. Profiles/layers resolve centrally, with non-empty environment variables as the ultimate override. Composition code selects SPI implementations once. See CONFIGURATION.md.
 
