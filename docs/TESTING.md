@@ -96,6 +96,9 @@ and malformed-profile/TOML failures, secret-like diagnostic redaction,
 determinism, and environment isolation. Tests clear ambient `DARKULA_*`
 variables and use `monkeypatch` so they stay order-independent.
 
+## Async concurrency tests
+When production code introduces concurrent I/O, tests must verify the concurrency contract rather than only the final result. Cover the configured concurrency bound, cancellation propagation, ordinary failures, and any ordering or rate/resource constraints that apply. Where `asyncio.gather()` is used, tests should make it possible to detect accidental serialization as well as unbounded task fan-out. Keep concurrency tests deterministic; do not depend on timing races or live external services.
+
 ## Reliability tests
 Assume at-least-once stream delivery. Test duplicate messages, consumer
 crash before/after durable commit, outbox retry, poison/non-retryable
