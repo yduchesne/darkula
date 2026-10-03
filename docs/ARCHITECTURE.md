@@ -61,9 +61,33 @@ domain state      + durable references       screenshots/PDFs/etc.
 PostgreSQL is the structured system of record. DataStream is an application-owned producer/consumer abstraction; Redpanda/Kafka is the initial adapter. ObjectStore is an application-owned streaming artifact interface with local filesystem, S3, R2-compatible, and in-memory/test implementations.
 
 ### PostgreSQL access principle
-Production Python code does not embed or execute SQL statements. Production database behavior is implemented through PostgreSQL stored functions defined in versioned database/migration artifacts. PostgreSQL repository implementations call those stored functions and map their parameters/results to Darkula application and domain types. Application and domain code use persistence/repository and UnitOfWork abstractions and never bypass them with direct SQL.
+Production Python contains no database-behavior/data-access SQL. The production
+persistence path is:
 
-This rule separates the production persistence contract from database implementation details and centralizes SQL behavior in PostgreSQL. Direct SQL from Python is permitted in test code when it is useful for database setup or cleanup, fixture maintenance, verification/assertions, fault injection, or independent inspection of persisted state. Tests of the production persistence path must still exercise the production repositories/stored functions; test-only SQL must not become a second implementation of production persistence behavior.
+```text
+repository -> fixed parameterized stored-function invocation -> versioned function -> database behavior
+```
+
+Application and domain code never execute SQL and reach persistence only
+through the persistence/repository and UnitOfWork abstractions. All database
+behavior — table access, joins, predicates, mutations, DDL, and transactions —
+is owned by versioned PostgreSQL stored functions defined in versioned
+database/migration artifacts. PostgreSQL infrastructure repositories may
+contain only fixed, parameterized invocations of approved versioned stored
+functions (`SELECT * FROM <name>_v<positive integer>(...)`): function names are
+static constants, and every value is bound as a separate Psycopg parameter.
+Dynamic SQL — f-strings, `.format()`, concatenation, `%`-formatting,
+identifier interpolation, embedded values, or multiple statements — is
+rejected by the positive static QA guard.
+
+This rule separates the production persistence contract from database
+implementation details and centralizes SQL behavior in PostgreSQL. Direct SQL
+from Python is permitted in test code when it is useful for database setup or
+cleanup, fixture maintenance, verification/assertions, fault injection, or
+independent inspection of persisted state. Tests of the production persistence
+path must still exercise the production repositories/stored functions;
+test-only SQL must not become a second implementation of production
+persistence behavior.
 
 Messages are small, versioned, correlated, and normally reference persisted state/artifacts. Assume at-least-once delivery and idempotent consumers. Use transactional outbox semantics to avoid committed state without corresponding events.
 
@@ -87,7 +111,7 @@ Hostile network interaction and dangerous parsing/rendering should occur inside 
 ## Local infrastructure isolation
 Darkula's locally published service ports use application prefix `3` to avoid collisions with independently running application stacks. The prefix applies only to host-published ports: services retain their standard ports inside containers and on the Darkula Podman network. For example, PostgreSQL uses container port `5432` and is published on the host as `35432` (`35432:5432`).
 
-Apply this convention consistently to every Darkula service that publishes a host port. Derive the host port from the service's standard container port and the Darkula prefix rather than selecting an arbitrary available port. Container-to-container communication continues to use the standard service port. Darkula Podman resources must also be unambiguously Darkula-owned/namespaced; local tooling must fail safely on collisions and must never modify or remove unrelated resources.
+Apply this convention consistently to every Darkula service that publishes a host port. Derive the host port from the service's standard container port and the Darkula prefix rather than selecting an arbitrary available port. Container-to-container communication continues to use the standard service port. Darkula Podman resources must also be unambiguously Darkula-owned/namespaced; exact Darkula-looking names alone do not establish ownership — every mutable/removable container or volume carries a `darkula.owned=true` label, applied at creation and positively verified from exact-resource metadata before reuse, mutation, or deletion. Local tooling must fail safely on collisions and on unlabeled/wrongly labeled Darkula-named resources and must never modify or remove unrelated resources.
 
 ## Configuration and composition
 Pydantic Settings provides typed configuration. Profiles/layers resolve centrally, with non-empty environment variables as the ultimate override. Composition code selects SPI implementations once. See CONFIGURATION.md.
@@ -122,11 +146,11 @@ PR 4 delivered Darkula's first real structured-domain persistence path:
 
 - **Executable source-domain model** (`darkula/domain/source.py`): `SourceCandidate`, `SourceCandidateEventHistory` (append-only), `Source` (a logical managed source, not a URL), `SourceEndpoint` (rotation does not change Source identity), `ReconAssessment` (immutable), and `SourceAssessment` (immutable, time-windowed), with the frozen lifecycle enums and one bounded `Confidence` representation. Times are timezone-aware UTC; structured JSON fields are validated documents that never embed credentials; history and assessment records are immutable in production.
 - **Repository contracts through the existing UnitOfWork** (`darkula/app/repositories.py`): aggregate-oriented `SourceCandidateRepository` and `SourceRepository` exposed via new abstract `source_candidates`/`sources` properties on `UnitOfWork`. One UoW = one real transaction; explicit commit; uncommitted/exceptional/cancelled exit rolls back; commit failure never claims committed.
-- **Versioned SQL artifacts** (`migrations/0001_initial.sql`): schema, constraints, deterministic indexes (candidate_id + occurred_at + tie-breaker, etc.) and the versioned `*_v1` stored functions that OWN every production persistence operation. Production repository Python contains **no data-access SQL**: the only SQL literals are the mechanical stored-function invocation strings (the driver's function-call mechanism); all table access, joins, filters, and inserts live in versioned database artifacts. The static QA boundary test enforces the invocation-only grammar.
+- **Versioned SQL artifacts** (`migrations/0001_initial.sql`): schema, constraints, deterministic indexes (candidate_id + occurred_at + tie-breaker, etc.) and the versioned `*_v1` stored functions that OWN every production persistence operation. Production repository Python contains **no database-behavior/data-access SQL**: the only SQL permitted is the fixed, parameterized stored-function invocation (the driver's function-call mechanism), and all table access, joins, predicates, mutations, and other database behavior live in versioned database artifacts. A positive static QA guard validates that the production PostgreSQL persistence package contains only fixed, parameterized invocations of versioned stored functions (PR 5B) — it is not a keyword denylist.
 - **Async PostgreSQL adapter** (`darkula/infrastructure/persistence/postgresql/`): `PostgresDarkulaSpi` (owns the bounded psycopg `AsyncConnectionPool`, lazy `start()`/`close()`), `PostgresUnitOfWork` (one pooled connection + one explicit transaction, cancellation-safe rollback, bounded closed-use errors), the two repositories (stored-function invocation + centralized result mapping + bounded error projection), `mapping.py`, and `errors.py` (SQLSTATE-classified: unique → `ConflictError`, FK/check/not-null → `IntegrityError`, operational/pool → `PersistenceUnavailableError`; never echoes driver text; `asyncio.CancelledError` always propagates unchanged).
 - **Bounded persistence errors** (`darkula/app/persistence.py`): `PersistenceError` gains `NotFoundError`, `ConflictError`, `IntegrityError`, `PersistenceUnavailableError`, and `MappingError`.
 - **Configuration/composition** (`config/`, `darkula/config/settings.py`, `darkula/composition.py`): `DatabaseSettings` grows connection/pool fields with fail-fast validation; `compose()` grows the lazy `PostgresDarkulaSpi`; no production fallback to fake persistence.
-- **Darkula-owned Podman PostgreSQL** (`scripts/darkula_postgres.sh`): provisions/starts/stops/cleans exactly `darkula-postgres` (pinned image `docker.io/library/postgres:18.2`, `darkula.owned=true` label) and `darkula-postgres-data`; publishes the exact mapping host `35432` → container `5432`. It refuses foreign resources or occupied ports (never another port, never prune) and fails safely on collisions where ownership cannot be established.
+- **Darkula-owned Podman PostgreSQL** (`scripts/darkula_postgres.sh`): provisions/starts/stops/cleans exactly `darkula-postgres` (pinned image `docker.io/library/postgres:18.2`, `darkula.owned=true` label) and `darkula-postgres-data` (created with its own `darkula.owned=true` label since PR 5B); publishes the exact mapping host `35432` → container `5432`. Start and clean positively verify every existing Darkula-named container/volume from exact-resource metadata before reuse or deletion and fail closed on unlabeled, wrongly labeled, or unverifiable resources — no auto-adoption, relabeling, broad discovery, or prune (PR 5B hardening).
 - **Migration tooling** (`scripts/darkula_migrate.py`): deterministic lexical application of versioned `migrations/NNNN_*.sql`, with a `darkula_schema_migrations` ledger table; this is operator/CI tooling only.
 - **`./build.sh --intg`** plus a dedicated integration CI job: provisions PostgreSQL, applies migrations, runs the real-PostgreSQL suite (`tests/integration`, marker `integration`), and cleans up while preserving the original exit status. `./build.sh --qa` remains fully offline, fast, and deterministic.
 - **Real-PostgreSQL integration suite** (`tests/integration/`): migrations (P1–P6), candidate (C1–C10), source (S1–S8), transactions/cancellation (T1–T6), and the canonical vertical slice — all through `PostgresDarkulaSpi → PostgresUnitOfWork → repository → stored function → PostgreSQL`; test-only SQL is restricted to setup/reset/independent assertion.

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
-# Darkula-owned PostgreSQL lifecycle tooling (PR 4).
+# Darkula-owned PostgreSQL lifecycle tooling (PR 4; ownership hardening PR 5B).
 #
-# Manages ONLY the following Darkula-owned resources (exact names/labels);
+# Manages ONLY the following Darkula-owned resources (exact names + labels);
 # it never discovers, modifies, removes, or prunes any other Podman
 # resource, and it never scans broadly for containers/volumes/networks:
 #
 #   container: darkula-postgres        (label darkula.owned=true)
-#   volume:    darkula-postgres-data
+#   volume:    darkula-postgres-data   (label darkula.owned=true)
 #   image:     docker.io/library/postgres:18.2 (pinned; never `latest`)
 #
 # Host mapping (exact): host port 35432 -> container port 5432.
@@ -18,6 +18,14 @@
 #   ./scripts/darkula_postgres.sh stop       # stop (keep data volume)
 #   ./scripts/darkula_postgres.sh clean      # stop + remove owned resources
 #   ./scripts/darkula_postgres.sh migrate    # apply migrations (repo tool)
+#
+# Ownership rule (PR 5B): an exact Darkula-looking name is NOT proof of
+# ownership. Every mutable/removable resource must positively carry the
+# `darkula.owned=true` label. Unlabeled, wrongly labeled, or unverifiable
+# resources are foreign/unknown and fail closed: never auto-adopt, relabel,
+# recreate, or delete them. `clean` preflights EVERY existing Darkula-named
+# resource before any destructive action so a single ownership failure
+# never causes avoidable partial cleanup.
 #
 # Fail-safe rules:
 #   * if 35432 is occupied by anything other than our container -> fail;
@@ -47,15 +55,71 @@ fi
 
 log() { echo "darkula-postgres: $*"; }
 
-owned_label() {
-  local name="$1"
-  local labels
-  labels="$($PODMAN inspect "$name" 2>/dev/null | python3 -c \
-    'import json,sys; d=json.load(sys.stdin); print(d[0]["Config"].get("Labels", {}))' 2>/dev/null || true)"
+# ownership_ok <container|volume> <name>
+#   Returns:
+#     0 - resource exists with darkula.owned=true
+#     1 - resource exists but is NOT Darkula-owned
+#     2 - ownership could not be verified (inspect failed / metadata unreadable)
+# Metadata is read from the exact named resource only (never broad
+# discovery). Podman versions differ on the volume label key, so both
+# `Labels` and `labels` are accepted.
+ownership_ok() {
+  local kind="$1" name="$2" labels status
+  case "$kind" in
+    container)
+      labels="$($PODMAN inspect "$name" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d[0]["Config"].get("Labels", {}))
+except Exception:
+    sys.exit(1)' 2>/dev/null)"
+      ;;
+    volume)
+      labels="$($PODMAN volume inspect "$name" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    labels = d[0].get("Labels", d[0].get("labels", {}))
+    print(labels if labels is not None else {})
+except Exception:
+    sys.exit(1)' 2>/dev/null)"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    return 2
+  fi
   case "$labels" in
     *"'darkula.owned': 'true'"*|*'"darkula.owned": "true"'*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# require_owned <container|volume> <name> <context message>
+# Exits 2 unless the named resource (when present) is positively
+# Darkula-owned. Never relabels, adopts, or removes an unverified resource.
+require_owned() {
+  local kind="$1" name="$2" context="$3" status
+  if ownership_ok "$kind" "$name"; then
+    return 0
+  else
+    # An `if` without an else reports 0 on a false condition, so the
+    # ownership status must be captured inside the else branch.
+    status=$?
+  fi
+  case "$status" in
+    1)
+      echo "error: Podman ${kind} '$name' exists but is NOT Darkula-owned (missing darkula.owned=true label); $context" >&2
+      ;;
+    2)
+      echo "error: Podman ${kind} '$name' could not be verified as Darkula-owned (inspect failed or metadata unreadable); $context" >&2
+      ;;
+  esac
+  exit 2
 }
 
 host_port_in_use_by_foreign() {
@@ -76,8 +140,17 @@ host_port_in_use_by_foreign() {
 provision() {
   log "image: $IMAGE"
   $PODMAN image exists "$IMAGE" >/dev/null 2>&1 || $PODMAN pull "$IMAGE" >/dev/null
-  # Volume: exact Darkula-owned name.
-  $PODMAN volume exists "$VOLUME" >/dev/null 2>&1 || $PODMAN volume create "$VOLUME" >/dev/null
+  # Volume: exact Darkula-owned name. The ownership label is applied at
+  # creation and is mandatory before the volume is ever mounted; an
+  # existing unlabeled volume was never touched by this tool (callers
+  # preflight it first).
+  if ! $PODMAN volume exists "$VOLUME" >/dev/null 2>&1; then
+    log "creating volume $VOLUME"
+    $PODMAN volume create \
+      --label darkula.owned=true \
+      --label darkula.service=postgres \
+      "$VOLUME" >/dev/null
+  fi
   $PODMAN run -d \
     --name "$CONTAINER" \
     --label darkula.owned=true \
@@ -107,10 +180,13 @@ wait_ready() {
 
 ensure_container_acceptable() {
   if $PODMAN container exists "$CONTAINER" 2>/dev/null; then
-    if ! owned_label "$CONTAINER"; then
-      echo "error: Podman container '$CONTAINER' exists but is NOT Darkula-owned (missing darkula.owned=true label); refusing to touch it" >&2
-      exit 2
-    fi
+    require_owned container "$CONTAINER" "refusing to touch it"
+  fi
+}
+
+ensure_volume_acceptable() {
+  if $PODMAN volume exists "$VOLUME" 2>/dev/null; then
+    require_owned volume "$VOLUME" "refusing to reuse, relabel, or remove it"
   fi
 }
 
@@ -125,7 +201,12 @@ cmd_status() {
 }
 
 cmd_start() {
+  # Step order (hardening): 1) verify existing container ownership;
+  # 2) verify existing volume ownership; 3) check host-port collision;
+  # only then start/provision. Never mutate before every existing
+  # Darkula-named resource is positively verified as Darkula-owned.
   ensure_container_acceptable
+  ensure_volume_acceptable
   if host_port_in_use_by_foreign; then
     echo "error: host port $HOST_PORT is occupied by a non-Darkula listener; refusing to proceed (no fallback port, no removal)" >&2
     exit 2
@@ -157,8 +238,18 @@ cmd_stop() {
 }
 
 cmd_clean() {
+  # Preflight: positively verify ownership of EVERY existing Darkula-named
+  # resource before any destructive action. A single ownership failure
+  # aborts the whole cleanup, so an unverifiable resource never causes
+  # avoidable partial cleanup. Only then remove the owned container and the
+  # owned volume (each by exact name).
   if $PODMAN container exists "$CONTAINER" 2>/dev/null; then
-    ensure_container_acceptable
+    require_owned container "$CONTAINER" "refusing destructive cleanup"
+  fi
+  if $PODMAN volume exists "$VOLUME" 2>/dev/null; then
+    require_owned volume "$VOLUME" "refusing destructive cleanup"
+  fi
+  if $PODMAN container exists "$CONTAINER" 2>/dev/null; then
     log "removing owned container"
     $PODMAN rm -f "$CONTAINER" >/dev/null
   fi
