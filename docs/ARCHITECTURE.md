@@ -64,6 +64,11 @@ Messages are small, versioned, correlated, and normally reference persisted stat
 
 Commands express requested work (for example crawl/recon/extraction/analysis requested). Events express completed facts (for example crawl completed, content normalized/extracted, source assessed). Exact topics and schemas are TBD.
 
+## Async I/O concurrency
+Darkula should overlap independent I/O waits when doing so improves throughput or latency. For bounded sets of independent I/O operations, prefer asynchronous concurrency and use `asyncio.gather()` where it is a natural fit. Concurrency must always be explicitly bounded, for example by bounded batches, a semaphore, or a bounded worker/task pool; do not create one unbounded task per discovered URL, artifact, provider call, database operation, or other potentially large input.
+
+Concurrency is an optimization subject to correctness. Keep work serialized, or apply a stricter concurrency policy, when ordering, transaction boundaries, external rate limits, resource budgets, backpressure, or other invariants require it. Concurrent code must have explicit error and cancellation behavior and must not leave orphaned background tasks.
+
 ## SPIs and adapters
 Foundational Darkula-owned interfaces include persistence (DarkulaSpi or equivalent), DataStream, ObjectStore, LlmClient, and AgentObservability. External framework/provider types must not leak through them.
 
