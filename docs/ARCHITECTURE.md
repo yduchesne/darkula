@@ -60,6 +60,11 @@ domain state      + durable references       screenshots/PDFs/etc.
 ```
 PostgreSQL is the structured system of record. DataStream is an application-owned producer/consumer abstraction; Redpanda/Kafka is the initial adapter. ObjectStore is an application-owned streaming artifact interface with local filesystem, S3, R2-compatible, and in-memory/test implementations.
 
+### PostgreSQL access principle
+Production Python code does not embed or execute SQL statements. Production database behavior is implemented through PostgreSQL stored functions defined in versioned database/migration artifacts. PostgreSQL repository implementations call those stored functions and map their parameters/results to Darkula application and domain types. Application and domain code use persistence/repository and UnitOfWork abstractions and never bypass them with direct SQL.
+
+This rule separates the production persistence contract from database implementation details and centralizes SQL behavior in PostgreSQL. Direct SQL from Python is permitted in test code when it is useful for database setup or cleanup, fixture maintenance, verification/assertions, fault injection, or independent inspection of persisted state. Tests of the production persistence path must still exercise the production repositories/stored functions; test-only SQL must not become a second implementation of production persistence behavior.
+
 Messages are small, versioned, correlated, and normally reference persisted state/artifacts. Assume at-least-once delivery and idempotent consumers. Use transactional outbox semantics to avoid committed state without corresponding events.
 
 Commands express requested work (for example crawl/recon/extraction/analysis requested). Events express completed facts (for example crawl completed, content normalized/extracted, source assessed). Exact topics and schemas are TBD.
@@ -107,4 +112,4 @@ PR 3 made the in-process foundational runtime usable and deterministically testa
 PR 3 adds no real infrastructure, no `--intg`, no OTLP exporters, and no vendor dependencies beyond `opentelemetry-sdk`.
 
 ## Intentionally undecided in PR 1
-Exact Python package layout; PostgreSQL schema/stored-function strategy; stream topic names and serialization; crawler/browser/Tor technologies; sandbox technology; object-key layout; exact extraction ontology; scheduling implementation; deployment topology; detailed secret backend; exact provider selection; and multi-tenancy.
+Exact Python package layout; detailed PostgreSQL schema; stream topic names and serialization; crawler/browser/Tor technologies; sandbox technology; object-key layout; exact extraction ontology; scheduling implementation; deployment topology; detailed secret backend; exact provider selection; and multi-tenancy.
