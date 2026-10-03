@@ -23,6 +23,7 @@ Before changing architecture or domain behavior, read docs/ARCHITECTURE.md, docs
 - Assume at-least-once stream delivery; consumers must be idempotent.
 - Durable state change plus outgoing event must use a transactional-outbox style guarantee where applicable.
 - Treat all collected content as untrusted even after normalization.
+- For independent I/O-bound operations, prefer bounded asynchronous concurrency so I/O waits can overlap. Use `asyncio.gather()` where it fits, with an explicit concurrency bound (for example bounded batches, a semaphore, or a bounded worker/task pool). Never create unbounded task fan-out. Preserve ordering, transaction, rate-limit, resource, error, and cancellation semantics where they require serialization or tighter control.
 
 ## Engineering rules
 - Keep domain/application layers independent of Kafka/Redpanda, S3/R2, LangChain, LangSmith/Langfuse, Prometheus, Loki, Jaeger, and crawler implementation details.
