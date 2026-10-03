@@ -40,6 +40,9 @@ Exercise real adapters: PostgreSQL, Redpanda DataStream, ObjectStore
 implementations, OTEL Collector/export, and crawler sandbox/controller as
 introduced (PR 4 onward).
 
+### PostgreSQL persistence tests
+Production persistence tests must exercise the real repository-to-stored-function path. Python test code may use direct SQL for test-only concerns such as database setup/cleanup, fixture maintenance, verification/assertions, fault injection, and inspecting database state independently of the production repository API. Keep such SQL in test/support code and do not use the exception to duplicate or replace production persistence behavior.
+
 ### End-to-end Fake World
 Exercise collection -> normalization -> extraction -> source assessment
 through production-like infrastructure without contacting real criminal
@@ -95,6 +98,9 @@ boundary, empty/unset environment no-op semantics, deep merge, unknown-key
 and malformed-profile/TOML failures, secret-like diagnostic redaction,
 determinism, and environment isolation. Tests clear ambient `DARKULA_*`
 variables and use `monkeypatch` so they stay order-independent.
+
+## Async concurrency tests
+When production code introduces concurrent I/O, tests must verify the concurrency contract rather than only the final result. Cover the configured concurrency bound, cancellation propagation, ordinary failures, and any ordering or rate/resource constraints that apply. Where `asyncio.gather()` is used, tests should make it possible to detect accidental serialization as well as unbounded task fan-out. Keep concurrency tests deterministic; do not depend on timing races or live external services.
 
 ## Reliability tests
 Assume at-least-once stream delivery. Test duplicate messages, consumer
