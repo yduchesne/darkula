@@ -11,6 +11,7 @@ Before changing architecture or domain behavior, read docs/ARCHITECTURE.md, docs
 - Extraction produces structured facts/annotations. Analysis produces assessments.
 - SourceAnalyst never receives unrestricted browser/Tor access. Hostile retrieval executes behind the crawler sandbox boundary.
 - PostgreSQL is authoritative for structured domain state. ObjectStore is authoritative for large/blob artifacts. DataStream carries asynchronous work/events and references, not large artifacts.
+- Production Python code must not contain SQL statements. All production database operations are implemented as PostgreSQL stored functions and invoked by infrastructure repository classes; application/domain code reaches persistence only through Darkula persistence/repository and UnitOfWork abstractions. SQL belongs in migrations/versioned database artifacts, not embedded in production Python. Test Python code may execute SQL directly for database setup/cleanup, fixture maintenance, verification/assertions, fault injection, and independent inspection of database state; this exception must not become an alternate production persistence path.
 - DataStream, ObjectStore, LlmClient, persistence, and agent-observability capabilities are accessed through Darkula-owned interfaces.
 - Redpanda is the initial DataStream implementation, not an application-layer dependency.
 - LLM consumers depend only on LlmClient. Production adapters may include LangChainLlmClient; deterministic tests use FakeLlmClient.
