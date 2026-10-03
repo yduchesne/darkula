@@ -40,6 +40,9 @@ Exercise real adapters: PostgreSQL, Redpanda DataStream, ObjectStore
 implementations, OTEL Collector/export, and crawler sandbox/controller as
 introduced (PR 4 onward).
 
+### PostgreSQL persistence tests
+Production persistence tests must exercise the real repository-to-stored-function path. Python test code may use direct SQL for test-only concerns such as database setup/cleanup, fixture maintenance, verification/assertions, fault injection, and inspecting database state independently of the production repository API. Keep such SQL in test/support code and do not use the exception to duplicate or replace production persistence behavior.
+
 ### End-to-end Fake World
 Exercise collection -> normalization -> extraction -> source assessment
 through production-like infrastructure without contacting real criminal
