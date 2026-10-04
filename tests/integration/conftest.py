@@ -54,6 +54,9 @@ TABLE_NAMES = (
     "processed_message",
     "content_artifact",
     "normalized_content",
+    "collection_run",
+    "collection_policy_endpoint",
+    "collection_policy",
 )
 
 #: Host-published Darkula Redpanda Kafka port (container port 9092).

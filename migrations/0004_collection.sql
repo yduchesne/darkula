@@ -440,7 +440,7 @@ BEGIN
     END LOOP;
     UPDATE collection_policy
        SET next_due_at = v_next
-     WHERE policy_id = v_policy.policy_id;
+     WHERE collection_policy.policy_id = v_policy.policy_id;
     RETURN QUERY SELECT p_run_id, v_policy.policy_id, v_policy.revision,
                         v_snapshot, v_policy.source_id, v_scheduled,
                         'scheduled'::text;

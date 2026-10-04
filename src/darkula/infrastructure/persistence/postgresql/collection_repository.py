@@ -35,6 +35,7 @@ from darkula.app.repositories import (
     CollectionRepository,
     ReclaimOutcome,
     ScheduledOccurrence,
+    ScheduleOutcome,
 )
 from darkula.domain.collection import (
     CollectionFailureCode,
@@ -305,10 +306,16 @@ class PostgresCollectionRepository(CollectionRepository):
             raise map_driver_error(exc) from exc
         if row is None:
             return None
-        occurrence = map_scheduled_occurrence(row)
-        if occurrence.outcome.value == "none":
+        # The 'none' outcome carries NULL identity columns; only map when a
+        # run was actually admitted.
+        if row[6] == "none":
             return None
-        return occurrence
+        occurrence = map_scheduled_occurrence(row)
+        if occurrence.outcome is ScheduleOutcome.SCHEDULED or (
+            occurrence.outcome is ScheduleOutcome.OCCURRENCE_EXISTS
+        ):
+            return occurrence
+        return None
 
     async def claim_run(
         self,
@@ -325,7 +332,7 @@ class PostgresCollectionRepository(CollectionRepository):
                     _RUN_CLAIM_FN,
                     (
                         _str_uuid(run_id),
-                        execution_id,
+                        UUID(execution_id),
                         started_at,
                         lease_expires_at,
                     ),
@@ -354,7 +361,7 @@ class PostgresCollectionRepository(CollectionRepository):
                     _RUN_RECLAIM_FN,
                     (
                         _str_uuid(run_id),
-                        execution_id,
+                        UUID(execution_id),
                         now,
                         lease_expires_at,
                         max_attempts,
