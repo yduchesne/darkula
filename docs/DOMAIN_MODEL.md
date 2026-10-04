@@ -87,11 +87,11 @@ The logical resource being monitored, independent of any one URL/onion address. 
 ### SourceEndpoint
 A first-class endpoint belonging to a Source, with URI, type (for example ONION, CLEARNET, MIRROR, API/FEED where applicable), status, and observation timestamps.
 
-### CollectionPolicy
-The durable policy describing how a Source may be collected: allowed endpoints/paths, traversal constraints, schedule, budgets, authentication reference, extraction/normalization policy, and active state. Credentials are referenced, never embedded.
+### CollectionPolicy (PR 9)
+The durable, reusable authorization/configuration describing how a managed Source may be collected. It belongs to a Source (never to a URI) and authorizes managed `SourceEndpoint` identities: active flag, positive bounded `interval_seconds`, explicit UTC `next_due_at` occurrence clock, `allowed_endpoint_ids` (managed identities only, never URLs), `allowed_paths`, budgets that mirror the PR 7 `CrawlRequest` bounds (max pages/requests/depth/timeout), an optional `authentication_reference` (a **reference only**, never a secret value; PR 9 delivers unauthenticated crawling), and a monotonic `revision` counter. Each edit bumps the revision; historical runs keep the exact revision plus their frozen `policy_snapshot`, so policy edits never rewrite run history.
 
-### CollectionRun
-A durable execution record for one collection cycle: source/policy, status/timestamps, work attempted, discovered/changed content, failures, and metrics/references.
+### CollectionRun (PR 9)
+A durable **historical execution record** of one policy occurrence. The occurrence identity is `(policy_id, scheduled_for)` and is UNIQUE — concurrent schedulers can never admit the same occurrence twice. The run records: the policy's `policy_revision` and `policy_snapshot` (the frozen execution contract), source, `scheduled_for`, timestamps (`created_at`/`started_at`/`completed_at`), the finite lifecycle status (`QUEUED -> RUNNING -> SUCCEEDED/FAILED/CANCELLED`), execution lease fields, `attempt_count`, and the monotonic counters (`crawl_requests_attempted`, `pages_observed`, `content_observations`, `content_created`, `content_deduplicated`). Failures carry a bounded sanitized `failure_code`/`failure_summary`. Runs are immutable historical executions; a later schedule creates a new run.
 
 ## Crawl and content
 ### CrawlRequest

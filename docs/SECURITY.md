@@ -60,3 +60,48 @@ CollectionPolicy references credentials; it does not embed them. A secret resolv
 
 ## Production readiness
 Real illicit-source crawling is outside the initial Fake World development loop. Before enabling it, require reviewed sandboxing, egress policy, artifact controls, secret handling, resource limits, auditability, and applicable legal/operational review.
+
+## PR 9 delivered controls (managed-source collection)
+
+Collection is deterministic, policy-authorized work over managed Sources;
+routine collection is never agentic and no LLM/agent decides navigation.
+
+- **Authorization before any crawl.** `SourceCollectionService` requires a
+  QUEUED run, an ACTIVE managed Source, an ACTIVE policy, and the run's
+  frozen endpoints to be owned by the Source and ACTIVE before it claims the
+  run. If authorization was withdrawn at admission, no crawl happens and the
+  run is durably `CANCELLED` with a bounded code. Once RUNNING, the frozen
+  policy snapshot governs the in-flight contract (policy edits cannot alter
+  it).
+- **Credential references only.** `CollectionPolicy` stores
+  `authentication_reference` (bounded reference text, secret-free) and never
+  a secret value; `CrawlRequest.credentials` is always `None` in the PR 9
+  delivered path (unauthenticated collection). No secret resolver was
+  introduced; authenticated crawling remains STOP-gated for a future PR.
+- **IDs-only work messages.** The `collection.execute` v1 command carries
+  exactly `collection_run_id`, `source_id`, `policy_id`. No URI, policy
+  blob, content, artifact reference, or credential crosses DataStream.
+  Broker positions are transport state, never run identity.
+- **Unchanged PR 7 sandbox.** Collection adds no Podman/Playwright/ObjectStore
+  capability to the sandbox surface: the composed Crawler owns the sandbox
+  boundary exactly as in PR 7, storage/DB/stream/LLM credentials never cross
+  it, and `CrawlRequest` budgets are still clamped/enforced by the PR 7
+  controller.
+- **Firewall between collection and persistence.** No PostgreSQL transaction
+  spans crawler, HTTP, sandbox, ObjectStore, or broker I/O; the short-UoW
+  admission/finalize structure makes a leaked long transaction structurally
+  impossible.
+- **Bounded state machine.** Expected-state transitions are enforced
+  atomically in PostgreSQL (QUEUED -> RUNNING -> terminal); the execution
+  lease bounds concurrent/crashed execution; attempts are capped
+  (`max_run_attempts`); failures persist only the bounded sanitized
+  vocabulary (fatal codes + summaries), never raw exception text, URIs,
+  content, or secrets.
+- **History is immutable.** Policy edits never rewrite old runs: each run
+  retains `policy_revision` and its frozen execution snapshot (policy
+  history survives edits).
+- **Telemetry is bounded.** Collection counters/histograms carry only
+  low-cardinality attributes (`darkula.outcome`, failure category); no
+  run/source/policy ID, URI, source name, hash, object key, or credential
+  ever appears in labels, and failure summaries are validated secret-free
+  before persistence.

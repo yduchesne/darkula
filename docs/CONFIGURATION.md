@@ -150,3 +150,21 @@ LlmClient driver, and the `none` agent-observability backend.
 Loader tests clear ambient `DARKULA_*` variables before each test and
 manage process state through `monkeypatch` (restored automatically), so
 the suite is order-independent and never depends on the developer's shell.
+
+### Collection group (PR 9)
+
+`[collection]` (Pydantic `CollectionSettings`) — behavior fields for the
+managed-source collection lifecycle:
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `schedule_batch_size` | `10` | Bounded positive sweep size for one `CollectionScheduler.schedule_due` call |
+| `worker_poll_batch_size` | `10` | Bounded positive poll size for one `CollectionWorker.process_once` call |
+| `execution_lease_seconds` | `600.0` | Positive RUNNING lease that a crashed worker's recovery must outlive (prefer lease >= max bounded crawl + ingestion margin) |
+| `max_run_attempts` | `3` | Bounded `[1, 10]` same-run reclaim attempts; each attempt is new crawl provenance |
+
+Policy schedule bounds are fixed domain constants in v0.1
+(`MIN_POLICY_INTERVAL_SECONDS` / `MAX_POLICY_INTERVAL_SECONDS` in
+`darkula.domain.collection`); no operator-facing interval settings exist.
+Environment overrides follow the standard rules
+(`DARKULA_COLLECTION__MAX_RUN_ATTEMPTS`, ...) with unset/empty no-ops.

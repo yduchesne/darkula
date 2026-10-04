@@ -102,3 +102,30 @@ Track crawl request/success/failure, pages/bytes, duration, timeouts, status cla
 
 ## Sandbox propagation
 Only minimal approved trace context crosses into disposable sandboxes; arbitrary OTEL baggage must not become a covert channel for sensitive application state.
+
+## PR 9 status — collection telemetry delivered
+
+PR 9 instruments the managed-source collection lifecycle with direct OTEL
+counters/histograms/spans (no decorator attributes beyond the bounded
+vocabulary):
+
+- **Spans** — `collection.schedule_due`, `collection.execute`,
+  `collection.crawl` (per endpoint), `collection.ingest` (per observation),
+  `collection.finalize`, `collection.worker.poll`. No ID/URI/payload
+  attributes; only the frozen low-cardinality set.
+- **Counters** —
+  `darkula.collection.run.created`, `.started`, `.succeeded`, `.failed`,
+  `.cancelled`, `.reclaimed`, `darkula.collection.pages`,
+  `darkula.collection.observations`, `darkula.collection.content.created`,
+  `darkula.collection.content.deduplicated`,
+  `darkula.collection.worker.command.invalid`,
+  `darkula.collection.worker.run.unknown`, and
+  `darkula.collection.worker.process.count`.
+- **Histogram** — `darkula.collection.run.duration` (seconds).
+- **Attributes** — `darkula.outcome` in {`success`, `error`} only;
+  failure-code categories are low cardinality and bounded.
+
+Prohibited attributes everywhere (mirroring PR 8): run/source/policy IDs,
+endpoint URIs, source names, content hashes, object keys, titles, and
+credentials. Persisted failure summaries are additionally validated
+secret-free by the domain model before finalization.

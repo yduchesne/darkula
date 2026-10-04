@@ -311,3 +311,85 @@ Crawler (bounded observations)
 PR 8 adds **no** collection orchestration (PR 9), no extraction/analysis
 (PR 11-14), no multi-tenancy, no live provider crawling, and no schema
 registry. It performs no rearchitecting of the PR 7 crawler.
+
+# PR 9 update — managed-source collection lifecycle
+
+PR 9 connects the PR 7 crawler and the PR 8 content-ingestion boundary into
+the deterministic, policy-authorized collection lifecycle:
+
+```text
+CollectionPolicy -> CollectionScheduler -> outbox -> DataStream
+    -> CollectionWorker -> SourceCollectionService -> Crawler (PR 7)
+        -> ContentIngestService (PR 8) -> ObjectStore + PostgreSQL
+```
+
+## Dominant invariant — transaction boundaries (PR 9 1.6)
+
+PostgreSQL owns policy/run state, DataStream carries small references only,
+and **no PostgreSQL transaction spans broker, crawler, sandbox, HTTP, or
+ObjectStore I/O**:
+
+```text
+short UoW:  authorize/create/claim -> commit
+Crawler.crawl() outside any UoW
+ContentIngestService.ingest() outside the caller UoW
+short UoW:  finalize (terminal state, counters) -> commit
+```
+
+The transactional outbox makes run admission atomic: the scheduler creates
+the QUEUED run **and** appends the `collection.execute` outbox row in one
+transaction (PR 9 1.8); `OutboxPublisher` publishes later, outside any
+transaction.
+
+## Why not the ReliableConsumer handler? (PR 9 1.7)
+
+The PR 5 `ReliableConsumer` invokes its handler inside one open unit of
+work (processed marker + effect + outgoing outbox commit atomically). Long
+collection work (crawler, HTTP, ObjectStore) must never run inside an open
+transaction, so PR 9 deliberately adds a collection-specific worker that
+mirrors the same ordering at a different granularity:
+
+```text
+DataStream.poll
+  -> short durable admission/dedup (processed marker + run read) -> commit
+  -> SourceCollectionService.execute (claim -> crawl/ingest -> finalize)
+  -> durable terminal state committed by the service
+  -> DataStream.acknowledge
+```
+
+ReliableConsumer itself is unchanged: it remains the generic primitive for
+short handlers; `SourceCollectionService.execute` is the collection runner.
+
+## Identity and authorization (PR 9 1.1-1.4)
+
+`Source` is logical identity, `SourceEndpoint` is a locator; `CollectionPolicy`
+is reusable authorization/configuration belonging to the Source; `CollectionRun`
+is one historical execution of the occurrence `(policy_id, scheduled_for)`.
+`CollectionRunId` is the authoritative work identity — never a URI and never a
+broker position. The run permanently stores `policy_revision` + the exact
+frozen execution snapshot that explains its authorization, so policy edits
+never rewrite run history (1.10, 1.11): new execution requires an ACTIVE
+Source, ACTIVE policy, and ACTIVE owned endpoints at admission; once RUNNING
+the frozen snapshot governs.
+
+## Scheduler and worker (PR 9 1.5, 1.9, 1.18)
+
+- `CollectionScheduler.schedule_due(now, limit)` admits the earliest due
+  active policy occurrence atomically (row lock `FOR UPDATE SKIP LOCKED` +
+  `UNIQUE (policy_id, scheduled_for)`), advances the policy clock past
+  `now`, and appends the IDs-only `collection.execute` v1 command
+  (`collection_run_id`, `source_id`, `policy_id` — never URIs/content/
+  credentials) to the outbox in the same transaction. Concurrent schedulers
+  produce exactly one run and one command per occurrence.
+- `SourceCollectionService.execute(run_id)` claims a QUEUED run into RUNNING
+  with an execution lease, closes the transaction, crawls each frozen
+  endpoint (deterministic `CrawlRequest` identity via run/endpoint/attempt
+  namespace UUID), ingests through PR 8, and finalizes a terminal state in
+  a new short transaction. Failure summaries are the bounded sanitized
+  vocabulary; raw exception text is never persisted.
+- `CollectionWorker.process_once` polls, performs the short durable
+  admission, executes, and acknowledges only after durable terminal state.
+  At-least-once semantics are preserved: terminal runs never recrawl;
+  RUNNING runs with unexpired leases are never crawled concurrently; expired
+  leases are reclaimed as the same run within `max_run_attempts`; crashed
+  pre-terminal runs are never acknowledged.
