@@ -37,3 +37,8 @@ driver = "local"
 
 [llm]
 driver = "fake"
+
+[crawler]
+driver = "podman"
+runtime_image = "localhost/darkula-crawler-runtime:1.63.0"
+sandbox_network = "darkula-intg"

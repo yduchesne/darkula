@@ -38,6 +38,9 @@ dev = [
   "pre-commit>=4,<5",
   "bandit>=1.8,<2",
   "pip-audit>=2.9,<3",
+  # CrawlerRuntime type safety/unit coverage (PR 7): the runtime image
+  # installs this exact pinned Playwright; the app itself never imports it.
+  "playwright==1.63.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -46,7 +49,7 @@ packages = ["src/darkula"]
 [tool.ruff]
 target-version = "py314"
 line-length = 88
-src = ["src", "tests", "build.sh"]
+src = ["src", "tests", "crawler-runtime", "build.sh"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "SIM", "UP", "C4", "ASYNC", "RUF"]
@@ -59,12 +62,18 @@ known-first-party = ["darkula"]
 python_version = "3.14"
 strict = true
 mypy_path = "src"
-files = ["src", "tests"]
+files = ["src", "tests", "crawler-runtime"]
+
+[[tool.mypy.overrides]]
+module = ["runtime_protocol"]
+# The module is copied into the runtime image at build time; type safety is
+# enforced against the canonical src copy (darkula.crawler.runtime_protocol).
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
 testpaths = ["tests"]
-pythonpath = ["src", ".", "scripts"]
+pythonpath = ["src", ".", "scripts", "crawler-runtime"]
 addopts = [
   "--strict-markers",
   "-m", "not integration",

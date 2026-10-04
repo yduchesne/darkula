@@ -40,6 +40,17 @@ fully offline and deterministically (integration tests carry the
 5. cleans up exactly the Darkula-owned resources while preserving the
    original exit status (Redpanda first, then PostgreSQL).
 
+PR 7 extends the same `--intg` flow with crawler infrastructure:
+`scripts/darkula_crawler.sh start` builds the pinned crawler runtime image
+(`localhost/darkula-crawler-runtime:1.63.0`, cached when the tag is
+unchanged) and the stdlib-only Fake World image
+(`localhost/darkula-fakeworld-intg:1`), creates the Darkula-owned internal
+network `darkula-intg` (internal subnet, `darkula.owned=true` label, no
+host port), and runs the Fake World HTTP service container
+(`darkula-fake-world-intg`, port 8080 inside the network, **no** host
+port). `darkula_crawler.sh clean` removes exactly the Darkula-owned crawler
+resources; it never touches other applications' resources.
+
 Both lifecycle tools fail fast if their host port (`35432` or `39092`) is
 occupied by a non-Darkula listener, if a resource bears a Darkula name
 without Darkula labels, or if Podman cannot run; they never prune, never
@@ -303,3 +314,70 @@ R1–R24 (rendering), G1–G5 (geography/truth), T1–T6 (traceability), the
 all-rendered-navigation vertical slice (`VSLICE`), and architecture/import
 guards (FW9). All run inside the normal `--qa` gate; no Podman, PostgreSQL,
 Redpanda, browser, or network is required.
+
+## Crawler and sandbox (PR 7)
+
+**FakeSandbox boundary.** `darkula/testing/fake_sandbox.py` implements the
+`Sandbox` SPI for unit tests above the boundary: it records every request,
+returns scripted results (FIFO), and can await forever so controller
+cancellation paths are testable without Podman. `FakeLlmClient`-style
+faking of the *infrastructure* is expected; the CrawlerController behavior
+under test is never replaced.
+
+Unit coverage (runs in `--qa`, no Podman/browser/network):
+
+- `tests/unit/crawler/test_contracts.py` — origin parsing, request
+  validation/budget bounds, result bounds (C-series);
+- `tests/unit/crawler/test_runtime_protocol.py` — versioned v1 JSON codec:
+  encode/decode round trips, control-character rejection, size/length
+  bounds, malformed input failures (RP-series);
+- `tests/unit/crawler/test_controller.py` — policy derivation
+  (exact one-destination allowlist, least capability), budget clamping vs
+  settings maxima, loopback/metadata origin rejection, exit-reason
+  mapping, invalid-output handling, cancellation propagation, OTEL
+  emission (J-series);
+- `tests/unit/crawler/test_runtime_engine.py` — deterministic bounded BFS:
+  sorted discovery, budgets, 503-retry-once, 429-as-data, logout skip,
+  fragment/out-of-origin/non-HTTP link drop, login-once + post-login
+  re-observation of a bounced target;
+- `tests/unit/sandbox/` — Sandbox SPI contracts and validation;
+- `tests/unit/infrastructure/sandbox/test_podman_sandbox.py` — argv
+  building (no shell), output collection bounds, exit-code mapping,
+  timeout/cancellation cleanup, ownership-preflight fail-closed;
+- `tests/unit/testing/fake_world/test_http_adapter.py` — Fake World HTTP
+  semantics H1–H12 (redirects, sessions, expiration, 429/503, malformed
+  page, attachments, `&amp;` handling, cookie case-insensitivity, no truth
+  on the wire).
+
+**Real Podman/browser integration** (`tests/integration/crawler/`, marked
+`integration`, run by `./build.sh --intg` after provisioning):
+
+- `test_vertical_slice.py` — the canonical slice: real `CrawlerController`
+  → real `PodmanSandbox` → fresh disposable container → real
+  `CrawlerRuntime` → real Playwright/Chromium → real HTTP → BlackGate Fake
+  World. Execution A (cold start at `/`) asserts the protected→login
+  bounce, login POST→index with session retention, boards, threads and
+  graceful session expiry; Execution B (start at the hospital thread
+  `?page=1`) asserts
+  post-login re-observation and pagination (`Page 2 of 2`) with the same
+  session; both assert bounded attachment samples, 503-retry success, and
+  that the truth-only tokens and auth password never appear in any
+  observation. Also: one fresh disposable container per execution with
+  zero containers left behind;
+- `test_lifecycle.py` — sandbox timeout → `timed_out` + cleanup,
+  cancellation → `CancelledError` + cleanup, unowned-same-name
+  fail-closed (never adopted/removed), labeled-removal only, hardened
+  host config (privileged=false, cap-drop, no-new-privileges, pids,
+  memory, CPU, internal network, non-root user, no binds) plus a runtime
+  probe for read-only rootfs/tmpfs, and enforced PID/memory ceilings;
+- `test_network_isolation.py` — positive control (Fake World HTTP
+  reachable through the exact crawler flags) and negatives: PostgreSQL,
+  Redpanda, an unauthorized sibling on another Podman network, the
+  internal network gateway/host listener (39080), loopback, and
+  link-local cloud metadata are all unreachable; no host ports are
+  published on the isolation network.
+
+The integration fixtures fail closed when the runtime image, network, or
+Fake World container is missing or mislabeled, and the suite creates/removes
+only Darkula-owned resources (label verified before removal). No test ever
+needs live Tor, malicious sites, or a second transport architecture.

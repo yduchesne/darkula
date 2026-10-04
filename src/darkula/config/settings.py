@@ -210,12 +210,139 @@ class ObjectStoreSettings(BaseModel):
     local_root: pathlib.Path | None = None
 
 
+class SandboxDriver(StrEnum):
+    """Selected Sandbox implementation driver.
+
+    ``PODMAN`` is the only PR 7 implementation: one disposable Darkula-owned
+    Podman container per execution. There is deliberately no fake/in-memory
+    production fallback; composition fails closed when the driver is
+    unavailable and never silently substitutes :class:`FakeSandbox`.
+    """
+
+    PODMAN = "podman"
+
+
 class CrawlerSettings(BaseModel):
-    """Crawler/sandbox group; behavior fields are owned by PR 7."""
+    """Crawler/sandbox settings group (behavior fields owned by PR 7).
+
+    Values here are **maxima and defaults** for the trusted controller; the
+    sandbox itself enforces hard limits derived from each execution's
+    policy. Security defaults are restrictive. No raw Podman CLI argument
+    strings are ever accepted from configuration.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    sandbox_enabled: bool = False
+    #: Selected sandbox implementation driver (explicit; fail closed).
+    driver: SandboxDriver = SandboxDriver.PODMAN
+    #: Deterministic crawler runtime image tag (never ``latest``).
+    runtime_image: str = "localhost/darkula-crawler-runtime:1.63.0"
+    #: Darkula-owned internal Podman network used by the podman sandbox to
+    #: enforce authorized-only connectivity. Must carry ``darkula.owned=true``;
+    #: the tooling provisions it and never touches foreign networks.
+    sandbox_network: str = "darkula-intg"
+    #: Default execution timeout (seconds) when a request does not set one.
+    default_timeout_seconds: float = 60.0
+    #: Trusted-side ceiling applied to any requested timeout.
+    max_timeout_seconds: float = 600.0
+    #: Default maximum pages a crawl may render.
+    default_max_pages: int = 20
+    #: Trusted-side ceiling applied to any requested page budget.
+    max_max_pages: int = 200
+    #: Default maximum HTTP requests a crawl may issue.
+    default_max_requests: int = 60
+    #: Trusted-side ceiling applied to any requested request budget.
+    max_max_requests: int = 500
+    #: Default maximum navigation depth from the start page.
+    default_max_depth: int = 4
+    #: Trusted-side ceiling applied to any requested depth budget.
+    max_max_depth: int = 10
+    #: Default sandbox memory ceiling (bytes) for crawler executions.
+    sandbox_memory_bytes: int = 1024 * 1024 * 1024
+    #: Default sandbox CPU ceiling for crawler executions.
+    sandbox_cpus: float = 2.0
+    #: Default sandbox PID ceiling for crawler executions.
+    sandbox_pids: int = 512
+    #: Hard bound on the workload input payload crossing into the sandbox.
+    max_input_bytes: int = 65536
+    #: Hard bound on the runtime output payload crossing back.
+    max_output_bytes: int = 1024 * 1024
+    #: Hard bound on a single observed page's rendered text excerpt.
+    max_page_text_bytes: int = 4096
+    #: Hard bound on the number of discovered links returned per execution.
+    max_discovered_links: int = 500
+
+    @field_validator("runtime_image")
+    @classmethod
+    def _validate_runtime_image(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("crawler.runtime_image must not be blank")
+        if value.strip().endswith(":latest"):
+            raise ValueError("crawler.runtime_image must not use the 'latest' tag")
+        return value.strip()
+
+    @field_validator("default_timeout_seconds")
+    @classmethod
+    def _validate_default_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("crawler.default_timeout_seconds must be positive")
+        return value
+
+    @field_validator("max_timeout_seconds")
+    @classmethod
+    def _validate_max_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("crawler.max_timeout_seconds must be positive")
+        return value
+
+    @field_validator(
+        "default_max_pages",
+        "max_max_pages",
+        "default_max_requests",
+        "max_max_requests",
+        "default_max_depth",
+        "max_max_depth",
+        "sandbox_memory_bytes",
+        "sandbox_pids",
+    )
+    @classmethod
+    def _validate_positive_int(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("crawler budgets must be positive integers")
+        return value
+
+    @field_validator("sandbox_cpus")
+    @classmethod
+    def _validate_cpus(cls, value: float) -> float:
+        if value < 0.25 or value > 32.0:
+            raise ValueError("crawler.sandbox_cpus must be within [0.25, 32.0]")
+        return value
+
+    @field_validator(
+        "max_input_bytes",
+        "max_output_bytes",
+        "max_page_text_bytes",
+        "max_discovered_links",
+    )
+    @classmethod
+    def _validate_positive_bound(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("crawler byte/collection bounds must be positive")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_budget_order(self) -> Self:
+        if self.max_timeout_seconds < self.default_timeout_seconds:
+            raise ValueError(
+                "crawler.max_timeout_seconds must be >= default_timeout_seconds"
+            )
+        if self.max_max_pages < self.default_max_pages:
+            raise ValueError("crawler.max_max_pages must be >= default_max_pages")
+        if self.max_max_requests < self.default_max_requests:
+            raise ValueError("crawler.max_max_requests must be >= default_max_requests")
+        if self.max_max_depth < self.default_max_depth:
+            raise ValueError("crawler.max_max_depth must be >= default_max_depth")
+        return self
 
 
 class LlmSettings(BaseModel):
@@ -312,6 +439,7 @@ __all__ = [
     "LlmSettings",
     "ObjectStoreDriver",
     "ObjectStoreSettings",
+    "SandboxDriver",
     "Settings",
     "TelemetrySettings",
 ]

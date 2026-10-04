@@ -43,7 +43,34 @@ Implement scenario/truth model and first realistic forum source with determinist
 PR 6 was implemented from `~/Downloads/DARKULA_PR_6_DETAILED_PLAN.md` (commit baseline: fresh main including GitHub PR #12). Delivered: `darkula/testing/fake_world/` (identifiers, model, truth, rendering, traceability, registry, scenarios/blackgate_v1) with canonical `blackgate-core` v1; immutable scenario/identity/version models with cross-reference validation at construction (FW1–FW10); independent `FakeWorldTruth` (actors/aliases/organizations/locations/relationships/events, hidden-alias and private-sale truth-only facts) (G1–G5); realistic BlackGate forum archetype (4 boards, aliases/reputation, paginated thread, registration/login gating with deterministic request-count session expiry, quotes/edits/deletions/reposts, multilingual content, one malformed legacy page, hostile prompt-injection-like text as plain content, safe synthetic attachments plus an inert unsafe-looking filename, redirects, 429 rate limiting, intermittent 503-then-200); deterministic transport-light `FakeWorldRenderer` (no network/filesystem/wall clock, fresh runtime state per test, source-level failures as responses) (R1–R24); Washington State hospital seed + separate Washington, D.C. reference for later geographic ambiguity; `FW-BG-*` behavior traceability manifest validated at construction (T1–T6); all-navigation-vertical-slice (`VSLICE`); AST/fresh-interpreter guards enforcing that production packages never import Fake World truth; docs updated (FAKE_WORLD/TESTING/EVALUATIONS/AGENTS). No crawler/sandbox, collection, recon agent, extraction/geocoding, LLM, evaluation framework, PostgreSQL/Redpanda dependency, or live criminal-resource access was introduced.
 
 ## PR 7 — Crawler contract and sandbox foundation
-Implement the application-facing Crawler contract (`CrawlRequest -> CrawlResult`), trusted `CrawlerController`, first-class Sandbox SPI with `PodmanSandbox`, minimal sandboxed `CrawlerRuntime`, resource/filesystem/egress/output constraints, cancellation/cleanup semantics, and Fake World HTTP/browser integration. Unit tests may use `FakeSandbox`; the canonical integration slice uses the real controller, real Podman sandbox, real crawler runtime, real Playwright/Chromium, and BlackGate over HTTP. ReconAgent/DeepAgent remains outside the sandbox and is PR 10 scope. No unrestricted production dark-web crawling before security acceptance criteria are met.
+
+Delivered (PR 7, branch `dev/secure-crawler`): the application-facing
+Crawler contract (`CrawlRequest -> CrawlResult`, origin-based authorization,
+budgeted traversal, bounded observations), trusted `CrawlerController`
+(least-capability policy derivation with an exact one-destination network
+allowlist, budget clamping against settings maxima, exit-reason mapping,
+invalid-output rejection, cancellation propagation, OTEL counters/timers),
+a versioned bounded controller-runtime JSON protocol (v1), a first-class
+`Sandbox` SPI with `PodmanSandbox` (fresh disposable one-container-per-
+execution, ownership-label fail-closed lifecycle, no shell, bounded stdin/
+stdout, timeout/cancellation cleanup, hardened rootless flags, pids/memory/
+CPU ceilings, read-only rootfs + bounded tmpfs), a minimal sandboxed
+`CrawlerRuntime` (deterministic BFS over sorted same-origin links, budgets,
+one bounded 503-retry, 429/logout/fragment handling, single login with
+post-login re-observation of bounced targets, bounded download samples for
+attachments), and real-browser Fake World integration (internal network
+`darkula-intg` with no egress and a single authorized destination
+enforced below workload logic; Fake World HTTP service with session/rate/
+failure semantics matching the PR 6 scenario renderer). Delivered tests:
+unit contract/protocol/controller/engine/sandbox/podman/http-adapter
+matrices plus the canonical real-Podman integration slice (real
+controller → real sandbox → real container → real runtime → real
+Playwright/Chromium → real HTTP → BlackGate), lifecycle/ownership/
+resource-bound negatives, and network-isolation negatives (PostgreSQL,
+Redpanda, unauthorized sibling, gateway/host, loopback, cloud metadata all
+unreachable; positive control included). No unrestricted production
+illicit-source crawling is enabled; ReconAgent/DeepAgent remains outside the
+sandbox and is PR 10 scope.
 
 ## PR 8 — Normalization and artifact storage
 Implement ContentArtifact/NormalizedContent, safe normalization boundary, ObjectStore artifact flow, hashes/deduplication with independent provenance, and S3-compatible adapter work as appropriate.

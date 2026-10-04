@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Darkula contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# Darkula CrawlerRuntime image (PR 7).
+#
+# Minimal reproducible runtime for hostile browsing: pinned Python 3.14 slim
+# base, pinned Playwright, deterministic Chromium install, only the
+# crawler-runtime package plus the shared protocol module. There is no
+# Darkula application code, no credentials, no LLM/DB/DataStream/ObjectStore
+# clients, no writable repository mount, no `latest` tag.
+#
+# The browser is installed to the shared /ms-playwright path (not the
+# root user's cache) so the non-root `crawler` user can run it; the sandbox
+# runs the image with a read-only rootfs, tmpfs /tmp and /dev/shm, dropped
+# capabilities, no-new-privileges, and resource ceilings.
+FROM docker.io/library/python:3.14-slim
+
+ARG PLAYWRIGHT_VERSION=1.63.0
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# Deterministic browser install (pinned version; Chromium + apt deps).
+RUN pip install --no-cache-dir "playwright==${PLAYWRIGHT_VERSION}" \
+    && python3 -m playwright install --with-deps chromium
+
+# Only the minimal runtime payload crosses into the image.
+COPY crawler-runtime/crawler_runtime/ /app/crawler_runtime/
+COPY src/darkula/crawler/runtime_protocol.py /app/runtime_protocol.py
+
+# Bounded runtime user (non-root; podman maps it inside a user namespace).
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin crawler \
+    && chmod -R a+rX /app \
+    && python3 -m compileall -q /app/crawler_runtime /app/runtime_protocol.py
+
+ENV HOME=/tmp \
+    XDG_RUNTIME_DIR=/tmp \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+USER 10001
+
+# The sandbox adapter always passes `python3 -m crawler_runtime` explicitly;
+# this default keeps manual runs deterministic.
+CMD ["python3", "-m", "crawler_runtime"]

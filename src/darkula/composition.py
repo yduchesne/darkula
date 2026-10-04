@@ -43,8 +43,10 @@ from darkula.config.settings import (
     DataStreamDriver,
     LlmDriver,
     ObjectStoreDriver,
+    SandboxDriver,
     Settings,
 )
+from darkula.crawler import Crawler, CrawlerController
 from darkula.infrastructure.data_stream import RedpandaDataStream
 from darkula.infrastructure.object_store import (
     InMemoryObjectStore,
@@ -52,6 +54,7 @@ from darkula.infrastructure.object_store import (
 )
 from darkula.infrastructure.observability import NoOpAgentObservability
 from darkula.infrastructure.persistence.postgresql.spi import PostgresDarkulaSpi
+from darkula.infrastructure.sandbox import PodmanSandbox
 from darkula.telemetry.setup import TelemetryRuntime, configure_telemetry
 from darkula.testing.fake_data_stream import FakeDataStream
 from darkula.testing.fake_llm import FakeLlmClient
@@ -70,7 +73,8 @@ class Runtime:
     """The composed runtime: every delivery-bound implementation.
 
     ``persistence`` is lazy: opening it requires an explicit
-    ``await runtime.persistence.start()`` before first use.
+    ``await runtime.persistence.start()`` before first use. ``crawler`` is
+    lazy with respect to Podman: constructing it never touches podman.
     """
 
     data_stream: DataStream
@@ -78,6 +82,7 @@ class Runtime:
     llm: LlmClient
     agent_observability: AgentObservability
     persistence: DarkulaSpi
+    crawler: Crawler
     telemetry: TelemetryRuntime
 
 
@@ -154,6 +159,22 @@ def _compose_persistence(settings: Settings) -> DarkulaSpi:
     )
 
 
+def _compose_crawler(settings: Settings) -> Crawler:
+    """Compose the single Crawler capability (PR 7).
+
+    Only the real Podman sandbox driver exists; the fake is never silently
+    substituted for an explicitly selected production driver.
+    """
+    if settings.crawler.driver is SandboxDriver.PODMAN:
+        return CrawlerController(
+            settings=settings.crawler,
+            sandbox=PodmanSandbox.from_settings(settings.crawler),
+        )
+    raise UnavailableDriverError(
+        f"unsupported sandbox driver: {settings.crawler.driver}"
+    )
+
+
 def compose(*, settings: Settings) -> Runtime:
     """Compose every runtime implementation from resolved settings."""
     return Runtime(
@@ -162,6 +183,7 @@ def compose(*, settings: Settings) -> Runtime:
         llm=_compose_llm(settings),
         agent_observability=_compose_observability(settings),
         persistence=_compose_persistence(settings),
+        crawler=_compose_crawler(settings),
         telemetry=configure_telemetry(
             enabled=settings.telemetry.enabled,
             service_name=settings.telemetry.service_name,
