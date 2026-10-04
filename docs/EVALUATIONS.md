@@ -13,7 +13,31 @@ Evaluations measure intelligent behavior against realistic, known Fake World tru
 **End-to-end evals** assess combined behavior while retaining stage-level results so upstream extraction failures are not misdiagnosed as SourceAnalyst failures.
 
 ## Ground truth
-Fake World truth exists independently of rendered source pages and expected model answers. A scenario may know that two aliases represent one fictional actor while Darkula sees only evidence exposed by sources. Evals compare system outputs with truth and required evidence constraints without handing hidden truth to the model.
+Fake World truth exists independently of rendered source pages and expected
+model answers. A scenario may know that two aliases represent one fictional
+actor while Darkula sees only evidence exposed by sources. Evals compare
+system outputs with truth and required evidence constraints without handing
+hidden truth to the model.
+
+## Reusable Fake World contracts (PR 6)
+PR 6 delivered the reusable scenario/truth inputs that future evals will
+share with deterministic tests (no evaluation framework was added):
+
+- `darkula.testing.fake_world.get_scenario("blackgate-core", version=1)`
+  returns the canonical immutable scenario;
+- `FakeWorldTruth` is independent from every rendered page and supports
+  truth-only facts (for example a hidden alias or a private sale that no
+  rendered observation states);
+- renderers expose only partial/noisy observations, preserving the
+  truth-vs-evidence gap evals must measure;
+- the Washington State hospital seed plus a separate Washington, D.C.
+  reference is available as a future geographic-disambiguation eval input;
+- behavior IDs (`FW-BG-*`) link scenario/version, requirements, and
+  deterministic tests for future eval correlation.
+
+Exact metrics, thresholds, datasets, and CI gating for live-model evals
+remain intentionally TBD (representative scenarios now exist; thresholds
+are deliberately not invented in PR 6).
 
 ## Execution
 Deterministic CI uses FakeLlmClient. Live-model eval runs use production-style LlmClient adapters and record model/provider/version, scenario/version, prompts according to telemetry policy, structured outputs, latency/token metadata, and evaluation results.

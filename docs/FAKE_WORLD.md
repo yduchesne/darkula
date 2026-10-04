@@ -1,37 +1,101 @@
 # Darkula Fake World
 
 ## Purpose
-The Fake World is an executable synthetic underground ecosystem used for deterministic tests and live-model evaluations. It should reproduce documented behavioral archetypes without cloning live criminal services or depending on them.
+The Fake World is an executable synthetic underground ecosystem used as the
+deterministic external-world test boundary. PR 6 delivered the subsystem
+foundation: a versioned scenario/truth model, the realistic **BlackGate**
+forum archetype, a deterministic source renderer, and behavior traceability.
+Later PRs (7 crawler, 10 recon, 12 geography, 15 expansion/evals) consume
+these deliverables without contacting live criminal services.
 
-## Initial archetypes
-- cybercrime forum: boards, threads/posts, aliases, reputation, registration/gating, pagination, edits, quotes, attachments;
-- access/credential marketplace: searchable listings, geography, organization/account/access types, changing inventory;
-- ransomware/data-leak site: victim cards, organizations, geography/industry, publication/status changes, downloadable artifacts;
-- additional forum/mirror: reposting, cross-source identity/evidence, migration and availability behavior.
+## Package and ownership boundary
+```text
+src/darkula/testing/fake_world/
+    identifiers.py     bounded semantic identity value types + validation
+    model.py           immutable scenario + source-observable forum model
+    truth.py           independent world truth (tests/evals only)
+    rendering.py       transport-light request/response + FakeWorldRenderer
+    traceability.py    stable behavior IDs + manifest validation
+    registry.py        canonical scenario lookup
+    scenarios/blackgate_v1.py   canonical "blackgate-core" v1
+```
+
+Allowed dependencies: tests/evals and future crawler integration tests may
+import `darkula.testing.fake_world`. **Forbidden:** production
+domain/application/infrastructure packages (and the composition root) must
+never import it — enforced by a static AST guard and a fresh-interpreter
+`sys.modules` check in `tests/unit/testing/fake_world/test_architecture.py`.
+
+## Scenario identity and versioning
+Logical scenarios have an explicit identity and integer version:
 
 `BlackGate`, `AccessBay`, `NightLeak`, and `ShadowTalk` are the canonical fictional source names: BlackGate is a cybercrime forum, AccessBay an access/credential marketplace, NightLeak a ransomware/data-leak site, and ShadowTalk a secondary forum/cross-source discussion source. They are composites, not replicas.
 
 ## World truth vs observations
-Scenario truth is independent of what Darkula sees. Truth may define fictional actors, aliases, organizations, locations, relationships, source ownership, events, and timestamps. Source renderers expose only partial/noisy manifestations. Expected model outputs must not simply be embedded as hidden prompts.
+> Fake World truth describes the complete fictional world, while source
+> renderers expose only the observations a real collector could see;
+> production Darkula code never receives hidden truth or expected answers.
 
-## Realism
-Scenarios should cover authentication/session expiry, nested pagination, redirects/mirrors, endpoint rotation, intermittent failures, rate limiting, malformed/dynamic content, edits/deletions, duplicates/reposts/quotes, multilingual material, images/attachments, ambiguous geography, inconsistent dates, misspellings, and unsupported claims.
+`FakeWorldTruth` stores actors, aliases, organizations, locations,
+relationships, and fixed-UTC events. Rendered pages expose only a partial,
+noisy manifestation. Example built into BlackGate v1: the truth model knows
+actor-001 also owns the hidden alias `zfox`, which no rendered page states;
+and event-002 records a private second sale that never appears on the forum.
+Tests/evals may compare outputs with truth; application code must not consume
+truth.
 
-Geographic scenarios must include explicit and implicit geography, e.g. "credentials of a hospital in Washington state", plus ambiguity such as Washington State vs Washington, D.C.
+Truth holds objective fictional-world facts, not expected Darkula answers.
+Forum posts can be true, false, stale, or conflicting — they are observations,
+not assertions of ground truth.
 
-## Cross-source scenarios
-Prefer interconnected stories: one alias advertises access on a forum; a related listing appears on a market; a fictional organization later appears on a leak site; another forum quotes/reposts the material. Preserve uncertainty and conflicting evidence.
+## BlackGate core v1
+A fully synthetic cybercrime-forum archetype:
 
-## Traceability
-For significant behavior maintain:
-```text
-documented real-world behavior
- -> FakeWorldScenario
- -> Darkula requirement
- -> integration test
- -> model/agent eval where applicable
+- 4 boards (announcements public; access, chatter, archives gated);
+- aliases with reputation; welcome thread public, everything else
+  registered-gated;
+- a 12-post thread spanning 2 pages (stable pagination, prev/next);
+- registration/login gating with synthetic test-only credentials
+  (`zerofox77` / `blackgate-test-password`);
+- deterministic request-count session expiry (12 protected requests, then
+  re-authentication);
+- quotes, edits with markers, moderator-removed placeholders, reposted/
+  duplicate content, multilingual (Cyrillic) content;
+- one controlled malformed legacy page;
+- hostile prompt-injection-like prose rendered strictly as untrusted content;
+- safe synthetic attachments (text, 1x1 GIF binary, metadata-only) plus one
+  unsafe-looking-but-inert filename;
+- deterministic redirect (`/old-thread/...`), rate limiting (429 with fixed
+  Retry-After on the archives board), and an intermittent 503-then-200
+  thread sequence;
+- the geographic seed: a fictional Washington State hospital listing and a
+  separate Washington, D.C. reference (ambiguity seed for PR 12).
+
+## Renderer boundary
+The renderer is transport-light and fully deterministic:
+
+```python
+FakeWorldRenderer().render(scenario, request, session=None) -> RenderResult
 ```
-Public authoritative reporting can justify archetypes. Do not require live illicit content for routine development.
+
+- identical `(scenario, request, session)` produce identical responses;
+- no network, no filesystem mutation, no wall clock, no hidden global state;
+- source-level failures (401/403/404/405/429/503/redirect) are returned as
+  `RenderedSourceResponse` objects, never raised;
+- scenario/programming errors raise a typed `FakeWorldValidationError`;
+- sessions are returned explicitly via `RenderResult.session_update`; runtime
+  counters (login serial, expiry, rate limit, scripted failures) restart with
+  `renderer.reset()` and are never shared between tests.
+
+## Behavior traceability
+Every significant canonical behavior carries a stable behavior ID following
+`FW-<SOURCE>-<AREA>-NNN`, for example `FW-BG-AUTH-001`. Each manifest entry
+links:
+
+```text
+behavior ID -> scenario/version -> archetype/rationale ->
+requirement/future capability -> deterministic test IDs -> future eval note
+```
 
 ## HTTP and browser boundary
 Fake World models source behavior independently from its transport. Source renderers may be invoked directly by deterministic tests, but crawler integration must expose Fake World sources through ordinary HTTP servers. From `CrawlerRuntime`'s perspective, BlackGate and later sources are external websites; production crawler code must not know that the source is synthetic.

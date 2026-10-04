@@ -268,3 +268,38 @@ Integration tests answer whether engineering contracts execute correctly.
 Evals answer whether model-backed reasoning/extraction is good enough. Both
 should reuse the same scenario definitions and Fake World truth where
 possible; do not maintain unrelated test and eval universes.
+
+## Fake World test infrastructure (PR 6)
+The Fake World is an executable testing subsystem, not a fixture directory:
+`src/darkula/testing/fake_world/` provides scenario/truth models, a
+deterministic renderer, a scenario registry, and behavior traceability (see
+`docs/FAKE_WORLD.md`).
+
+- Canonical scenario: `darkula.testing.fake_world.get_scenario("blackgate-core", version=1)`.
+  Definitions are immutable and shared; unknown IDs/versions fail
+  deterministically with `UnknownScenarioError`.
+- Fresh runtime state: create `FakeWorldRenderer()` per test (or reuse one
+  and call `renderer.reset()`). Sessions, expiry counters, rate-limit views,
+  and scripted failures never leak across renderers or tests.
+- Truth access rules: `FakeWorldTruth` is for tests/evals only. Production
+  packages must never import `darkula.testing.fake_world` (static guard in
+  `tests/unit/testing/fake_world/test_architecture.py`). Rendering never
+  exposes hidden truth; regression tests scan every rendered page/header for
+  hidden identifiers.
+- Golden-rendering policy: assert semantic fragments and stable link sets;
+  freeze SHA-256 hashes for only a handful of canonical pages
+  (`TestCanonicalGoldenPages`). Golden hashes are never regenerated
+  automatically — changing canonical observable content requires an
+  intentional version bump and deliberate golden update.
+- No network/browser requirement in PR 6: the renderer is transport-light
+  (request/response objects, not HTTP). PR 7 will add a tiny test-only HTTP
+  seam when the crawler requires real HTTP.
+- Deterministic failure behaviors are part of the world: 401/403/404/405/
+  429/503 and redirects are returned as responses; scenario/programming
+  errors raise typed validation errors and are tested separately (FW5–FW7).
+
+Unit matrices under `tests/unit/testing/fake_world/`: FW1–FW10 (core model),
+R1–R24 (rendering), G1–G5 (geography/truth), T1–T6 (traceability), the
+all-rendered-navigation vertical slice (`VSLICE`), and architecture/import
+guards (FW9). All run inside the normal `--qa` gate; no Podman, PostgreSQL,
+Redpanda, browser, or network is required.
