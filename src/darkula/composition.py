@@ -8,8 +8,11 @@ constructs only implementations that exist:
 - ``RedpandaDataStream`` when the Redpanda driver is selected (PR 5: the
   production DataStream adapter; the fake is never silently substituted
   for an explicitly selected production driver);
-- ``InMemoryObjectStore`` / ``LocalFileObjectStore`` for the delivered
-  object-store drivers;
+- ``InMemoryObjectStore`` / ``LocalFileObjectStore`` / ``S3CompatibleObjectStore``
+  for the delivered object-store drivers (PR 8: ``s3`` and ``r2`` both
+  compose the S3-compatible adapter);
+- ``DeterministicContentNormalizer`` + ``ContentIngestService`` for the PR 8
+  normalization/content boundary;
 - ``FakeLlmClient`` (the only LLM driver);
 - ``NoOpAgentObservability`` for the ``NONE`` backend;
 - ``PostgresDarkulaSpi`` when the PostgreSQL persistence driver is
@@ -18,9 +21,9 @@ constructs only implementations that exist:
   :func:`~darkula.telemetry.setup.configure_telemetry`.
 
 Selection is centralized here: application/domain code never branches on
-driver settings. Selecting an unavailable production driver (S3/R2,
-LangSmith/Langfuse, future providers) raises
-:class:`UnavailableDriverError` immediately; Darkula never silently
+driver settings. Selecting an unavailable production driver (LangSmith/
+Langfuse, provider LLM, a remote ObjectStore without a configured bucket)
+raises :class:`UnavailableDriverError` immediately; Darkula never silently
 substitutes a fake for an explicitly selected production driver.
 
 The composed :class:`PostgresDarkulaSpi` is lazy: constructing it opens no
@@ -33,8 +36,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from darkula.app.agent_observability import AgentObservability
+from darkula.app.artifacts import ArtifactStorageService
+from darkula.app.content import ContentIngestService
 from darkula.app.data_stream import DataStream
 from darkula.app.llm import LlmClient
+from darkula.app.normalization import ContentNormalizer, DeterministicContentNormalizer
 from darkula.app.object_store import ObjectStore
 from darkula.app.persistence import DarkulaSpi
 from darkula.config.settings import (
@@ -51,6 +57,7 @@ from darkula.infrastructure.data_stream import RedpandaDataStream
 from darkula.infrastructure.object_store import (
     InMemoryObjectStore,
     LocalFileObjectStore,
+    S3CompatibleObjectStore,
 )
 from darkula.infrastructure.observability import NoOpAgentObservability
 from darkula.infrastructure.persistence.postgresql.spi import PostgresDarkulaSpi
@@ -79,6 +86,8 @@ class Runtime:
 
     data_stream: DataStream
     object_store: ObjectStore
+    content_normalizer: ContentNormalizer
+    content_ingest: ContentIngestService
     llm: LlmClient
     agent_observability: AgentObservability
     persistence: DarkulaSpi
@@ -96,7 +105,7 @@ def _compose_data_stream(settings: Settings) -> DataStream:
             poll_timeout_ms=settings.datastream.poll_timeout_ms,
             max_poll_records=settings.datastream.max_poll_records,
         )
-    raise UnavailableDriverError(  # defensive; validation rejects unknowns
+    raise UnavailableDriverError(
         f"unsupported DataStream driver: {settings.datastream.driver}"
     )
 
@@ -112,17 +121,43 @@ def _compose_object_store(settings: Settings) -> ObjectStore:
                 "LocalFileObjectStore requires object_store.local_root"
             )
         return LocalFileObjectStore(root)
-    if driver is ObjectStoreDriver.S3:
-        raise UnavailableDriverError(
-            "S3 ObjectStore is not available in PR 3 (PR 8 owns the adapter)"
-        )
-    if driver is ObjectStoreDriver.R2:
-        raise UnavailableDriverError(
-            "R2 ObjectStore is not available in PR 3 (PR 8 owns the adapter)"
+    if driver is ObjectStoreDriver.S3 or driver is ObjectStoreDriver.R2:
+        if not settings.object_store.bucket:
+            raise UnavailableDriverError(
+                f"{driver.value} ObjectStore requires object_store.bucket"
+            )
+        return S3CompatibleObjectStore(
+            bucket=settings.object_store.bucket,
+            endpoint_url=settings.object_store.endpoint_url,
+            region=settings.object_store.region,
+            access_key_id=settings.object_store.access_key_id,
+            secret_access_key=settings.object_store.secret_access_key,
+            session_token=settings.object_store.session_token,
+            prefix=settings.object_store.prefix,
+            connect_timeout_seconds=settings.object_store.connect_timeout_seconds,
+            read_timeout_seconds=settings.object_store.read_timeout_seconds,
         )
     raise UnavailableDriverError(
         f"unsupported ObjectStore driver: {driver}"
     )  # defensive; validation rejects unknowns
+
+
+def _compose_content_normalizer(object_store: ObjectStore) -> ContentNormalizer:
+    """Compose the deterministic normalization capability (PR 8).
+
+    The normalizer stores artifact bytes through the composed ObjectStore;
+    it holds no database connection (persistence is the caller's short UoW).
+    """
+    return DeterministicContentNormalizer(
+        artifact_service=ArtifactStorageService(object_store=object_store)
+    )
+
+
+def _compose_content_ingest(
+    normalizer: ContentNormalizer, persistence: DarkulaSpi
+) -> ContentIngestService:
+    """Compose the content-ingestion orchestration (PR 8)."""
+    return ContentIngestService(normalizer=normalizer, spi=persistence)
 
 
 def _compose_llm(settings: Settings) -> LlmClient:
@@ -177,12 +212,17 @@ def _compose_crawler(settings: Settings) -> Crawler:
 
 def compose(*, settings: Settings) -> Runtime:
     """Compose every runtime implementation from resolved settings."""
+    object_store = _compose_object_store(settings)
+    persistence = _compose_persistence(settings)
+    content_normalizer = _compose_content_normalizer(object_store)
     return Runtime(
         data_stream=_compose_data_stream(settings),
-        object_store=_compose_object_store(settings),
+        object_store=object_store,
+        content_normalizer=content_normalizer,
+        content_ingest=_compose_content_ingest(content_normalizer, persistence),
         llm=_compose_llm(settings),
         agent_observability=_compose_observability(settings),
-        persistence=_compose_persistence(settings),
+        persistence=persistence,
         crawler=_compose_crawler(settings),
         telemetry=configure_telemetry(
             enabled=settings.telemetry.enabled,

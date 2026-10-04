@@ -381,3 +381,61 @@ The integration fixtures fail closed when the runtime image, network, or
 Fake World container is missing or mislabeled, and the suite creates/removes
 only Darkula-owned resources (label verified before removal). No test ever
 needs live Tor, malicious sites, or a second transport architecture.
+
+## PR 8 testing status — normalization and artifact storage
+
+PR 8 adds deterministic content-boundary coverage:
+
+- **Domain/normalization (N-series** in `tests/unit/app/test_normalization.py`
+  and `tests/unit/domain/test_content.py`**)** — multilingual text preserved;
+  CRLF/CR canonicalized to LF; disallowed C0/DEL controls stripped while
+  `\n`/`\t` survive; blank/invalid URI rejected; oversized title/text fail
+  typed (`ContentTooLargeError`); same input twice yields identical
+  bytes/hash; a changed byte changes the hash; prompt-injection text is
+  retained only as data (never interpreted, no geographic extraction);
+  page excerpts are marked `SAMPLE` and never complete-original; secret-like
+  metadata is rejected; cancellation propagates.
+- **Artifact storage/dedup (A-series** in
+  `tests/unit/app/test_artifacts.py`**)** — new hash = one put; existing
+  compatible hash = no duplicate upload; same hash + new provenance = same
+  physical key with distinct artifact records; same URI + changed bytes = new
+  key/hash; deterministic key layout (`sha256/<2>/<64>`); existing key with
+  wrong size/corrupt bytes = `ArtifactIntegrityError`; store unavailable and
+  cancellation = bounded failures, never false success; unsafe filename/URI
+  never influences the key.
+- **Content-ingestion orchestration** (`tests/unit/app/test_content_ingest.py`)
+  — dedup reuses the artifact record while preserving two provenance-bearing
+  observations, and a retried provenance identity creates no duplicate
+  observation.
+- **S3-compatible adapter (S-series** in
+  `tests/unit/infrastructure/object_store/test_s3.py`**)**: put/get/stat/
+  delete round-trips, frozen missing semantics, provider-unavailable and
+  5xx mapped to bounded `ObjectStoreUnavailableError`/`ObjectNotFoundError`
+  (no raw provider text), independent Darkula SHA-256 (never ETag), endpoint
+  override accepted, and lazy no-network construction. These are SDK-level
+  fakes; live S3/R2-compatible infrastructure is deferred to PR 16 (no CI
+  dependency on AWS/R2/cloud).
+- **Composition/config (C-series)** — `local`/`in_memory` unchanged; `s3`/
+  `r2` both compose `S3CompatibleObjectStore`; missing remote bucket fails
+  fast; env credentials override file; empty env is a no-op; diagnostics
+  redact credentials; no network call at composition; no silent fallback.
+- **Static architecture guards** (`tests/unit/crawler/test_runtime_storage_free.py`)
+  — the crawler-runtime image must never import the Darkula ObjectStore
+  boundary or any S3/R2 SDK, and the sandbox surface exposes no storage
+  credentials.
+- **Real-PostgreSQL content persistence (P-series** in
+  `tests/integration/persistence/test_content_repository.py`**)**: artifact
+  create/get/find round-trips, observation create/get round-trips, two
+  observations referencing one artifact, same-URI-at-two-times immutability,
+  invalid artifact FK rejection, duplicate-provenance idempotency, structural
+  metadata/sample/version round-trips, and the SQL-boundary guard covering the
+  new repository.
+- **Real-crawler normalization vertical slice** (`tests/integration/crawler/
+  test_normalization_vertical_slice.py`) — real `CrawlerController` →
+  Playwright/Chromium → Fake World → production mapper → production
+  normalizer → real `LocalFileObjectStore` → real PostgreSQL; asserts bounded
+  SAMPLE excerpts, stored SHA-256 matching exact bytes, artifact/
+  observation reload, and no truth-token/auth-password leakage. A dedup slice
+  proves one physical key with two provenance observations; a changed-content
+  slice proves same URI + changed bytes = distinct hash/key; a failure slice
+  proves ObjectStore failure records no structured success.

@@ -77,6 +77,7 @@ SECRET_MARKERS: tuple[str, ...] = (
     "credential",
     "auth",
     "cookie",
+    "access_key",
     "session",
 )
 

@@ -123,6 +123,10 @@ class _FakeUnitOfWork(UnitOfWork):
     def processed_messages(self) -> Any:
         raise AssertionError("outbox test exposes no processed-message repository")
 
+    @property
+    def content(self) -> Any:
+        raise AssertionError("outbox test exposes no content repository")
+
 
 class _RecordingSpi(DarkulaSpi):
     def __init__(self, shared: _Shared) -> None:

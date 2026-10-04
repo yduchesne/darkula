@@ -71,8 +71,9 @@ config/local.toml                   # optional operator override (git-ignored)
 - Parsing uses stdlib `tomllib` only; no YAML and no dotenv.
 - Shipped profiles: `development` (default; local object-store root under
   `var/darkula/objects`), `test` (in-memory object store), and
-  `production` (selects the PR 5 Redpanda driver and the S3 object store;
-  S3 still fails fast at composition until PR 8).
+  `production` (selects the PR 5 Redpanda driver and the PR 8 S3 object
+  store; the operator must provide `DARKULA_OBJECT_STORE__BUCKET` because
+  a remote bucket is never committed).
 
 ### Precedence (exact)
 
@@ -112,15 +113,37 @@ names, and the **redacted** effective configuration. Key/value markers
 Diagnostics never dump the environment wholesale. There is no secret
 resolver in PR 3.
 
+### ObjectStore group (PR 3/PR 8)
+
+`[object_store]` (Pydantic `ObjectStoreSettings`):
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `driver` | `local` (base) / `in_memory` (test) / `s3` (production) | `local`, `in_memory`, `s3`, `r2` |
+| `local_root` | `None` | Required (fail-fast) when driver is `local` |
+| `bucket` | `None` | Required (fail-fast) for `s3`/`r2`; never committed |
+| `endpoint_url` | `None` | Optional; overrides S3/R2-compatible endpoint |
+| `region` | `None` | Optional AWS region |
+| `access_key_id` / `secret_access_key` / `session_token` | `None` | Credentials; redacted from diagnostics |
+| `prefix` | `None` | Optional physical-key prefix |
+| `connect_timeout_seconds` / `read_timeout_seconds` | `10.0` / `60.0` | Must be positive |
+
+Composition maps `s3` and `r2` both to the single
+`S3CompatibleObjectStore` adapter (endpoint/credentials differ). Remote
+construction makes no network call at composition (lazy). Environment
+overrides follow the standard rules (`DARKULA_OBJECT_STORE__BUCKET`, ...),
+with unset/empty no-ops and credential redaction in `diagnostic_summary()`.
+
 ### Composition
 
 `load_settings()` returns validated `Settings`; `darkula/composition.py`
 selects concrete implementations centrally. Selecting an unavailable
-production driver (S3/R2, LangSmith/Langfuse, provider LLM) raises
+production driver (LangSmith/Langfuse, provider LLM) raises
 `UnavailableDriverError` (fail fast) — never a silent fake substitution.
 PR 5 ships the `redpanda` DataStream driver alongside the deterministic
-`fake` driver; PR 4/3 shipped `local`/`in_memory` ObjectStore drivers, the
-`fake` LlmClient driver, and the `none` agent-observability backend.
+`fake` driver; PR 8 delivers the `s3`/`r2` S3-compatible ObjectStore
+driver; PR 4/3 shipped `local`/`in_memory` ObjectStore drivers, the `fake`
+LlmClient driver, and the `none` agent-observability backend.
 
 ### Required environment-variable test hygiene
 

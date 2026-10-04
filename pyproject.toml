@@ -26,6 +26,10 @@ dependencies = [
   # adapter (PR 5). Pure-Python, event-loop-native, manual offset
   # commit, bounded poll; Python 3.14 compatible as of 0.14.
   "aiokafka>=0.14,<0.15",
+  # S3-compatible ObjectStore adapter (PR 8): AWS S3 + Cloudflare R2 through
+  # one adapter. Pure-Python over urllib3; confirmed on Python 3.14. Blocking
+  # SDK calls are isolated with asyncio.to_thread at the adapter boundary.
+  "boto3>=1.43,<1.44",
 ]
 
 [dependency-groups]
@@ -98,4 +102,8 @@ exclude_dirs = [".venv", "tests"]
 
 [[tool.mypy.overrides]]
 module = ["aiokafka", "aiokafka.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
