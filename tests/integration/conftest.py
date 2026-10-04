@@ -23,7 +23,11 @@ import pytest
 import pytest_asyncio
 
 from darkula.config.loader import load_settings
-from darkula.config.settings import DatabaseSettings
+from darkula.config.settings import (
+    DatabaseSettings,
+    DataStreamDriver,
+    DataStreamSettings,
+)
 from darkula.infrastructure.persistence.postgresql.spi import PostgresDarkulaSpi
 
 #: Integration-only credential shared with scripts/darkula_postgres.sh; the
@@ -46,7 +50,32 @@ TABLE_NAMES = (
     "source_assessment",
     "source_candidate",
     "source",
+    "message_outbox",
+    "processed_message",
 )
+
+#: Host-published Darkula Redpanda Kafka port (container port 9092).
+REDPANDA_BOOTSTRAP = "127.0.0.1:39092"
+
+
+@pytest.fixture(scope="session")
+def redpanda_bootstrap() -> str:
+    """Resolved Redpanda bootstrap address for host-side integration."""
+    return REDPANDA_BOOTSTRAP
+
+
+@pytest.fixture(scope="session")
+def redpanda_settings(
+    redpanda_bootstrap: str,
+) -> DataStreamSettings:
+    """DataStream settings pointing at the Darkula-owned Redpanda."""
+    return DataStreamSettings(
+        driver=DataStreamDriver.REDPANDA,
+        bootstrap_servers=redpanda_bootstrap,
+        client_id="darkula-intg",
+        poll_timeout_ms=2000,
+        max_poll_records=100,
+    )
 
 
 @pytest.fixture(scope="session")

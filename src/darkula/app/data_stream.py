@@ -133,8 +133,8 @@ def _validate_json_value(value: object, key: str) -> None:
 class StreamMessage:
     """One Darkula-owned, serialization-neutral stream message.
 
-    The envelope freezes cross-cutting semantics only; PR 5 owns the wire
-    codec that maps these fields onto broker messages.
+    The envelope freezes cross-cutting semantics only; the PR 5 wire
+    codec maps these fields onto broker messages in a canonical envelope.
     """
 
     message_id: MessageId

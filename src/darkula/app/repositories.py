@@ -28,10 +28,16 @@ Conflict/integrity/not-found failures surface through the bounded
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from uuid import UUID
 
+from darkula.app.data_stream import StreamMessage
 from darkula.domain.identifiers import (
+    ConsumerId,
+    MessageId,
     SourceCandidateId,
     SourceId,
+    StreamName,
 )
 from darkula.domain.source import (
     CandidateStatus,
@@ -44,9 +50,100 @@ from darkula.domain.source import (
 )
 
 __all__ = [
+    "OutboxRecord",
+    "OutboxRepository",
+    "ProcessedMessageRepository",
     "SourceCandidateRepository",
     "SourceRepository",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxRecord:
+    """One claimed outbox row with its full application envelope.
+
+    ``outbox_id`` is the persistence identity of the outbox row; the broker
+    position is never persisted and never used as identity here.
+    """
+
+    outbox_id: UUID
+    stream_name: StreamName
+    message: StreamMessage
+
+
+class OutboxRepository(ABC):
+    """Transactional outbox persistence contract (PR 5).
+
+    All methods are bound to the owning unit of work. ``append`` must be
+    called inside the same transaction as the business-state mutation it
+    announces; the broker publish happens only after that transaction
+    commits. ``claim``/``mark_published`` are the short-unit-of-work
+    publisher operations and must never run inside a transaction that
+    holds broker I/O open.
+    """
+
+    @abstractmethod
+    async def append(
+        self,
+        message: StreamMessage,
+        *,
+        stream_name: StreamName,
+    ) -> None:
+        """Persist one outbox record for ``message`` on ``stream_name``.
+
+        :raises ConflictError: if ``message.message_id`` was already
+            appended (idempotent-duplicate frozen behavior; the original
+            record is never overwritten).
+        """
+
+    @abstractmethod
+    async def claim(
+        self,
+        *,
+        stream_name: StreamName,
+        limit: int,
+        claim_id: UUID,
+        lease_seconds: float,
+    ) -> tuple[OutboxRecord, ...]:
+        """Claim up to ``limit`` pending, unexpired-lease-free rows.
+
+        Claimed rows carry ``claim_id`` and a lease; a crash after claim
+        lets the lease expire and the row becomes retryable.
+        """
+
+    @abstractmethod
+    async def mark_published(
+        self, *, claim_id: UUID, outbox_ids: tuple[UUID, ...]
+    ) -> int:
+        """Mark a subset of claimed rows published; return the count.
+
+        Rows not marked remain retryable; a crash after broker publish
+        before this call may republish the message (consumers deduplicate
+        by ``message_id``).
+        """
+
+
+class ProcessedMessageRepository(ABC):
+    """Durable consumer idempotency contract (PR 5).
+
+    The idempotency key is ``(stream_name, consumer_id, message_id)`` and
+    is never a broker offset or position.
+    """
+
+    @abstractmethod
+    async def record(
+        self,
+        *,
+        stream_name: StreamName,
+        consumer_id: ConsumerId,
+        message_id: MessageId,
+    ) -> bool:
+        """Atomically record one processed message.
+
+        Returns ``True`` on first delivery (the caller must perform the
+        durable business effect inside the same unit of work) and ``False``
+        for a duplicate (no repeated effect, no duplicate outgoing outbox).
+        """
 
 
 class SourceCandidateRepository(ABC):

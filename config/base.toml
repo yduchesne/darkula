@@ -23,6 +23,14 @@ pool_max_size = 4
 
 [datastream]
 driver = "fake"
+# Container-to-container consumers use the Darkula Redpanda on the Podman
+# network at its service port 9092; the host-published 39092 (prefix-3)
+# port is for host-side tooling (development profile). Bounded values:
+# poll timeout and max records per poll are capped, never unlimited.
+bootstrap_servers = "darkula-redpanda:9092"
+client_id = "darkula"
+poll_timeout_ms = 500
+max_poll_records = 100
 
 [object_store]
 driver = "local"

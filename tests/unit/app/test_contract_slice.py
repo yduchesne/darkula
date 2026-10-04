@@ -28,6 +28,8 @@ scope.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
@@ -50,7 +52,12 @@ from darkula.app.data_stream import (
 )
 from darkula.app.llm import LlmClient, ResponseT
 from darkula.app.persistence import UnitOfWork
-from darkula.app.repositories import SourceCandidateRepository, SourceRepository
+from darkula.app.repositories import (
+    OutboxRepository,
+    ProcessedMessageRepository,
+    SourceCandidateRepository,
+    SourceRepository,
+)
 from darkula.domain.identifiers import ConsumerId, MessageId, StreamName
 
 _MOMENT = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
@@ -132,6 +139,14 @@ class _SliceUnitOfWork(UnitOfWork):
     def sources(self) -> SourceRepository:
         raise AssertionError("slice stub exposes no sources repository")
 
+    @property
+    def outbox(self) -> OutboxRepository:
+        raise AssertionError("slice stub exposes no outbox repository")
+
+    @property
+    def processed_messages(self) -> ProcessedMessageRepository:
+        raise AssertionError("slice stub exposes no processed-message repository")
+
 
 def _slice_message() -> StreamMessage:
     return StreamMessage(
@@ -186,10 +201,28 @@ class TestPollPersistCommitAcknowledge:
 
     def test_no_kafka_or_postgresql_implementation_required(self) -> None:
         # The slice above runs through stub/in-memory boundaries: importing it
-        # never opens a stream broker or a database connection. A PostgreSQL
-        # driver IS a PR 4 project dependency, but the slice itself does not
-        # exercise it (no real connections, no real infrastructure).
-        assert importlib.util.find_spec("aiokafka") is None
+        # never opens a stream broker or a database connection. Kafka/
+        # Redpanda aiokafka is a PR 5 project dependency, but the app-layer
+        # contract modules must not pull it in: no Kafka/Redpanda types leak
+        # through the provider-neutral ``DataStream``/``UnitOfWork``/repository
+        # boundaries. Verified in a fresh interpreter so process-global state
+        # from other tests can never mask a real leak.
+        probe = (
+            "import sys; "
+            "from darkula.app.data_stream import DataStream; "
+            "from darkula.app.persistence import UnitOfWork; "
+            "from darkula.app.repositories import OutboxRepository; "
+            "print('aiokafka' in sys.modules)"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip() == "False", (
+            "app-layer imports must not transitively import aiokafka"
+        )
         assert importlib.util.find_spec("psycopg") is not None
         assert not hasattr(self, "_database_connection_opened")
 

@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Narrow central composition root (PR 3, extended by PR 4).
+"""Narrow central composition root (PR 3, extended by PR 4 and PR 5).
 
 Receives the resolved :class:`~darkula.config.settings.Settings` and
 constructs only implementations that exist:
 
 - ``FakeDataStream`` when the fake stream driver is selected;
+- ``RedpandaDataStream`` when the Redpanda driver is selected (PR 5: the
+  production DataStream adapter; the fake is never silently substituted
+  for an explicitly selected production driver);
 - ``InMemoryObjectStore`` / ``LocalFileObjectStore`` for the delivered
   object-store drivers;
 - ``FakeLlmClient`` (the only LLM driver);
@@ -15,8 +18,8 @@ constructs only implementations that exist:
   :func:`~darkula.telemetry.setup.configure_telemetry`.
 
 Selection is centralized here: application/domain code never branches on
-driver settings. Selecting an unavailable production driver (Redpanda,
-S3/R2, LangSmith/Langfuse, future providers) raises
+driver settings. Selecting an unavailable production driver (S3/R2,
+LangSmith/Langfuse, future providers) raises
 :class:`UnavailableDriverError` immediately; Darkula never silently
 substitutes a fake for an explicitly selected production driver.
 
@@ -42,6 +45,7 @@ from darkula.config.settings import (
     ObjectStoreDriver,
     Settings,
 )
+from darkula.infrastructure.data_stream import RedpandaDataStream
 from darkula.infrastructure.object_store import (
     InMemoryObjectStore,
     LocalFileObjectStore,
@@ -81,9 +85,11 @@ def _compose_data_stream(settings: Settings) -> DataStream:
     if settings.datastream.driver is DataStreamDriver.FAKE:
         return FakeDataStream()
     if settings.datastream.driver is DataStreamDriver.REDPANDA:
-        raise UnavailableDriverError(
-            "Redpanda DataStream is not available in PR 3 (PR 5 owns the "
-            "adapter); select the 'fake' driver instead"
+        return RedpandaDataStream(
+            bootstrap_servers=settings.datastream.bootstrap_servers,
+            client_id=settings.datastream.client_id,
+            poll_timeout_ms=settings.datastream.poll_timeout_ms,
+            max_poll_records=settings.datastream.max_poll_records,
         )
     raise UnavailableDriverError(  # defensive; validation rejects unknowns
         f"unsupported DataStream driver: {settings.datastream.driver}"

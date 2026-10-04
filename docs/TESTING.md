@@ -7,7 +7,8 @@ The deterministic local quality gate:
 ```text
 uv sync --locked
 ./build.sh --qa       ruff format check, ruff lint, strict mypy, unit tests, coverage >= 85%
-./build.sh --intg     Darkula-owned Podman PostgreSQL at 35432:5432, migrations, real-PostgreSQL integration tests
+./build.sh --intg     Darkula-owned Podman PostgreSQL (35432:5432) + Redpanda (39092:9092),
+                      migrations, real-infrastructure integration tests
 ./build.sh --sec      bandit source scan + pip-audit dependency audit
 uv run pre-commit run --all-files   optional local dev gate
 ```
@@ -18,27 +19,32 @@ fully offline and deterministically (integration tests carry the
 `integration` marker and are deselected by default). Coverage measures the
 `darkula` package with a hard `fail_under = 85` gate in CI and locally.
 
-## PostgreSQL integration (PR 4)
+## Infrastructure integration (PR 4/PR 5)
 
-`./build.sh --intg` runs the real-PostgreSQL integration suite:
+`./build.sh --intg` runs the real-infrastructure integration suite:
 
 1. verifies Podman availability;
-2. starts/provisions **only** Darkula-owned resources
-   (`scripts/darkula_postgres.sh start`: container `darkula-postgres` with
+2. starts/provisions **only** Darkula-owned resources:
+   `scripts/darkula_postgres.sh start` (container `darkula-postgres` with
    `darkula.owned=true`, pinned `docker.io/library/postgres:18.2`, volume
    `darkula-postgres-data` created with its own `darkula.owned=true` label,
-   exact host mapping `35432` → container `5432`);
-3. waits for `pg_isready`; applies migrations
+   exact host mapping `35432` → container `5432`) and
+   `scripts/darkula_redpanda.sh start` (container `darkula-redpanda` with
+   `darkula.owned=true`/`darkula.service=redpanda`, pinned
+   `docker.io/redpandadata/redpanda:v24.3.8`, exact host mapping
+   `39092` → container Kafka port `9092`, advertised host-reachable
+   `127.0.0.1:39092`);
+3. waits for `pg_isready` and `rpk cluster info`; applies migrations
    (`scripts/darkula_migrate.py`, ledger `darkula_schema_migrations`);
 4. runs `uv run pytest tests/integration -m integration --no-cov -q`;
 5. cleans up exactly the Darkula-owned resources while preserving the
-   original exit status (`scripts/darkula_postgres.sh clean`).
+   original exit status (Redpanda first, then PostgreSQL).
 
-The lifecycle tool fails fast if host port `35432` is occupied by a
-non-Darkula listener, if a resource bears a Darkula name without Darkula
-labels, or if Podman cannot run; it never prunes, never touches foreign
-resources, and never chooses another port. Developers wanting a persistent
-local instance may run `scripts/darkula_postgres.sh start|stop|clean`
+Both lifecycle tools fail fast if their host port (`35432` or `39092`) is
+occupied by a non-Darkula listener, if a resource bears a Darkula name
+without Darkula labels, or if Podman cannot run; they never prune, never
+touch foreign resources, and never choose another port. Developers wanting
+a persistent local instance may run the `start|stop|clean` subcommands
 manually; `./build.sh --intg` always tears its own resources down.
 
 ### PostgreSQL SQL boundary guard (PR 5B)
@@ -77,7 +83,27 @@ unlabeled/wrongly labeled volume, preflight `clean`, safe no-op `clean`,
 foreign-port refusal, foreign-resource non-interference, fail-closed inspect
 failures, idempotent repeated start/clean) without a live Podman daemon. Real
 `--intg` additionally asserts both ownership labels and the `35432:5432`
-mapping from exact-resource Podman metadata.
+mapping from exact-resource Podman metadata. The same pattern covers Redpanda
+(`tests/unit/scripts/test_darkula_redpanda_script.py`, I1–I10) and the real
+`--intg` run asserts the Redpanda ownership label and the `39092:9092` mapping.
+
+### Real messaging vertical slices (PR 5)
+
+- V1 (`tests/integration/datastream/test_redpanda_datastream.py`): real
+  Redpanda `start -> publish -> poll -> verify -> acknowledge -> poll again`,
+  plus independent consumer groups and full message-semantics round-trip;
+- V2 (`tests/integration/datastream/test_outbox_publisher.py`): real
+  PostgreSQL outbox -> OutboxPublisher -> real Redpanda -> production poll;
+  asserts the same `message_id` and that `published_at` is only set after
+  publication;
+- V3 (`tests/integration/datastream/test_durable_consumer.py`): real
+  PostgreSQL + Redpanda; same logical message delivered twice (different
+  positions) produces exactly one durable effect for one consumer identity;
+- V4 (`tests/integration/persistence/test_podman_ownership.py`): real Podman
+  asserts `darkula-postgres` and `darkula-postgres-data` carry
+  `darkula.owned=true` and `35432:5432` (PR 5B regression);
+- V5 (`tests/integration/datastream/test_podman_ownership.py`): real Podman
+  asserts `darkula-redpanda` carries `darkula.owned=true` and `39092:9092`.
 
 ### PostgreSQL persistence tests
 
@@ -188,10 +214,46 @@ When production code introduces concurrent I/O, tests must verify the concurrenc
 
 ## Reliability tests
 Assume at-least-once stream delivery. Test duplicate messages, consumer
-crash before/after durable commit, outbox retry, poison/non-retryable
-messages, cancellation, and replay. Persisted processing must be
-idempotent. PR 3's `FakeDataStream` replay seam supports these tests
-before the real broker arrives.
+crash before/after durable commit, outbox retry (lease expiry, publish
+failure, mark failure, crash-after-publish-before-mark), partial broker
+acceptance, poison/non-retryable messages, cancellation, and replay.
+Persisted processing must be idempotent by stable `message_id`, never by
+position.
+
+PR 5 unit matrices (offline, no broker/database):
+
+- `tests/unit/infrastructure/data_stream/test_codec.py` — DS1–DS8, DS16:
+  canonical round-trip, absent-optional determinism, UTC preservation,
+  strict rejection, trace headers never in payload, data-free errors;
+- `tests/unit/infrastructure/data_stream/test_redpanda.py` — DS9–DS16 plus
+  lifecycle: contract validation, routing-key -> broker key, positions,
+  never-acks polling, high-water acknowledgement, malformed-record bounded
+  failure, consumer-group isolation, cancellation propagation, trace
+  header injection/extraction, bounded provider errors (fake aiokafka
+  clients);
+- `tests/unit/infrastructure/persistence/postgresql/test_message_repositories.py`
+  — O1/O2/O3/O5/O9/O12: outbox append/claim/mark and processed-message
+  invocation + mapping + cancellation, covered by the SQL-boundary guard;
+- `tests/unit/app/test_outbox_publisher.py` — O6/O7/O8/O10/O11:
+  claim->publish->mark with commit boundaries, failure/cancellation leaves
+  rows retryable, partial acceptance fails closed, broker I/O outside any
+  open transaction;
+- `tests/unit/app/test_consumer.py` — C1–C10: first delivery commits
+  effect+marker, duplicates suppressed (same and different positions),
+  independent consumers, handler failure/cancellation rollback without ack,
+  commit-then-ack-failure redelivery safety;
+- `tests/unit/scripts/test_darkula_redpanda_script.py` — I1–I10: fake-podman
+  lifecycle (labeled provision, owned reuse, unlabeled/wrong label fail
+  closed, foreign 39092 listener refusal, exact owned cleanup, foreign
+  exact-name refusal, untouched unrelated resources, inspect failure,
+  repeated clean no-op);
+- `tests/unit/infrastructure/data_stream/test_telemetry.py` — bounded
+  datastream/outbox/consumer counters, histograms, spans, and label
+  vocabulary (no message_id/correlation_id/payload/routing-key values).
+
+`FakeDataStream`'s `reset_consumer()` remains the replay/duplicate seam for
+app-level slices. Real Redpanda vertical slices (V1–V3) replay and dedupe
+against the live broker.
 
 ## Security tests
 Test sandbox input/output constraints, path/origin budgets,
