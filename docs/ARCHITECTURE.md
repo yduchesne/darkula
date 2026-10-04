@@ -120,6 +120,20 @@ The Sandbox SPI owns disposable execution lifecycle: create, execute, collect bo
 
 Crawler navigation policy and sandbox network policy are defense-in-depth controls. `CrawlRequest` defines what navigation Darkula authorized; the sandbox independently constrains what the workload can reach.
 
+## PR 7 delivered mechanics
+
+**One fresh container per execution (no reuse).** `PodmanSandbox.execute()` creates exactly one disposable container per execution with a derived `darkula-crawler-<execution-id>-<nonce>` name, runs the allow-listed workload over stdin with no shell, transfers bounded output over stdout, and removes the container on every terminal path (completion, workload failure, sandbox timeout, caller cancellation, resource-limit kill). Containers carry `darkula.owned=true` plus service/execution labels; preflight inspection and removal happen only when exact metadata confirms ownership (an unowned same-named resource is never adopted, relabeled, or removed). No broad Podman cleanup is used anywhere in Darkula tooling.
+
+**Controller/runtime protocol.** `CrawlerController` and `CrawlerRuntime` communicate with a versioned, bounded JSON protocol (`runtime_protocol.v1`): the controller encodes a `RuntimeInput` (start URL, single authorized origin, optional synthetic credentials, page/request/depth/time budgets, excerpt bound) and the runtime encodes a `RuntimeOutput` (pages with depth/status/title/bounded excerpt, discovered same-origin links, request count, redirect count, status reason). The controller clamps caller budgets against trusted settings maxima, derives the least-capability sandbox policy from the request, validates every decoded field before it becomes a `CrawlResult`, and never lets hostile raw bodies enter telemetry.
+
+**Network mechanism.** The sandbox joins a Darkula-owned isolated internal network (`darkula-intg`, internal subnet, Darkula-prefixed host ports elsewhere untouched). The internal bridge provides no outbound route beyond the bridge: containers on it can be reached by name by other members, but it has no egress to the host, other Podman networks, or the wider Internet. Enforcement is therefore below workload logic and below origin checks in the runtime: PostgreSQL/Redpanda/an unauthorized sibling (all on other networks), the internal gateway/host services, and link-local cloud metadata (`169.254.169.254`) are all unreachable. The runtime additionally only ever navigates the single controller-authorized origin, and discovered links outside that origin are dropped — defense in depth on top of topology.
+
+**Programmatic crawling behavior.** The runtime performs a deterministic bounded BFS: sorted discovery order, depth/pages/requests/time budgets, one 503-retry with bounded wait (Retry-After honored and capped), 429s and login/logout-paths handled as data, fragments/non-HTTP/out-of-origin links dropped, and the login form submitted at most once. A protected target that bounces to the login form is re-observed once after authentication succeeds so the intended content is actually collected (the bounce and the post-login retry are both recorded). Content-Disposition attachments do not render; the runtime records a bounded first-bytes sample observation instead (no unbounded buffering; the sandbox tmpfs caps the browser's download temp file, which is then discarded).
+
+**Output boundary.** PR 7 transfers only small structured JSON reference payloads. Raw HTML/PDF/download bodies stay inside the disposable container; the controller/sandbox surface never exposes host filesystem paths. Artifacts (screenshots, raw bodies) are PR 8 ObjectStore work.
+
+**Credentials.** The runtime image and sandbox contain no Darkula application credentials, no LLM/DB/DataStream/ObjectStore clients, and no general secrets. The only authentication material that may cross the boundary is the narrowly scoped source credential of the specific crawl (BlackGate synthetic login), and a crawl without credentials sets the credentials flag denied.
+
 ## Data plane
 ```text
 PostgreSQL        DataStream                 ObjectStore

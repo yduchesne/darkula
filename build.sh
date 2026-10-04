@@ -12,8 +12,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 run_qa() {
-  uv run ruff format --check src tests
-  uv run ruff check src tests
+  uv run ruff format --check src tests crawler-runtime
+  uv run ruff check src tests crawler-runtime
   uv run mypy
   uv run pytest
 }
@@ -32,10 +32,13 @@ run_intg() {
   ./scripts/darkula_redpanda.sh start
   echo "==> applying migrations"
   ./scripts/darkula_postgres.sh migrate --apply
+  echo "==> provisioning crawler sandbox infrastructure (runtime image, internal network, Fake World HTTP)"
+  ./scripts/darkula_crawler.sh start
   echo "==> running integration suite"
   status=0
   uv run pytest tests/integration -m integration --no-cov -q || status=$?
   echo "==> cleaning up verified Darkula-owned resources (preserving exit status $status)"
+  ./scripts/darkula_crawler.sh clean >/dev/null 2>&1 || true
   ./scripts/darkula_redpanda.sh clean >/dev/null 2>&1 || true
   ./scripts/darkula_postgres.sh clean >/dev/null 2>&1 || true
   exit "$status"

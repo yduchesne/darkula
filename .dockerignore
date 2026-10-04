@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Repo-root build-context whitelist for Darkula images (PR 7).
+#
+# Everything except the explicitly listed paths is excluded from any
+# podman build whose context is the repository root, so the crawler-runtime
+# and fake-world images never carry the full repository (no app code, no
+# secrets, no credentials, no writable mounts).
+*
+!crawler-runtime/
+!src/darkula/__init__.py
+!src/darkula/testing/__init__.py
+!src/darkula/testing/fake_world/
+!src/darkula/crawler/runtime_protocol.py

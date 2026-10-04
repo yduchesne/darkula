@@ -123,8 +123,19 @@ def wait_for_migrations(database_settings: DatabaseSettings) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_tables(database_settings: DatabaseSettings) -> Any:
-    """Test-only deterministic state reset before every integration test."""
+def _reset_tables(
+    request: pytest.FixtureRequest, database_settings: DatabaseSettings
+) -> Any:
+    """Test-only deterministic state reset before every DB-backed test.
+
+    The crawler sub-suite is deliberately DB-free (it tests that PostgreSQL is
+    *denied* from the sandbox), so it neither needs nor triggers this reset.
+    """
+    from pathlib import Path
+
+    crawler_root = Path(__file__).resolve().parent / "crawler"
+    if crawler_root in Path(str(request.path)).resolve().parents:
+        return None
     conn = _raw_connect(database_settings)
     try:
         with conn.cursor() as cur:
