@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
     from darkula.app.repositories import (
+        OutboxRepository,
+        ProcessedMessageRepository,
         SourceCandidateRepository,
         SourceRepository,
     )
@@ -117,6 +119,16 @@ class UnitOfWork(ABC):
     @abstractmethod
     def sources(self) -> SourceRepository:
         """Return the source repository bound to this transaction."""
+
+    @property
+    @abstractmethod
+    def outbox(self) -> OutboxRepository:
+        """Return the transactional outbox repository (PR 5)."""
+
+    @property
+    @abstractmethod
+    def processed_messages(self) -> ProcessedMessageRepository:
+        """Return the durable consumer-idempotency repository (PR 5)."""
 
 
 class DarkulaSpi(ABC):

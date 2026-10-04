@@ -22,6 +22,10 @@ dependencies = [
   "opentelemetry-sdk>=1.37,<2",
   "psycopg[binary]>=3.3,<3.4",
   "psycopg-pool>=3.3,<3.4",
+  # Asynchronous Kafka/Redpanda client behind the Darkula DataStream
+  # adapter (PR 5). Pure-Python, event-loop-native, manual offset
+  # commit, bounded poll; Python 3.14 compatible as of 0.14.
+  "aiokafka>=0.14,<0.15",
 ]
 
 [dependency-groups]
@@ -82,3 +86,7 @@ show_missing = true
 
 [tool.bandit]
 exclude_dirs = [".venv", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["aiokafka", "aiokafka.*"]
+ignore_missing_imports = true

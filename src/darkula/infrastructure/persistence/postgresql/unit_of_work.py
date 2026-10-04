@@ -39,11 +39,19 @@ if TYPE_CHECKING:
     from psycopg_pool import AsyncConnectionPool
 
     from darkula.app.repositories import (
+        OutboxRepository,
+        ProcessedMessageRepository,
         SourceCandidateRepository,
         SourceRepository,
     )
     from darkula.infrastructure.persistence.postgresql.candidate_repository import (
         PostgresSourceCandidateRepository,
+    )
+    from darkula.infrastructure.persistence.postgresql.outbox_repository import (
+        PostgresOutboxRepository,
+    )
+    from darkula.infrastructure.persistence.postgresql.processed_message_repository import (  # noqa: E501
+        PostgresProcessedMessageRepository,
     )
     from darkula.infrastructure.persistence.postgresql.source_repository import (
         PostgresSourceRepository,
@@ -70,6 +78,10 @@ class PostgresUnitOfWork(UnitOfWork):
         self._conn_cm: Any = None
         self._candidate_repository: PostgresSourceCandidateRepository | None = None
         self._source_repository: PostgresSourceRepository | None = None
+        self._outbox_repository: PostgresOutboxRepository | None = None
+        self._processed_message_repository: (
+            PostgresProcessedMessageRepository | None
+        ) = None
 
     async def __aenter__(self) -> Self:
         if self._state is not _State.CREATED:
@@ -190,6 +202,32 @@ class PostgresUnitOfWork(UnitOfWork):
 
             self._source_repository = PostgresSourceRepository(self)
         return self._source_repository
+
+    @property
+    def outbox(self) -> OutboxRepository:
+        """Return the transaction-bound outbox repository."""
+        self.ensure_open()
+        if self._outbox_repository is None:
+            from darkula.infrastructure.persistence.postgresql.outbox_repository import (  # noqa: E501
+                PostgresOutboxRepository,
+            )
+
+            self._outbox_repository = PostgresOutboxRepository(self)
+        return self._outbox_repository
+
+    @property
+    def processed_messages(self) -> ProcessedMessageRepository:
+        """Return the transaction-bound processed-message repository."""
+        self.ensure_open()
+        if self._processed_message_repository is None:
+            from darkula.infrastructure.persistence.postgresql.processed_message_repository import (  # noqa: E501
+                PostgresProcessedMessageRepository,
+            )
+
+            self._processed_message_repository = PostgresProcessedMessageRepository(
+                self
+            )
+        return self._processed_message_repository
 
     async def _release_connection(self) -> None:
         """Return the borrowed connection to the pool exactly once."""

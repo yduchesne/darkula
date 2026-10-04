@@ -4,6 +4,36 @@
 
 PR 2 delivered the decorator-name/signature contract in `darkula/telemetry/decorators.py`: `traced`, `timed`, and `counted` for stabilized operation boundaries (sync and async). In PR 2 these are **contract-only no-ops**: they validate static names/attributes at decoration time and preserve call behavior, exceptions, cancellation, and function metadata exactly, but emit no telemetry.
 
+## PR 5 status — DataStream/outbox/consumer instrumentation delivered
+
+PR 5 instruments the reliable-messaging boundaries with the existing
+decorator conventions and direct OTEL constructs for dynamic measurements:
+
+- **datastream.publish / datastream.poll / datastream.acknowledge** — one
+  span per operation plus counters (`darkula.datastream.<op>.count`,
+  `.failed`) and seconds histograms (`<op>.duration`); poll also counts
+  returned records (`darkula.datastream.poll.records`);
+- **outbox.claim / outbox.publish / outbox.mark_published** — spans,
+  operation counters/durations, `darkula.outbox.claimed` /
+  `darkula.outbox.published` row counters, and
+  `darkula.outbox.publish.failed`;
+- **consumer.process** — one span per poll/process batch,
+  `darkula.consumer.process.count` / `.duration`, and
+  `darkula.consumer.process.duplicate` for deduplicated redeliveries;
+- every dynamic metric/span attribute is limited to the bounded logical
+  names `darkula.stream` and `darkula.consumer` — never message_id,
+  correlation_id, causation_id, routing-key values, URIs, payloads, or
+  secrets; no operation captures arguments or results.
+
+### Trace propagation through transport metadata
+The Redpanda adapter injects the current W3C context (`traceparent` +
+`tracestate` only, via `TraceContextTextMapPropagator`) into broker
+transport headers on publish — never into the message payload — and
+extracts it on poll so the consumer-side `datastream.poll` span is parented
+to the upstream trace. Extraction is best-effort and never fails delivery.
+OTEL baggage is deliberately NOT propagated: arbitrary baggage must not
+become a covert channel (see `Sandbox propagation`).
+
 ## PR 3 status — OTEL SDK emission delivered
 
 PR 3 upgraded the three decorators to emit real OpenTelemetry while keeping every PR 2 preservation guarantee, added the support modules
@@ -39,7 +69,7 @@ Prefer Darkula-owned OTEL-backed decorators around meaningful method/function bo
 Use direct OTEL constructs when measurements arise inside an operation: page/byte counts, retries, queue/consumer observations, intermediate events, dynamic attributes, or current-span events. Decorators standardize repetitive OTEL usage; they are not an abstraction intended to make OTEL replaceable.
 
 ## Correlation
-Propagate appropriate identifiers across asynchronous boundaries: trace/span context, source_id, candidate_id, collection_run_id, crawl_request_id, content_id, agent_run_id, llm_invocation_id, and correlation/causation IDs as applicable. DataStream adapters own trace-context propagation in message metadata.
+Propagate appropriate identifiers across asynchronous boundaries: trace/span context, source_id, candidate_id, collection_run_id, crawl_request_id, content_id, agent_run_id, llm_invocation_id, and correlation/causation IDs as applicable. DataStream adapters own trace-context propagation in broker transport metadata (PR 5 delivers injection + extraction); the domain payload never contains trace headers.
 
 ## Agent/LLM observability
 AI-specific observability uses a Darkula-owned AgentObservability interface with adapters such as LangSmith and Langfuse. Vendor types/concepts must not leak into agents or LlmClient. LlmClient is a central instrumentation point for model/provider, latency, usage, retries, outcome, and structured-output validation.

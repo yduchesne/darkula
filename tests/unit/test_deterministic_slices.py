@@ -21,9 +21,10 @@ import pytest
 from pydantic import BaseModel
 from pytest import MonkeyPatch
 
-from darkula.composition import UnavailableDriverError, compose
+from darkula.composition import compose
 from darkula.config.loader import load_settings
 from darkula.domain.identifiers import ConsumerId, MessageId, ObjectKey, StreamName
+from darkula.infrastructure.data_stream import RedpandaDataStream
 from darkula.infrastructure.object_store import LocalFileObjectStore
 from darkula.infrastructure.persistence.postgresql.spi import PostgresDarkulaSpi
 from darkula.testing.fake_data_stream import FakeDataStream
@@ -82,10 +83,12 @@ class TestSliceAConfigToComposition:
         assert not isinstance(runtime.persistence, FakeDataStream)
 
     def test_slice_a_fail_fast_and_no_network(self, monkeypatch: MonkeyPatch) -> None:
+        # Explicit REDPANDA now composes the production adapter (PR 5); the
+        # fail-fast guarantee is asserted for drivers that do not exist yet.
         monkeypatch.setenv("DARKULA_DATASTREAM__DRIVER", "redpanda")
         settings = load_settings(config_dir=_SHIPPED_CONFIG)
-        with pytest.raises(UnavailableDriverError):
-            compose(settings=settings)
+        runtime = compose(settings=settings)
+        assert isinstance(runtime.data_stream, RedpandaDataStream)
 
 
 class TestSliceBAsyncFakeStream:

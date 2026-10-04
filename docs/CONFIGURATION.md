@@ -34,6 +34,29 @@ PostgreSQL through the host-published port `35432`; inside the Darkula
 Podman network the service keeps its standard port `5432` (base layer
 `host = "darkula-postgres"`, `port = 5432`).
 
+### DataStream group (PR 5)
+
+`[datastream]` (Pydantic `DataStreamSettings`) — `fake` is the
+deterministic offline driver; `redpanda` is the delivered production
+adapter (`RedpandaDataStream`, PR 5):
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `driver` | `redpanda` (code) / `fake` (base layer) | Production selection never silently substitutes the fake |
+| `bootstrap_servers` | `darkula-redpanda:9092` (base) / `127.0.0.1:39092` (development: host-published Darkula port; container Kafka port stays `9092`) | Comma-separated `host:port` list |
+| `client_id` | `darkula` | Non-blank |
+| `poll_timeout_ms` | `500` | Bounded; must be `>= 1`; never a no-timeout poll |
+| `max_poll_records` | `100` | Bounded; must be `>= 1` |
+
+Only required typed Redpanda settings exist: no arbitrary Kafka
+configuration dictionary and no committed secrets. Environment overrides
+follow the standard rules (`DARKULA_DATASTREAM__DRIVER`,
+`DARKULA_DATASTREAM__BOOTSTRAP_SERVERS`, ...), with unset/empty no-ops.
+The `production` profile selects `redpanda`; the `development` profile
+overrides `bootstrap_servers` to the host-published `127.0.0.1:39092`, and
+the base layer names the container (`darkula-redpanda:9092`) for
+container-to-container consumers.
+
 ### File layout (repo-local, stdlib TOML)
 
 ```text
@@ -48,8 +71,8 @@ config/local.toml                   # optional operator override (git-ignored)
 - Parsing uses stdlib `tomllib` only; no YAML and no dotenv.
 - Shipped profiles: `development` (default; local object-store root under
   `var/darkula/objects`), `test` (in-memory object store), and
-  `production` (selects Redpanda/S3, which do not exist in PR 3 and
-  therefore fail fast at composition until PR 5/8).
+  `production` (selects the PR 5 Redpanda driver and the S3 object store;
+  S3 still fails fast at composition until PR 8).
 
 ### Precedence (exact)
 
@@ -93,11 +116,11 @@ resolver in PR 3.
 
 `load_settings()` returns validated `Settings`; `darkula/composition.py`
 selects concrete implementations centrally. Selecting an unavailable
-production driver (Redpanda, S3/R2, LangSmith/Langfuse, provider LLM)
-raises `UnavailableDriverError` (fail fast) — never a silent fake
-substitution. PR 3 ships the `fake` DataStream driver, `local`/`in_memory`
-ObjectStore drivers, the `fake` LlmClient driver, and the `none`
-agent-observability backend.
+production driver (S3/R2, LangSmith/Langfuse, provider LLM) raises
+`UnavailableDriverError` (fail fast) — never a silent fake substitution.
+PR 5 ships the `redpanda` DataStream driver alongside the deterministic
+`fake` driver; PR 4/3 shipped `local`/`in_memory` ObjectStore drivers, the
+`fake` LlmClient driver, and the `none` agent-observability backend.
 
 ### Required environment-variable test hygiene
 

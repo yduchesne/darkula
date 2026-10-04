@@ -10,7 +10,12 @@ from typing import Self
 import pytest
 
 from darkula.app.persistence import DarkulaSpi, UnitOfWork
-from darkula.app.repositories import SourceCandidateRepository, SourceRepository
+from darkula.app.repositories import (
+    OutboxRepository,
+    ProcessedMessageRepository,
+    SourceCandidateRepository,
+    SourceRepository,
+)
 
 
 class _RecordingUnitOfWork(UnitOfWork):
@@ -38,6 +43,14 @@ class _RecordingUnitOfWork(UnitOfWork):
     @property
     def sources(self) -> SourceRepository:
         raise AssertionError("recording stub exposes no sources repository")
+
+    @property
+    def outbox(self) -> OutboxRepository:
+        raise AssertionError("recording stub exposes no outbox repository")
+
+    @property
+    def processed_messages(self) -> ProcessedMessageRepository:
+        raise AssertionError("recording stub exposes no processed-message repository")
 
 
 class _RecordingSpi(DarkulaSpi):

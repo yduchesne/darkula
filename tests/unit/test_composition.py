@@ -18,6 +18,7 @@ from darkula.config.settings import (
     ObjectStoreSettings,
     Settings,
 )
+from darkula.infrastructure.data_stream import RedpandaDataStream
 from darkula.infrastructure.object_store import (
     InMemoryObjectStore,
     LocalFileObjectStore,
@@ -88,18 +89,19 @@ class TestDelivered:
 class TestFailFast:
     """Unavailable production selections fail instead of faking."""
 
-    def test_redpanda_datastream_fails_fast(self) -> None:
+    def test_redpanda_datastream_composes_production_adapter(self) -> None:
         with pytest.MonkeyPatch.context() as monkeypatch:
             monkeypatch.setenv("DARKULA_DATASTREAM__DRIVER", "redpanda")
             settings = load_settings(config_dir=_SHIPPED_CONFIG)
-        with pytest.raises(UnavailableDriverError, match="Redpanda"):
-            compose(settings=settings)
+        runtime = compose(settings=settings)
+        assert isinstance(runtime.data_stream, RedpandaDataStream)
 
-    def test_production_profile_fails_fast_until_pr5_pr8(self) -> None:
+    def test_production_profile_fails_fast_until_pr8(self) -> None:
+        # PR 5 delivered Redpanda; S3 object storage still fails fast.
         with pytest.MonkeyPatch.context() as monkeypatch:
             monkeypatch.setenv("DARKULA_CONFIG_PROFILE", "production")
             settings = load_settings(config_dir=_SHIPPED_CONFIG)
-        with pytest.raises(UnavailableDriverError, match="Redpanda"):
+        with pytest.raises(UnavailableDriverError, match="S3"):
             compose(settings=settings)
 
     def test_s3_object_store_fails_fast(self) -> None:
@@ -141,9 +143,10 @@ class TestFailFast:
             compose(settings=settings)
 
     def test_never_silently_substitutes(self) -> None:
-        # Explicit REDPANDA must fail even though a fake stream exists.
+        # Explicit REDPANDA yields the production adapter, never the fake.
         with pytest.MonkeyPatch.context() as monkeypatch:
             monkeypatch.setenv("DARKULA_DATASTREAM__DRIVER", "redpanda")
             settings = load_settings(config_dir=_SHIPPED_CONFIG)
-        with pytest.raises(UnavailableDriverError):
-            compose(settings=settings)
+        runtime = compose(settings=settings)
+        assert isinstance(runtime.data_stream, RedpandaDataStream)
+        assert not isinstance(runtime.data_stream, FakeDataStream)

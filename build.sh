@@ -28,12 +28,15 @@ run_sec() {
 run_intg() {
   echo "==> provisioning Darkula-owned PostgreSQL (35432:5432)"
   ./scripts/darkula_postgres.sh start
+  echo "==> provisioning Darkula-owned Redpanda (39092:9092)"
+  ./scripts/darkula_redpanda.sh start
   echo "==> applying migrations"
   ./scripts/darkula_postgres.sh migrate --apply
   echo "==> running integration suite"
   status=0
   uv run pytest tests/integration -m integration --no-cov -q || status=$?
-  echo "==> cleaning up Darkula-owned PostgreSQL (preserving exit status $status)"
+  echo "==> cleaning up verified Darkula-owned resources (preserving exit status $status)"
+  ./scripts/darkula_redpanda.sh clean >/dev/null 2>&1 || true
   ./scripts/darkula_postgres.sh clean >/dev/null 2>&1 || true
   exit "$status"
 }

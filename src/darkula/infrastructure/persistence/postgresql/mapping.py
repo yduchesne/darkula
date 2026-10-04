@@ -15,16 +15,23 @@ echoed in messages.
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
+from darkula.app.data_stream import StreamMessage
 from darkula.app.persistence import MappingError
+from darkula.app.repositories import OutboxRecord
 from darkula.domain.identifiers import (
     CandidateEventId,
+    CausationId,
+    CorrelationId,
+    MessageId,
     ReconAssessmentId,
     SourceAssessmentId,
     SourceCandidateId,
     SourceEndpointId,
     SourceId,
+    StreamName,
 )
 from darkula.domain.source import (
     CandidateEventType,
@@ -170,10 +177,41 @@ def map_source_assessment(row: tuple[Any, ...]) -> SourceAssessment:
         raise _mapping_error("source assessment", exc) from exc
 
 
+def map_outbox_record(row: tuple[Any, ...]) -> OutboxRecord:
+    """Map one ``outbox_claim_v1`` result row.
+
+    Column order: outbox_id, message_id, stream_name, message_type,
+    schema_version, occurred_at, payload, correlation_id, causation_id,
+    routing_key.
+    """
+    try:
+        return OutboxRecord(
+            outbox_id=row[0],
+            stream_name=StreamName(str(row[2])),
+            message=StreamMessage(
+                message_id=MessageId.from_str(str(row[1])),
+                message_type=row[3],
+                schema_version=int(row[4]),
+                occurred_at=row[5].astimezone(UTC),
+                payload=row[6],
+                correlation_id=(
+                    None if row[7] is None else CorrelationId.from_str(str(row[7]))
+                ),
+                causation_id=(
+                    None if row[8] is None else CausationId.from_str(str(row[8]))
+                ),
+                routing_key=row[9],
+            ),
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("outbox record", exc) from exc
+
+
 __all__ = [
     "map_candidate",
     "map_endpoint",
     "map_event",
+    "map_outbox_record",
     "map_recon_assessment",
     "map_source",
     "map_source_assessment",

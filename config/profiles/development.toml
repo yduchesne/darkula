@@ -16,6 +16,9 @@
 host = "localhost"
 port = 35432
 
+[datastream]
+bootstrap_servers = "127.0.0.1:39092"
+
 [object_store]
 driver = "local"
 local_root = "var/darkula/objects"

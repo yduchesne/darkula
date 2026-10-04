@@ -38,9 +38,9 @@ CONFIG_PROFILE_ENV_VAR = "DARKULA_CONFIG_PROFILE"
 class DataStreamDriver(StrEnum):
     """Selected DataStream implementation driver.
 
-    ``FAKE`` is the deterministic, offline :class:`FakeDataStream` delivered
-    by PR 3. ``REDPANDA`` remains the future adapter (PR 5); selecting it in
-    PR 3 validates but fails fast at composition.
+    ``REDPANDA`` is the production :class:`RedpandaDataStream` delivered by
+    PR 5. ``FAKE`` is the deterministic, offline :class:`FakeDataStream`
+    (PR 3); production selection never silently substitutes the fake.
     """
 
     REDPANDA = "redpanda"
@@ -144,11 +144,55 @@ class DatabaseSettings(BaseModel):
 
 
 class DataStreamSettings(BaseModel):
-    """Asynchronous command/event plane selection."""
+    """Asynchronous command/event plane selection (PR 3, extended PR 5).
+
+    ``driver`` selects the DataStream implementation centrally. ``FAKE`` is
+    the deterministic offline :class:`FakeDataStream`; ``REDPANDA`` is the
+    production Redpanda adapter delivered by PR 5. Only required typed
+    Redpanda settings exist here -- no arbitrary Kafka configuration
+    dictionary and no committed secrets; non-empty environment variables
+    remain the ultimate override (``env_ignore_empty``).
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     driver: DataStreamDriver = DataStreamDriver.REDPANDA
+    #: Comma-separated ``host:port`` bootstrap servers for Kafka clients.
+    bootstrap_servers: str = "darkula-redpanda:9092"
+    #: Stable client identifier for the producer/consumer clients.
+    client_id: str = "darkula"
+    #: Bounded poll timeout in milliseconds (never a no-timeout poll).
+    poll_timeout_ms: int = 500
+    #: Bounded maximum records returned by one poll.
+    max_poll_records: int = 100
+
+    @field_validator("bootstrap_servers")
+    @classmethod
+    def _validate_bootstrap_servers(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("bootstrap_servers must not be blank")
+        return value.strip()
+
+    @field_validator("client_id")
+    @classmethod
+    def _validate_client_id(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("client_id must not be blank")
+        return value.strip()
+
+    @field_validator("poll_timeout_ms")
+    @classmethod
+    def _validate_poll_timeout(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("poll_timeout_ms must be >= 1")
+        return value
+
+    @field_validator("max_poll_records")
+    @classmethod
+    def _validate_max_poll_records(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("max_poll_records must be >= 1")
+        return value
 
 
 class ObjectStoreSettings(BaseModel):
