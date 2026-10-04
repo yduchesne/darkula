@@ -21,7 +21,17 @@ from typing import Any
 from darkula.app.data_stream import StreamMessage
 from darkula.app.object_store import ContentHash, ContentType
 from darkula.app.persistence import MappingError
-from darkula.app.repositories import OutboxRecord
+from darkula.app.repositories import (
+    OutboxRecord,
+    ScheduledOccurrence,
+    ScheduleOutcome,
+)
+from darkula.domain.collection import (
+    CollectionFailureCode,
+    CollectionPolicy,
+    CollectionRun,
+    CollectionRunStatus,
+)
 from darkula.domain.content import (
     ArtifactCompleteness,
     ArtifactKind,
@@ -31,6 +41,8 @@ from darkula.domain.content import (
 from darkula.domain.identifiers import (
     CandidateEventId,
     CausationId,
+    CollectionPolicyId,
+    CollectionRunId,
     ContentArtifactId,
     CorrelationId,
     MessageId,
@@ -63,6 +75,96 @@ from darkula.domain.source import (
 def _mapping_error(record: str, exc: Exception) -> MappingError:
     """Build a bounded, data-free mapping error for one record kind."""
     return MappingError(f"cannot map persisted {record}: unsupported or invalid value")
+
+
+def map_collection_policy(row: tuple[Any, ...]) -> CollectionPolicy:
+    """Map one ``collection_policy_get_v1`` result row.
+
+    Column order: policy_id, source_id, active, created_at, updated_at,
+    revision, interval_seconds, next_due_at, allowed_paths, max_pages,
+    max_requests, max_depth, timeout_seconds, authentication_reference,
+    endpoint_ids (uuid list).
+    """
+    try:
+        endpoint_ids: tuple[SourceEndpointId, ...] = tuple(
+            SourceEndpointId(value=item) for item in (row[14] or ())
+        )
+        return CollectionPolicy(
+            policy_id=CollectionPolicyId.from_str(str(row[0])),
+            source_id=SourceId.from_str(str(row[1])),
+            active=bool(row[2]),
+            created_at=row[3],
+            updated_at=row[4],
+            revision=int(row[5]),
+            interval_seconds=int(row[6]),
+            next_due_at=row[7],
+            allowed_paths=tuple(row[8] or ()),
+            max_pages=int(row[9]),
+            max_requests=int(row[10]),
+            max_depth=int(row[11]),
+            timeout_seconds=float(row[12]),
+            authentication_reference=row[13],
+            allowed_endpoint_ids=endpoint_ids,
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("collection policy", exc) from exc
+
+
+def map_collection_run(row: tuple[Any, ...]) -> CollectionRun:
+    """Map one ``collection_run_get_v1`` result row.
+
+    Column order: run_id, policy_id, policy_revision, policy_snapshot,
+    source_id, scheduled_for, created_at, started_at, completed_at, status,
+    execution_id, lease_expires_at, attempt_count, crawl_requests_attempted,
+    pages_observed, content_observations, content_created,
+    content_deduplicated, failure_code, failure_summary.
+    """
+    try:
+        return CollectionRun(
+            run_id=CollectionRunId.from_str(str(row[0])),
+            policy_id=CollectionPolicyId.from_str(str(row[1])),
+            policy_revision=int(row[2]),
+            policy_snapshot=row[3],
+            source_id=SourceId.from_str(str(row[4])),
+            scheduled_for=row[5],
+            created_at=row[6],
+            started_at=row[7],
+            completed_at=row[8],
+            status=CollectionRunStatus(row[9]),
+            execution_id=None if row[10] is None else str(row[10]),
+            lease_expires_at=row[11],
+            attempt_count=int(row[12]),
+            crawl_requests_attempted=int(row[13]),
+            pages_observed=int(row[14]),
+            content_observations=int(row[15]),
+            content_created=int(row[16]),
+            content_deduplicated=int(row[17]),
+            failure_code=(None if row[18] is None else CollectionFailureCode(row[18])),
+            failure_summary=row[19],
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("collection run", exc) from exc
+
+
+def map_scheduled_occurrence(row: tuple[Any, ...]) -> ScheduledOccurrence:
+    """Map one ``collection_schedule_due_v1`` result row.
+
+    Column order: run_id, policy_id, policy_revision, policy_snapshot,
+    source_id, scheduled_for, result. ``result`` values are the raw stored
+    strings mapped onto :class:`ScheduleOutcome`.
+    """
+    try:
+        return ScheduledOccurrence(
+            run_id=CollectionRunId.from_str(str(row[0])),
+            policy_id=CollectionPolicyId.from_str(str(row[1])),
+            policy_revision=int(row[2]) if row[2] is not None else 0,
+            policy_snapshot=row[3],
+            source_id=SourceId.from_str(str(row[4])),
+            scheduled_for=row[5],
+            outcome=ScheduleOutcome(str(row[6])),
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("scheduled occurrence", exc) from exc
 
 
 def _content_hash(algorithm: str | None, digest: str | None) -> ContentHash | None:
@@ -278,12 +380,15 @@ def map_outbox_record(row: tuple[Any, ...]) -> OutboxRecord:
 
 __all__ = [
     "map_candidate",
+    "map_collection_policy",
+    "map_collection_run",
     "map_content_artifact",
     "map_endpoint",
     "map_event",
     "map_normalized_content",
     "map_outbox_record",
     "map_recon_assessment",
+    "map_scheduled_occurrence",
     "map_source",
     "map_source_assessment",
 ]

@@ -25,6 +25,9 @@ EXPECTED_TABLES = {
     "processed_message",
     "content_artifact",
     "normalized_content",
+    "collection_policy",
+    "collection_policy_endpoint",
+    "collection_run",
 }
 
 EXPECTED_FUNCTIONS = {
@@ -50,6 +53,19 @@ EXPECTED_FUNCTIONS = {
     "content_artifact_find_v1",
     "normalized_content_create_v1",
     "normalized_content_get_v1",
+    "collection_policy_create_v1",
+    "collection_policy_get_v1",
+    "collection_policy_update_v1",
+    "collection_policy_endpoint_add_v1",
+    "collection_policy_endpoint_list_v1",
+    "collection_endpoint_get_v1",
+    "collection_run_create_v1",
+    "collection_run_get_v1",
+    "collection_run_claim_v1",
+    "collection_run_reclaim_v1",
+    "collection_run_complete_v1",
+    "collection_run_cancel_v1",
+    "collection_schedule_due_v1",
 }
 
 
@@ -90,8 +106,8 @@ class TestMigrations:
                 ledger = [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
-        # The ledger head is the newest shipped artifact (PR 8 added 0003).
-        assert ledger[-1].startswith("0003_content.sql")
+        # The ledger head is the newest shipped artifact (PR 9 added 0004).
+        assert ledger[-1].startswith("0004_collection.sql")
 
     def test_expected_tables_exist(self, database_settings: DatabaseSettings) -> None:
         conn = _raw_connect(database_settings)

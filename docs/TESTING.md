@@ -439,3 +439,54 @@ PR 8 adds deterministic content-boundary coverage:
   proves one physical key with two provenance observations; a changed-content
   slice proves same URI + changed bytes = distinct hash/key; a failure slice
   proves ObjectStore failure records no structured success.
+
+## PR 9 testing status — collection lifecycle
+
+Deterministic unit matrix (runs in `--qa`, offline):
+
+- `tests/unit/domain/test_collection.py` — CP1-CP9 policy bounds (interval/
+  budget/duplicates/empty-auth/credential-reference/naive-UTC/revision
+  immutability) and CR1-CR8 run state machine (RUNNING/timestamps, terminal
+  completion, sanitized failures, frozen revision/snapshot).
+- `tests/unit/app/test_collection_scheduler.py` — SCH1-SCH10: due eligibility
+  with explicit `now`, occurrence idempotency (retry/concurrent), bounded
+  batch, atomic run+outbox commit vs rollback, IDs-only wire shape.
+- `tests/unit/app/test_collection_service.py` — EX1-EX14 + MAP1-MAP8:
+  claim/crawl/ingest/finalize, terminal/unknown handling, withdrawn
+  authorization (no crawl), deterministic request-id stability (MAP6/MAP7),
+  frozen-snapshot semantics after RUNNING, cancellation persistence, failure
+  sanitization, and the "no UoW open during crawler/ingest" probe.
+- `tests/unit/app/test_collection_worker.py` — WK1-WK13 via FakeDataStream +
+  in-memory persistence fakes: first-delivery claim/execute/ack, terminal
+  duplicates, lease-gated concurrency, same-run reclaim, attempts exhausted,
+  crash-before-terminal no-ack, unknown-run poison, cancellation no-premature
+  ack, malformed payload poison, and message-ID (never offset) idempotency
+  markers.
+- `tests/unit/config/test_collection_settings.py` — CFG defaults/env
+  override/empty-env/bounds/fail-closed unknown fields, plus composed
+  service/scheduler/worker.
+- `tests/unit/telemetry/test_collection_telemetry.py` — bounded labels; no
+  IDs/URIs/hashes/credentials in collection attributes.
+- `tests/unit/infrastructure/persistence/postgresql/test_collection_repository.py`
+  — fixed stored-function invocations, outcome mapping, cancellation, and the
+  positive SQL-boundary scan covers the new repository module.
+- `tests/unit/test_deterministic_slices.py` — slice E: scheduler -> outbox ->
+  FakeDataStream -> worker -> service -> fake crawler -> fake ingest.
+
+Real infrastructure (`./build.sh --intg`):
+
+- `tests/integration/collection/test_collection_persistence.py` — P1-P16:
+  fresh-DB migration provisioning + ledger, policy/run round-trips, endpoint
+  ownership, occurrence uniqueness, expected-state transitions,
+  concurrent-start one-winner, expired/unexpired lease, attempts exhausted,
+  concurrent due admission one occurrence, scheduler run+outbox atomicity
+  and rollback, prior-source data survival.
+- `tests/integration/collection/test_collection_messaging.py` — M1-M4 over
+  real PostgreSQL + Redpanda: scheduler -> outbox -> OutboxPublisher ->
+  real broker (IDs-only command); duplicate publication never re-executes;
+  terminal-durable-before-ack with redelivery no-recrawl; crashed-worker
+  RUNNING recovery on the same run.
+- `tests/integration/crawler/test_collection_vertical_slice.py` — the
+  canonical vertical slice: real crawler -> real sandbox -> real browser ->
+  Fake World HTTP -> real ingest -> ObjectStore + PostgreSQL -> SUCCEEDED +
+  ack, plus post-success redelivery and the next-interval new run.

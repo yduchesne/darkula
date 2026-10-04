@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
     from darkula.app.repositories import (
+        CollectionRepository,
         ContentRepository,
         OutboxRepository,
         ProcessedMessageRepository,
@@ -136,6 +137,12 @@ class UnitOfWork(ABC):
     def content(self) -> ContentRepository:
         """Return the content/artifact repository bound to this transaction
         (PR 8)."""
+
+    @property
+    @abstractmethod
+    def collection(self) -> CollectionRepository:
+        """Return the managed-source collection repository bound to this
+        transaction (PR 9)."""
 
 
 class DarkulaSpi(ABC):

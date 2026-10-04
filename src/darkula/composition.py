@@ -37,6 +37,9 @@ from dataclasses import dataclass
 
 from darkula.app.agent_observability import AgentObservability
 from darkula.app.artifacts import ArtifactStorageService
+from darkula.app.collection import SourceCollectionService
+from darkula.app.collection_scheduler import CollectionScheduler
+from darkula.app.collection_worker import CollectionWorker
 from darkula.app.content import ContentIngestService
 from darkula.app.data_stream import DataStream
 from darkula.app.llm import LlmClient
@@ -88,6 +91,9 @@ class Runtime:
     object_store: ObjectStore
     content_normalizer: ContentNormalizer
     content_ingest: ContentIngestService
+    collection_service: SourceCollectionService
+    collection_scheduler: CollectionScheduler
+    collection_worker: CollectionWorker
     llm: LlmClient
     agent_observability: AgentObservability
     persistence: DarkulaSpi
@@ -210,20 +216,63 @@ def _compose_crawler(settings: Settings) -> Crawler:
     )
 
 
+def _compose_collection(
+    settings: Settings,
+    persistence: DarkulaSpi,
+    crawler: Crawler,
+    content_ingest: ContentIngestService,
+    data_stream: DataStream,
+) -> tuple[SourceCollectionService, CollectionScheduler, CollectionWorker]:
+    """Compose the PR 9 collection capability.
+
+    The service/scheduler/worker share one persistence SPI, the single PR 7
+    Crawler, the PR 8 ContentIngestService, and the DataStream. The worker
+    and service never hold a database transaction across crawler/HTTP/
+    ObjectStore/broker I/O (enforced by their short-UoW structure).
+    """
+    service = SourceCollectionService(
+        spi=persistence,
+        crawler=crawler,
+        content_ingest=content_ingest,
+        settings=settings.collection,
+    )
+    scheduler = CollectionScheduler(spi=persistence)
+    worker = CollectionWorker(
+        spi=persistence,
+        data_stream=data_stream,
+        service=service,
+        settings=settings.collection,
+    )
+    return service, scheduler, worker
+
+
 def compose(*, settings: Settings) -> Runtime:
     """Compose every runtime implementation from resolved settings."""
     object_store = _compose_object_store(settings)
     persistence = _compose_persistence(settings)
     content_normalizer = _compose_content_normalizer(object_store)
+    content_ingest = _compose_content_ingest(content_normalizer, persistence)
+    data_stream = _compose_data_stream(settings)
+    crawler = _compose_crawler(settings)
+    collection_service, collection_scheduler, collection_worker = _compose_collection(
+        settings=settings,
+        persistence=persistence,
+        crawler=crawler,
+        content_ingest=content_ingest,
+        data_stream=data_stream,
+    )
     return Runtime(
-        data_stream=_compose_data_stream(settings),
+        data_stream=data_stream,
         object_store=object_store,
         content_normalizer=content_normalizer,
-        content_ingest=_compose_content_ingest(content_normalizer, persistence),
+        content_ingest=content_ingest,
+        collection_service=collection_service,
+        collection_scheduler=collection_scheduler,
+        collection_worker=collection_worker,
         llm=_compose_llm(settings),
         agent_observability=_compose_observability(settings),
         persistence=persistence,
-        crawler=_compose_crawler(settings),
+        crawler=crawler,
         telemetry=configure_telemetry(
             enabled=settings.telemetry.enabled,
             service_name=settings.telemetry.service_name,

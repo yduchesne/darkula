@@ -8,6 +8,8 @@ infrastructure (no PostgreSQL, Redpanda, Podman, network, or OTEL backend):
 - B. ``publish -> poll -> process -> explicit ack`` on the fake stream
 - C. local artifact ``AsyncIterable -> put -> stat -> get -> delete``
 - D. telemetry around a fake LLM operation
+- E. scheduler -> outbox -> fake stream -> worker -> service -> fake
+  crawler -> fake ingest (PR 9 managed-source collection lifecycle)
 """
 
 from __future__ import annotations
@@ -215,3 +217,99 @@ class TestSliceDTelemetryAroundFakeOperation:
         rendered = repr(spans[0])
         assert "Assess this candidate" not in rendered
         assert "QUALIFY" not in rendered
+
+
+class TestSliceECollectionLifecycle:
+    """PR 9: due policy -> queued run + outbox -> fake stream -> worker -
+    service -> fake crawler -> fake ingest -> SUCCEEDED + ack, all offline.
+    Uses the PR 3 FakeDataStream as the transport seam (the production
+    Redpanda adapter and real crawler are covered by ``--intg``).
+    """
+
+    @pytest.mark.asyncio
+    async def test_slice_e_full_collection_loop(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from tests.support.collection_fakes import (
+            FakeCrawler,
+            FakeIngest,
+            MemSpi,
+            seed_endpoint,
+            seed_source,
+        )
+
+        from darkula.app.collection import (
+            COLLECTION_WORK_STREAM,
+            SourceCollectionService,
+        )
+        from darkula.app.collection_scheduler import CollectionScheduler
+        from darkula.app.collection_worker import CollectionWorker
+        from darkula.config.settings import CollectionSettings
+        from darkula.domain.collection import (
+            CollectionPolicy,
+            CollectionRunStatus,
+        )
+        from darkula.domain.identifiers import (
+            CollectionPolicyId,
+            SourceEndpointId,
+            SourceId,
+        )
+
+        t0 = datetime(2026, 3, 1, tzinfo=UTC)
+        policy_id = CollectionPolicyId.from_str("11111111-1111-1111-1111-111111111111")
+        source_id = SourceId.from_str("22222222-2222-2222-2222-222222222222")
+        endpoint_id = SourceEndpointId.from_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        spi = MemSpi()
+        seed_source(spi.state, source_id)
+        seed_endpoint(
+            spi.state, endpoint_id, source_id, "http://blackgate.example.test/"
+        )
+        policy = CollectionPolicy(
+            policy_id=policy_id,
+            source_id=source_id,
+            active=True,
+            created_at=t0,
+            updated_at=t0,
+            revision=1,
+            interval_seconds=3600,
+            next_due_at=t0,
+            allowed_endpoint_ids=(endpoint_id,),
+        )
+        spi.state.policies[policy_id] = policy
+
+        stream = FakeDataStream()
+        scheduler = CollectionScheduler(spi=spi)
+        assert await scheduler.schedule_due(now=t0 + timedelta(seconds=1), limit=5) == 1
+
+        # The queued run's command reaches the stream through the outbox; no
+        # broker/DB involved — the fake stream is the transport seam.
+        messages = spi.state.outbox[COLLECTION_WORK_STREAM]
+        assert len(messages) == 1
+        await stream.publish(stream_name=COLLECTION_WORK_STREAM, messages=messages)
+
+        crawler = FakeCrawler()
+        crawler.results.append(crawler.completed_with_pages(2))
+        service = SourceCollectionService(
+            spi=spi,
+            crawler=crawler,
+            content_ingest=FakeIngest(),
+            settings=CollectionSettings(),
+            clock=lambda: t0 + timedelta(seconds=2),
+        )
+        worker = CollectionWorker(
+            spi=spi,
+            data_stream=stream,
+            service=service,
+            settings=CollectionSettings(),
+        )
+        assert await worker.process_once(max_records=5) == 1
+
+        run = next(iter(spi.state.runs.values()))
+        assert run.status is CollectionRunStatus.SUCCEEDED
+        assert run.pages_observed == 2
+        assert run.content_observations == 2
+        assert run.crawl_requests_attempted == 1
+        acked = stream.acknowledged_positions(
+            COLLECTION_WORK_STREAM, worker._consumer_id
+        )
+        assert acked  # durable terminal state existed before the ack

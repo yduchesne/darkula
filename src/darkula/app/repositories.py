@@ -29,10 +29,18 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
 from darkula.app.data_stream import StreamMessage
 from darkula.app.object_store import ContentHash
+from darkula.domain.collection import (
+    CollectionFailureCode,
+    CollectionPolicy,
+    CollectionRun,
+    CollectionRunStatus,
+)
 from darkula.domain.content import (
     ArtifactCompleteness,
     ArtifactKind,
@@ -40,11 +48,14 @@ from darkula.domain.content import (
     NormalizedContent,
 )
 from darkula.domain.identifiers import (
+    CollectionPolicyId,
+    CollectionRunId,
     ConsumerId,
     ContentArtifactId,
     MessageId,
     NormalizedContentId,
     SourceCandidateId,
+    SourceEndpointId,
     SourceId,
     StreamName,
 )
@@ -59,10 +70,15 @@ from darkula.domain.source import (
 )
 
 __all__ = [
+    "ClaimOutcome",
+    "CollectionRepository",
     "ContentRepository",
     "OutboxRecord",
     "OutboxRepository",
     "ProcessedMessageRepository",
+    "ReclaimOutcome",
+    "ScheduleOutcome",
+    "ScheduledOccurrence",
     "SourceCandidateRepository",
     "SourceRepository",
 ]
@@ -271,6 +287,183 @@ class SourceRepository(ABC):
         self, source_id: SourceId
     ) -> tuple[SourceAssessment, ...]:
         """Return the source's assessments in deterministic order."""
+
+
+class ScheduleOutcome(StrEnum):
+    """Outcome of one atomic due-occurrence admission (PR 9)."""
+
+    SCHEDULED = "scheduled"
+    NONE = "none"
+    OCCURRENCE_EXISTS = "occurrence_exists"
+
+
+class ClaimOutcome(StrEnum):
+    """Outcome of a QUEUED -> RUNNING execution claim (PR 9)."""
+
+    CLAIMED = "claimed"
+    NOT_QUEUED = "not_queued"
+    UNKNOWN_RUN = "unknown_run"
+
+
+class ReclaimOutcome(StrEnum):
+    """Outcome of an expired-lease reclaim attempt (PR 9)."""
+
+    RECLAIMED = "reclaimed"
+    LEASE_ACTIVE = "lease_active"
+    ATTEMPTS_EXHAUSTED = "attempts_exhausted"
+    TERMINAL = "terminal"
+    UNKNOWN_RUN = "unknown_run"
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledOccurrence:
+    """One atomically admitted policy occurrence plus its QUEUED run.
+
+    ``run_id`` is the authoritative work identity; ``policy_id``/``source_id``
+    accompany the ``collection.execute`` command so the worker validates its
+    payload without trusting the broker. ``policy_snapshot`` is the frozen
+    execution snapshot persisted with the run.
+    """
+
+    run_id: CollectionRunId
+    policy_id: CollectionPolicyId
+    policy_revision: int
+    policy_snapshot: dict[str, object] | None
+    source_id: SourceId
+    scheduled_for: datetime
+    outcome: ScheduleOutcome
+
+
+class CollectionRepository(ABC):
+    """Managed-source collection persistence contract (PR 9).
+
+    All methods are bound to the owning unit of work. Production
+    implementations invoke versioned PostgreSQL stored functions only.
+    ``schedule_due`` performs the atomic occurrence admission; the caller
+    appends the outbox record in the same transaction so a scheduled
+    occurrence has a durable QUEUED run iff its command is durably in the
+    outbox.
+    """
+
+    @abstractmethod
+    async def create_policy(self, policy: CollectionPolicy) -> None:
+        """Persist a policy (identity, schedule, budgets, endpoint list).
+
+        :raises ConflictError: if the policy identity already exists.
+        :raises IntegrityError: if the Source or an endpoint is unknown.
+        """
+
+    @abstractmethod
+    async def get_policy(
+        self, policy_id: CollectionPolicyId
+    ) -> CollectionPolicy | None:
+        """Return the policy with its authorized endpoint identities."""
+
+    @abstractmethod
+    async def update_policy(self, policy: CollectionPolicy) -> int:
+        """Persist an edit; returns the new revision (old revision + 1).
+
+        :raises NotFoundError: if the policy does not exist.
+        :raises IntegrityError: if an authorized endpoint is unknown or
+            belongs to another Source.
+        """
+
+    @abstractmethod
+    async def list_policy_endpoints(
+        self, policy_id: CollectionPolicyId
+    ) -> tuple[SourceEndpoint, ...]:
+        """Return the endpoints currently authorized by a policy,
+        deterministically ordered."""
+
+    @abstractmethod
+    async def get_endpoint(
+        self, endpoint_id: SourceEndpointId
+    ) -> SourceEndpoint | None:
+        """Return one endpoint's current state by managed identity."""
+
+    @abstractmethod
+    async def create_run(self, run: CollectionRun) -> None:
+        """Create a QUEUED historical run directly (test/manual path).
+
+        :raises ConflictError: if the run identity or the policy occurrence
+            already exists.
+        :raises IntegrityError: if the referenced policy does not exist.
+        """
+
+    @abstractmethod
+    async def get_run(self, run_id: CollectionRunId) -> CollectionRun | None:
+        """Return the run with its frozen policy snapshot."""
+
+    @abstractmethod
+    async def schedule_due(
+        self,
+        *,
+        now: datetime,
+        run_id: CollectionRunId,
+        created_at: datetime,
+    ) -> ScheduledOccurrence | None:
+        """Atomically admit the earliest due occurrence, or return ``None``.
+
+        When ``OCCURRENCE_EXISTS`` the occurrence was already admitted by a
+        concurrent scheduler; the caller appends no command and continues.
+        """
+
+    @abstractmethod
+    async def claim_run(
+        self,
+        *,
+        run_id: CollectionRunId,
+        execution_id: str,
+        started_at: datetime,
+        lease_expires_at: datetime,
+    ) -> ClaimOutcome:
+        """Claim a QUEUED run: QUEUED -> RUNNING with an execution lease."""
+
+    @abstractmethod
+    async def reclaim_run(
+        self,
+        *,
+        run_id: CollectionRunId,
+        execution_id: str,
+        now: datetime,
+        lease_expires_at: datetime,
+        max_attempts: int,
+    ) -> ReclaimOutcome:
+        """Reclaim a RUNNING run whose lease expired, attempt++."""
+
+    @abstractmethod
+    async def complete_run(
+        self,
+        *,
+        run_id: CollectionRunId,
+        new_status: CollectionRunStatus,
+        completed_at: datetime,
+        crawl_requests_attempted: int,
+        pages_observed: int,
+        content_observations: int,
+        content_created: int,
+        content_deduplicated: int,
+        failure_code: CollectionFailureCode | None,
+        failure_summary: str | None,
+    ) -> None:
+        """Finalize a RUNNING run into a terminal state (PR 9).
+
+        :raises ConflictError: if the run is not RUNNING (wrong state).
+        :raises NotFoundError: if the run does not exist.
+        """
+
+    @abstractmethod
+    async def cancel_run(
+        self,
+        *,
+        run_id: CollectionRunId,
+        completed_at: datetime,
+    ) -> None:
+        """Cancel a QUEUED or RUNNING run.
+
+        :raises ConflictError: if the run is already terminal.
+        :raises NotFoundError: if the run does not exist.
+        """
 
 
 class ContentRepository(ABC):

@@ -127,6 +127,10 @@ class _FakeUoW(UnitOfWork):
     def content(self) -> Any:
         raise AssertionError("consumer test exposes no content repository")
 
+    @property
+    def collection(self) -> Any:
+        raise AssertionError("consumer test exposes no collection repository")
+
     async def record(
         self,
         *,

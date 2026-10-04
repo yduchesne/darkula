@@ -104,6 +104,26 @@ no live provider crawling, and no rearchitecting of the PR 7 crawler.
 ## PR 9 — Collection
 Implement CollectionPolicy, CollectionRun, SourceCollectionService, asynchronous crawl work, durable state transitions, and collection telemetry.
 
+### Status — delivered
+
+PR 9 was implemented from `~/Downloads/DARKULA_PR_9_DETAILED_PLAN.md`
+(branch `dev/source-collection`). Delivered: typed CollectionPolicy/CollectionRun
+with frozen revision + execution snapshot, finite run state machine,
+deterministic interval scheduling with occurrence identity
+`(policy_id, scheduled_for)`, `migrations/0004_collection.sql` (policy,
+endpoint authorization, run tables + versioned stored functions), the
+CollectionRepository over the existing UnitOfWork, transactional-outbox due
+admission, IDs-only `collection.execute` v1 commands, the collection-specific
+worker (lease recovery, bounded attempts, terminal-before-ack), and
+SourceCollectionService over the existing PR 7 crawler + PR 8 ingestion with
+no PostgreSQL transaction spanning external I/O. Tests: CP/CR/SCH/MAP/EX/WK/
+CFG unit matrices, P1-P16/M1-M4 real-PostgreSQL+Redpanda integration, and the
+canonical real-crawler vertical slice (Fake World + real sandbox/browser +
+ObjectStore). Collection telemetry uses bounded labels only. Out of scope:
+authenticated crawling (credential refs only, unauthenticated delivered
+path), ReconAgent/DeepAgent (PR 10), extraction/SourceAnalyst (PR 11-14),
+generic workflow engines, and live illicit/Tor collection.
+
 ## PR 10 — Recon workflow
 Implement Coordinator reconnaissance flow and ReconAgent using LlmClient structured outputs, evidence references, FakeLlmClient scenarios, and agent observability.
 
