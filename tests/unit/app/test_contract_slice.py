@@ -53,6 +53,7 @@ from darkula.app.data_stream import (
 from darkula.app.llm import LlmClient, ResponseT
 from darkula.app.persistence import UnitOfWork
 from darkula.app.repositories import (
+    CollectionRepository,
     ContentRepository,
     OutboxRepository,
     ProcessedMessageRepository,
@@ -151,6 +152,10 @@ class _SliceUnitOfWork(UnitOfWork):
     @property
     def content(self) -> ContentRepository:
         raise AssertionError("slice stub exposes no content repository")
+
+    @property
+    def collection(self) -> CollectionRepository:
+        raise AssertionError("slice stub exposes no collection repository")
 
 
 def _slice_message() -> StreamMessage:

@@ -423,9 +423,45 @@ class ExtractionSettings(BaseModel):
 
 
 class CollectionSettings(BaseModel):
-    """Collection group; behavior fields are owned by PR 9."""
+    """Collection group; behavior fields are owned by PR 9.
+
+    ``schedule_batch_size`` bounds one ``CollectionScheduler.schedule_due``
+    run; ``worker_poll_batch_size`` bounds one ``CollectionWorker.process_once``
+    poll; ``execution_lease_seconds`` is the RUNNING lease a crashed worker's
+    recovery must outlive; ``max_run_attempts`` bounds same-run reclaims
+    (retries); each attempt is new crawl provenance. Policy interval bounds
+    are fixed domain constants in v0.1 (see
+    ``darkula.domain.collection``): no operator-facing interval settings
+    exist yet.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schedule_batch_size: int = 10
+    worker_poll_batch_size: int = 10
+    execution_lease_seconds: float = 600.0
+    max_run_attempts: int = 3
+
+    @field_validator("schedule_batch_size", "worker_poll_batch_size")
+    @classmethod
+    def _validate_positive_batch(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("collection batch sizes must be >= 1")
+        return value
+
+    @field_validator("execution_lease_seconds")
+    @classmethod
+    def _validate_lease(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("execution_lease_seconds must be positive")
+        return value
+
+    @field_validator("max_run_attempts")
+    @classmethod
+    def _validate_attempts(cls, value: int) -> int:
+        if value < 1 or value > 10:
+            raise ValueError("max_run_attempts must be within [1, 10]")
+        return value
 
 
 class Settings(BaseSettings):

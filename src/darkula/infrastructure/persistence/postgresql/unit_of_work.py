@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from psycopg_pool import AsyncConnectionPool
 
     from darkula.app.repositories import (
+        CollectionRepository,
         ContentRepository,
         OutboxRepository,
         ProcessedMessageRepository,
@@ -47,6 +48,9 @@ if TYPE_CHECKING:
     )
     from darkula.infrastructure.persistence.postgresql.candidate_repository import (
         PostgresSourceCandidateRepository,
+    )
+    from darkula.infrastructure.persistence.postgresql.collection_repository import (
+        PostgresCollectionRepository,
     )
     from darkula.infrastructure.persistence.postgresql.content_repository import (
         PostgresContentRepository,
@@ -87,6 +91,7 @@ class PostgresUnitOfWork(UnitOfWork):
             PostgresProcessedMessageRepository | None
         ) = None
         self._content_repository: PostgresContentRepository | None = None
+        self._collection_repository: PostgresCollectionRepository | None = None
 
     async def __aenter__(self) -> Self:
         if self._state is not _State.CREATED:
@@ -245,6 +250,18 @@ class PostgresUnitOfWork(UnitOfWork):
 
             self._content_repository = PostgresContentRepository(self)
         return self._content_repository
+
+    @property
+    def collection(self) -> CollectionRepository:
+        """Return the transaction-bound collection repository (PR 9)."""
+        self.ensure_open()
+        if self._collection_repository is None:
+            from darkula.infrastructure.persistence.postgresql.collection_repository import (  # noqa: E501
+                PostgresCollectionRepository,
+            )
+
+            self._collection_repository = PostgresCollectionRepository(self)
+        return self._collection_repository
 
     async def _release_connection(self) -> None:
         """Return the borrowed connection to the pool exactly once."""

@@ -193,6 +193,10 @@ class _Spi(DarkulaSpi):
             def content(self) -> Any:
                 raise AssertionError("telemetry fake exposes no content repository")
 
+            @property
+            def collection(self) -> Any:
+                raise AssertionError("telemetry fake exposes no collection repository")
+
             async def append(
                 self, message: StreamMessage, *, stream_name: StreamName
             ) -> None:

@@ -11,6 +11,7 @@ import pytest
 
 from darkula.app.persistence import DarkulaSpi, UnitOfWork
 from darkula.app.repositories import (
+    CollectionRepository,
     ContentRepository,
     OutboxRepository,
     ProcessedMessageRepository,
@@ -56,6 +57,10 @@ class _RecordingUnitOfWork(UnitOfWork):
     @property
     def content(self) -> ContentRepository:
         raise AssertionError("recording stub exposes no content repository")
+
+    @property
+    def collection(self) -> CollectionRepository:
+        raise AssertionError("recording stub exposes no collection repository")
 
 
 class _RecordingSpi(DarkulaSpi):

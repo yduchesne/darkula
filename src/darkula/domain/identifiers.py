@@ -158,6 +158,23 @@ class SourceEndpointId(_UuidId):
     """Identity of one :class:`~darkula.domain.source.SourceEndpoint`."""
 
 
+class CollectionPolicyId(_UuidId):
+    """Identity of one :class:`~darkula.domain.collection.CollectionPolicy` (PR 9).
+
+    A policy is durable authorization/configuration for the managed-source
+    collection lifecycle; it is never a URI and never a broker position.
+    """
+
+
+class CollectionRunId(_UuidId):
+    """Identity of one :class:`~darkula.domain.collection.CollectionRun` (PR 9).
+
+    A run is one historical execution of a policy occurrence. The run id is
+    the authoritative work identity for collection execution and is never a
+    broker position and never an endpoint URI.
+    """
+
+
 class ReconAssessmentId(_UuidId):
     """Identity of one immutable recon assessment record."""
 
@@ -254,6 +271,8 @@ __all__ = [
     "MAX_OBJECT_KEY_LENGTH",
     "CandidateEventId",
     "CausationId",
+    "CollectionPolicyId",
+    "CollectionRunId",
     "ConsumerId",
     "ContentArtifactId",
     "CorrelationId",
