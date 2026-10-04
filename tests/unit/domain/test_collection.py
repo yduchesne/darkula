@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -44,8 +45,8 @@ _ENDPOINT_B = SourceEndpointId.from_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 _RUN = CollectionRunId.from_str("33333333-3333-3333-3333-333333333333")
 
 
-def _policy(**overrides: object) -> CollectionPolicy:
-    base: dict[str, object] = {
+def _policy(**overrides: Any) -> CollectionPolicy:
+    base: dict[str, Any] = {
         "policy_id": _POLICY,
         "source_id": _SOURCE,
         "active": True,
@@ -61,8 +62,8 @@ def _policy(**overrides: object) -> CollectionPolicy:
     return CollectionPolicy(**base)
 
 
-def _run(**overrides: object) -> CollectionRun:
-    base: dict[str, object] = {
+def _run(**overrides: Any) -> CollectionRun:
+    base: dict[str, Any] = {
         "run_id": _RUN,
         "policy_id": _POLICY,
         "policy_revision": 1,

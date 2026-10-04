@@ -11,6 +11,7 @@ real module contains only fixed parameterized stored-function calls.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import UTC, datetime
 from typing import Any, Self
 from uuid import UUID
@@ -228,7 +229,7 @@ class TestRunInvocations:
         repo, _ = await self._repo([("lease_active",)])
         outcome = await repo.reclaim_run(
             run_id=_RUN,
-            execution_id="exec",
+            execution_id=str(uuid.uuid4()),
             now=_T0,
             lease_expires_at=_T0,
             max_attempts=3,
