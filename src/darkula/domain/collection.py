@@ -482,8 +482,6 @@ class CollectionRun:
             self.started_at is not None or self.completed_at is not None
         ):
             raise ValueError("a QUEUED run must not carry started/completed timestamps")
-        if self.scheduled_for < self.created_at:
-            raise ValueError("scheduled_for must not precede created_at")
 
 
 def validate_counter_deltas(
