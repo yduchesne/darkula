@@ -39,7 +39,7 @@ PR 5 was implemented from `~/Downloads/DARKULA_PR_5_DETAILED_PLAN.md` (commit ba
 Implement scenario/truth model and first realistic forum source with deterministic fixtures/rendering sufficient for crawler and recon tests.
 
 ## PR 7 — Crawler contract and sandbox foundation
-Implement CrawlRequest/CrawlResult, trusted worker/controller, sandbox contract, resource/egress constraints, and Fake World crawler integration. No unrestricted production dark-web crawling before security acceptance criteria are met.
+Implement the application-facing Crawler contract (`CrawlRequest -> CrawlResult`), trusted `CrawlerController`, first-class Sandbox SPI with `PodmanSandbox`, minimal sandboxed `CrawlerRuntime`, resource/filesystem/egress/output constraints, cancellation/cleanup semantics, and Fake World HTTP/browser integration. Unit tests may use `FakeSandbox`; the canonical integration slice uses the real controller, real Podman sandbox, real crawler runtime, real Playwright/Chromium, and BlackGate over HTTP. ReconAgent/DeepAgent remains outside the sandbox and is PR 10 scope. No unrestricted production dark-web crawling before security acceptance criteria are met.
 
 ## PR 8 — Normalization and artifact storage
 Implement ContentArtifact/NormalizedContent, safe normalization boundary, ObjectStore artifact flow, hashes/deduplication with independent provenance, and S3-compatible adapter work as appropriate.
