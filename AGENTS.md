@@ -39,6 +39,25 @@ Before changing architecture or domain behavior, read docs/ARCHITECTURE.md, docs
 - Keep docs synchronized with architectural changes.
 - Do not prematurely freeze details explicitly marked TBD in the architecture documents.
 
+## Fake World rules (PR 6, durable)
+- Fake World truth never enters the production pipeline: production domain/
+  application/infrastructure packages (and composition) must never import
+  `darkula.testing.fake_world` or `FakeWorldTruth`; the static guard in
+  `tests/unit/testing/fake_world/test_architecture.py` stays enforced.
+- Scenarios are versioned and deterministic: same ID/version/world/request
+  renders identical output; fixed UTC timestamps only, no wall clock or
+  global randomness; incompatible semantic changes require a version bump,
+  never silent mutation of a frozen canonical scenario.
+- No live illicit content: Fake World material is fully synthetic (names,
+  organizations, credentials, posts, attachments, identities); never copy
+  real stolen/victim/underground data or executable malware fixtures.
+- The Fake World renderer is the external-world test boundary: crawler/sandbox
+  PRs adapt to it, and PR 6+ tests must not require live network/browser/Tor
+  or a second messaging/persistence architecture for Fake World.
+- Significant canonical behaviors keep stable `FW-*` behavior IDs linked to
+  scenario/version, requirement, and deterministic tests; never drop or
+  silently renumber existing behavior IDs.
+
 ## Local Podman infrastructure
 - Darkula owns only Podman resources explicitly provisioned for Darkula. Containers, pods, networks, volumes, and other named Podman resources must use an unambiguous `darkula` namespace/prefix. Darkula scripts, tests, cleanup commands, and developer tooling must never discover, stop, remove, recreate, prune, or otherwise control resources belonging to another application.
 - An exact Darkula-looking name does not establish ownership. Every mutable/removable Darkula container or volume must carry a `darkula.owned=true` label, applied at creation and positively verified from exact-resource metadata (never inferred from name, mounts, ports, or timestamps) before reuse, mutation, or deletion. Unlabeled, wrongly labeled, or unverifiable Darkula-named resources are foreign/unknown and must fail closed — never auto-adopted, relabeled, recreated, or deleted.
