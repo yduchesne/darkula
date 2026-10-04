@@ -108,7 +108,13 @@ CrawlerController                           CrawlerRuntime
 
 The sandbox runtime contains only the dependencies required for hostile-source interaction: the Darkula crawler runtime package, HTTP/browser support, Playwright/Chromium when required, Tor connectivity support when required, parsing/rendering dependencies, and minimal serialization/IPC. It does not contain agents, LLM clients, repositories, DataStream clients, ObjectStore clients, or general Darkula application credentials.
 
+Sandbox policy is generic and capability-based rather than Darkula-service-specific. Every capability is denied unless explicitly granted for the execution. Policy is decomposed into orthogonal network, filesystem, resource, credential, runtime, and output constraints. Darkula services such as PostgreSQL, Redpanda, and ObjectStore are examples of resources that a crawler workload normally cannot reach; they are not special cases embedded in the Sandbox abstraction.
+
 A sandbox execution receives only an allow-listed workload, its bounded input, explicit capability/policy data, and narrowly scoped source authentication material when required. It returns bounded observations/artifact handles and execution metadata. Application infrastructure access remains on the trusted side.
+
+For network access, policy describes permitted destinations/protocols/ports, DNS behavior, proxies such as Tor, and applicable connection/traffic bounds. Everything not granted is denied. A Fake World crawler execution may therefore reach only its authorized Fake World endpoint; a future Tor crawl may be permitted to reach only a controlled Tor egress mechanism. A workload such as an offline document parser may receive no network capability at all.
+
+Filesystem policy similarly grants only explicit inputs and bounded ephemeral writable storage over a read-only runtime, without host filesystem or container-engine access. Runtime policy requires an unprivileged execution posture with unnecessary Linux capabilities removed, no-new-privileges, and restricted device/namespace exposure where supported. Resource and output policies bound CPU, memory, processes, disk/tmp, open files where practical, execution time, artifact count, per-artifact size, aggregate output, and permitted output forms.
 
 The Sandbox SPI owns disposable execution lifecycle: create, execute, collect bounded outputs, terminate/cancel, and destroy. Caller cancellation must terminate the workload and clean up rather than leave an orphaned browser/container. Concrete adapters may use Podman initially and may later use Docker, Kubernetes Jobs, gVisor, Firecracker, or a remote sandbox service without changing crawler semantics.
 
