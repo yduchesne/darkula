@@ -29,16 +29,7 @@ never import it — enforced by a static AST guard and a fresh-interpreter
 ## Scenario identity and versioning
 Logical scenarios have an explicit identity and integer version:
 
-```text
-scenario_id      = "blackgate-core"
-scenario_version = 1
-```
-
-`darkula.testing.fake_world.get_scenario("blackgate-core", version=1)` loads
-the canonical, fully validated, immutable definition. Unknown IDs/versions
-raise `UnknownScenarioError` (a `KeyError` subclass); invalid versions raise
-a typed validation error. Scenario definitions are shared safely (immutable);
-mutable runtime state lives only on fresh renderer instances.
+`BlackGate`, `AccessBay`, `NightLeak`, and `ShadowTalk` are the canonical fictional source names: BlackGate is a cybercrime forum, AccessBay an access/credential marketplace, NightLeak a ransomware/data-leak site, and ShadowTalk a secondary forum/cross-source discussion source. They are composites, not replicas.
 
 ## World truth vs observations
 > Fake World truth describes the complete fictional world, while source
@@ -106,23 +97,25 @@ behavior ID -> scenario/version -> archetype/rationale ->
 requirement/future capability -> deterministic test IDs -> future eval note
 ```
 
-Deterministic test-matrix IDs: `FW1..FW10` (model), `R1..R24` (rendering),
-`G1..G5` (geography/truth), `T1..T6` (traceability), `VSLICE` (component
-vertical slice), `GOLDEN` (frozen canonical hashes). The manifest is validated
-at scenario construction: duplicate IDs, dangling route/object refs, and
-missing test mapping fail fast.
+## HTTP and browser boundary
+Fake World models source behavior independently from its transport. Source renderers may be invoked directly by deterministic tests, but crawler integration must expose Fake World sources through ordinary HTTP servers. From `CrawlerRuntime`'s perspective, BlackGate and later sources are external websites; production crawler code must not know that the source is synthetic.
 
-## Security/synthetic-data discipline
-- fully fictional content — no live criminal-source dependency, no copied
-  stolen/victim data, no malware fixtures;
-- synthetic login credentials clearly labeled test-only (`# nosec` justified);
-- unsafe-looking attachment filenames remain inert data (RFC 5987-encoded in
-  headers, never used as filesystem paths);
-- device-independent golden hashes, no fixture writes, no live URL fetch;
-- truth identifiers never leak into rendered HTML/headers (regression-tested).
+The canonical crawler integration path is:
 
-## What remains for PR 15
-AccessBay/NightLeak/ShadowTalk archetypes, cross-source identity/evidence
-scenarios, and model/agent evaluations over the same scenario definitions.
-PR 7 consumes the renderer for crawler tests; PR 10 for recon; PR 12 uses the
-Washington State/D.C. ambiguity seed.
+```text
+real CrawlerController
+  -> real PodmanSandbox
+  -> real sandboxed CrawlerRuntime
+  -> real Playwright/Chromium
+  -> HTTP
+  -> Fake World server / BlackGate
+```
+
+This path exercises the browser, cookies/session state, redirects, pagination, rendered HTML, malformed content, failures/rate limits, link discovery, browser timeouts, and sandbox network policy. A direct `httpx`-only path may be useful for narrower tests but does not replace the canonical real-browser vertical slice.
+
+The Fake World HTTP layer is a thin adapter over the same scenario/truth/renderer model; it must not create a second source-behavior implementation. The renderer remains directly testable without starting HTTP infrastructure.
+
+Tests of `CrawlerController` may use `FakeSandbox` to isolate controller policy, cancellation, failure mapping, and result validation. The canonical crawler integration path does not use a `FakeCrawlerController`. A future `FakeCrawler` may implement the application-facing Crawler SPI when a higher-level component needs crawling outside its unit under test.
+
+## Structure
+The implementation treats Fake World as a subsystem rather than scattered HTML fixtures, with scenario definitions, source renderers/fixtures, independent truth, and a reusable HTTP-hosting adapter for crawler integration. Transport adapters expose observations only; hidden `FakeWorldTruth` never crosses into production Darkula code. Exact directories/format remain owned by the implementing PR.

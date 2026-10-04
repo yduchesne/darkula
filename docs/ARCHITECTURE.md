@@ -43,11 +43,82 @@ The Coordinator owns final reconnaissance/crawling decisions; agents recommend a
 
 **SourceCollectionService** deterministically turns a Source and CollectionPolicy into bounded collection work. It is not an agent.
 
-**Crawler** executes hostile retrieval/traversal behind a sandbox boundary. A trusted worker/controller should hold infrastructure credentials and provide a narrow contract to disposable sandbox execution.
+**Crawler** is the Darkula application-facing capability for bounded source inspection and collection. Its implementation is split across the trust boundary: a trusted `CrawlerController` validates and orchestrates work, while a minimal `CrawlerRuntime` performs hostile network interaction and rendering inside a disposable sandbox. The application-facing Crawler contract remains `crawl(CrawlRequest) -> CrawlResult`; callers do not control the sandbox or browser directly.
+
+**Sandbox** is a first-class Darkula SPI independent of crawler semantics. It executes an allow-listed workload subject to explicit resource, network, filesystem, credential, time, input, and output constraints. The initial production/local adapter is expected to be `PodmanSandbox`; tests above this boundary may use `FakeSandbox`. The sandbox contract must not become a generic remote-shell API.
 
 **Content Extraction** extracts entities, observables/IOCs, geography, topics/classifications, and relationships. Deterministic and model-backed extractors may coexist. Extraction is not source analysis.
 
 **SourceAnalyst** consumes source metadata, collection history, normalized/extracted facts, and prior assessments to create source-level assessments. It does not browse directly.
+
+## Reconnaissance, search, and controlled browsing
+
+Reconnaissance separates discovery from hostile-source inspection. A ReconAgent may be implemented as a LangChain DeepAgent, but it remains in the trusted Darkula process and depends on Darkula-owned capabilities rather than receiving direct browser control.
+
+```text
+                         TRUSTED DARKULA
+
+                           Coordinator
+                               |
+                           ReconAgent
+                          (DeepAgent)
+                          /        \
+                         /          \
+               WebSearchProvider   Crawler SPI
+                  discovery            |
+                                 CrawlerController
+                                       |
+                                   Sandbox SPI
+                                       |
+                         ===== SECURITY BOUNDARY =====
+                                       |
+                                 CrawlerRuntime
+                                       |
+                              Playwright/Chromium
+                                       |
+                                  HTTP / Tor
+                                       |
+                         ===== EXTERNAL WORLD =====
+                                       |
+                           real source / Fake World
+```
+
+The two ReconAgent capabilities have different purposes:
+
+- **WebSearchProvider** discovers candidate sources, URLs, references, and public-web context through a search provider. Search results are observations, not authorization to crawl.
+- **Crawler** inspects a specific source under an explicit bounded `CrawlRequest`. The ReconAgent may iteratively request inspection and reason over returned observations, but Darkula validates and authorizes each crawl. The agent is never given a raw Playwright/browser tool.
+
+The expected reconnaissance loop is therefore `ReconAgent -> bounded crawl request -> CrawlerController -> Sandbox -> CrawlerRuntime -> bounded observation -> ReconAgent`. The Coordinator retains final lifecycle and work-authorization authority.
+
+This agentic reconnaissance path is distinct from recurring collection. Once a candidate has become a managed Source with a CollectionPolicy, `SourceCollectionService` should normally drive deterministic bounded collection rather than require an agent to choose each navigation step.
+
+## Crawler and sandbox execution model
+
+The crawler intentionally straddles the trust boundary:
+
+```text
+TRUSTED                                      SANDBOXED
+CrawlerController                           CrawlerRuntime
+  validate CrawlRequest        -------->      execute navigation
+  enforce application policy                 HTTP/browser/Tor
+  construct sandbox policy                   hostile parsing/rendering
+  start/terminate execution     <--------      bounded outputs/artifacts
+  validate returned result
+```
+
+The sandbox runtime contains only the dependencies required for hostile-source interaction: the Darkula crawler runtime package, HTTP/browser support, Playwright/Chromium when required, Tor connectivity support when required, parsing/rendering dependencies, and minimal serialization/IPC. It does not contain agents, LLM clients, repositories, DataStream clients, ObjectStore clients, or general Darkula application credentials.
+
+Sandbox policy is generic and capability-based rather than Darkula-service-specific. Every capability is denied unless explicitly granted for the execution. Policy is decomposed into orthogonal network, filesystem, resource, credential, runtime, and output constraints. Darkula services such as PostgreSQL, Redpanda, and ObjectStore are examples of resources that a crawler workload normally cannot reach; they are not special cases embedded in the Sandbox abstraction.
+
+A sandbox execution receives only an allow-listed workload, its bounded input, explicit capability/policy data, and narrowly scoped source authentication material when required. It returns bounded observations/artifact handles and execution metadata. Application infrastructure access remains on the trusted side.
+
+For network access, policy describes permitted destinations/protocols/ports, DNS behavior, proxies such as Tor, and applicable connection/traffic bounds. Everything not granted is denied. A Fake World crawler execution may therefore reach only its authorized Fake World endpoint; a future Tor crawl may be permitted to reach only a controlled Tor egress mechanism. A workload such as an offline document parser may receive no network capability at all.
+
+Filesystem policy similarly grants only explicit inputs and bounded ephemeral writable storage over a read-only runtime, without host filesystem or container-engine access. Runtime policy requires an unprivileged execution posture with unnecessary Linux capabilities removed, no-new-privileges, and restricted device/namespace exposure where supported. Resource and output policies bound CPU, memory, processes, disk/tmp, open files where practical, execution time, artifact count, per-artifact size, aggregate output, and permitted output forms.
+
+The Sandbox SPI owns disposable execution lifecycle: create, execute, collect bounded outputs, terminate/cancel, and destroy. Caller cancellation must terminate the workload and clean up rather than leave an orphaned browser/container. Concrete adapters may use Podman initially and may later use Docker, Kubernetes Jobs, gVisor, Firecracker, or a remote sandbox service without changing crawler semantics.
+
+Crawler navigation policy and sandbox network policy are defense-in-depth controls. `CrawlRequest` defines what navigation Darkula authorized; the sandbox independently constrains what the workload can reach.
 
 ## Data plane
 ```text
@@ -97,14 +168,14 @@ Darkula should overlap independent I/O waits when doing so improves throughput o
 Concurrency is an optimization subject to correctness. Keep work serialized, or apply a stricter concurrency policy, when ordering, transaction boundaries, external rate limits, resource budgets, backpressure, or other invariants require it. Concurrent code must have explicit error and cancellation behavior and must not leave orphaned background tasks.
 
 ## SPIs and adapters
-Foundational Darkula-owned interfaces include persistence (DarkulaSpi or equivalent), DataStream, ObjectStore, LlmClient, and AgentObservability. External framework/provider types must not leak through them.
+Foundational Darkula-owned interfaces include persistence (DarkulaSpi or equivalent), DataStream, ObjectStore, LlmClient, AgentObservability, and the planned Crawler, Sandbox, and WebSearchProvider boundaries. External framework/provider types must not leak through them.
 
 LlmClient supports structured, schema-validated model interactions. FakeLlmClient is the deterministic test boundary; LangChainLlmClient is an intended production adapter.
 
 AgentObservability abstracts AI-specific observability semantics so LangSmith, Langfuse, and future providers are replaceable. OpenTelemetry itself is the selected operational telemetry standard and is not hidden behind a generic observability SPI.
 
 ## Security boundary
-Hostile network interaction and dangerous parsing/rendering should occur inside the strongest practical sandbox boundary. Normalized content remains untrusted. SourceAnalyst and ordinary application code receive constrained artifacts/data, not arbitrary browsing capability. See SECURITY.md.
+Hostile network interaction and dangerous parsing/rendering occur inside the strongest practical sandbox boundary. ReconAgent, SourceAnalyst, Coordinator, LlmClient, persistence, messaging, artifact storage, and ordinary application code remain outside that boundary. Normalized content remains untrusted. Agents receive constrained observations/data, not arbitrary browser or sandbox control. See SECURITY.md.
 
 ## Local infrastructure isolation
 Darkula's locally published service ports use application prefix `3` to avoid collisions with independently running application stacks. The prefix applies only to host-published ports: services retain their standard ports inside containers and on the Darkula Podman network. For example, PostgreSQL uses container port `5432` and is published on the host as `35432` (`35432:5432`).
