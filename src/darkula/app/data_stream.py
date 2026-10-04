@@ -2,8 +2,9 @@
 """Darkula-owned producer/consumer stream contract.
 
 ``DataStream`` is the Darkula-wide asynchronous command/event and reference
-plane (Redpanda/Kafka is only a future adapter behind this boundary). It
-models **both** producing and consuming through one coherent abstraction:
+plane. Redpanda/Kafka is implemented behind this provider-neutral boundary;
+application and domain code depend only on this contract. It models **both**
+producing and consuming through one coherent abstraction:
 
 - publishing typed messages to a logical :class:`StreamName`;
 - polling a bounded number of records from a stream as a consumer;
@@ -17,8 +18,9 @@ Frozen semantics:
 
 The message envelope is Darkula-owned and serialization-neutral
 (``payload`` is a JSON-compatible mapping, not JSON bytes and never trace
-headers). Exact Redpanda topic names, partitions, offsets, wire codecs,
-retry queues, and dead-letter topology remain PR 5 concerns.
+headers). Redpanda topic names, partitions, offsets, and wire encoding remain
+adapter concerns and do not leak into this contract. Retry queues and
+dead-letter topology remain future concerns.
 
 A :class:`StreamPosition` is transport state only: never domain identity and
 never a PostgreSQL idempotency key. Never equate a stream position with a
@@ -47,7 +49,7 @@ type JsonValue = (
 )
 
 #: Frozen trace-header names that must never appear in the domain payload.
-#: Trace propagation is future adapter metadata (see docs/OBSERVABILITY.md).
+#: Trace propagation is adapter transport metadata (see docs/OBSERVABILITY.md).
 _TRACE_HEADER_KEYS = frozenset({"traceparent", "tracestate", "baggage"})
 
 
@@ -133,8 +135,8 @@ def _validate_json_value(value: object, key: str) -> None:
 class StreamMessage:
     """One Darkula-owned, serialization-neutral stream message.
 
-    The envelope freezes cross-cutting semantics only; the PR 5 wire
-    codec maps these fields onto broker messages in a canonical envelope.
+    The envelope freezes cross-cutting semantics only; the Redpanda adapter's
+    wire codec maps these fields onto broker messages in a canonical envelope.
     """
 
     message_id: MessageId
