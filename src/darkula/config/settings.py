@@ -198,16 +198,50 @@ class DataStreamSettings(BaseModel):
 class ObjectStoreSettings(BaseModel):
     """Large/raw artifact storage selection.
 
-    ``local_root`` is the filesystem root to which the PR 3
-    :class:`LocalFileObjectStore` confines every key. It is required
-    (composition fails fast) when ``driver`` is ``LOCAL`` and optional
-    otherwise.
+    ``local_root`` confines the PR 3 :class:`LocalFileObjectStore` to one
+    filesystem root (required and fail-fast when ``driver`` is ``LOCAL``).
+    The S3/R2-compatible production adapter (PR 8) reads the remote fields
+    below; ``bucket`` is required for the ``s3``/``r2`` drivers and the rest
+    are overridable, with non-empty environment variables as the ultimate
+    override. Diagnostics redact the credential-like fields.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     driver: ObjectStoreDriver = ObjectStoreDriver.LOCAL
     local_root: pathlib.Path | None = None
+
+    # Remote (S3/R2-compatible) fields. Never committed to source control.
+    bucket: str | None = None
+    endpoint_url: str | None = None
+    region: str | None = None
+    access_key_id: str | None = None
+    secret_access_key: str | None = None
+    session_token: str | None = None
+    prefix: str | None = None
+    connect_timeout_seconds: float = 10.0
+    read_timeout_seconds: float = 60.0
+
+    @field_validator("bucket", "endpoint_url", "region", "prefix")
+    @classmethod
+    def _validate_optional_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("remote object-store field must not be blank")
+        if any(ord(ch) < 32 for ch in stripped):
+            raise ValueError(
+                "remote object-store field must not contain control characters"
+            )
+        return stripped
+
+    @field_validator("connect_timeout_seconds", "read_timeout_seconds")
+    @classmethod
+    def _validate_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("object-store timeouts must be positive")
+        return value
 
 
 class SandboxDriver(StrEnum):

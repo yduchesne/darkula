@@ -34,6 +34,24 @@ SourceAnalyst never browses the dark web directly. Model inputs are adversarial 
 ## Artifact security
 ObjectStore credentials remain in trusted components. Validate sizes/types/names and safely handle archives. Content-addressed deduplication is desirable but does not merge provenance. Retention/deletion policy must be explicit before production collection.
 
+**PR 8 delivered controls (normalization and artifact storage).** All crawler
+output remains untrusted after normalization. Normalization runs on the
+confided trusted side, is deterministic and non-LLM, and never treats hostile
+page text as trusted instructions -- prompt-injection content is stored as
+data, not interpreted. Artifact storage is trusted-side only: the crawler
+sandbox never receives an ObjectStore client, S3/R2 credentials, or any
+storage capability. Physical ObjectKeys are derived solely from the SHA-256
+representation hash (`sha256/<2>/<64>`), so hostile source URIs/filenames can
+never influence filesystem/object-store traversal or key naming. A bounded
+crawler sample/excerpt is stored as `SAMPLE` and is never labeled the complete
+original artifact; completeness applies to the specific stored
+representation. Provider (S3/R2) errors are mapped to bounded Darkula errors
+and provider exception text never escapes. S3 ETag is never treated as the
+Darkula SHA-256 content hash. Credentials/access keys/secret/session fields
+are redacted from configuration diagnostics; no ObjectStore credential value
+or high-cardinality identity (URI, object key, hash, title, source name)
+appears in telemetry.
+
 ## Data and telemetry
 Never log secrets, credentials, unrestricted stolen data, or raw authentication material. External agent-observability services require conservative content-capture policy and redaction. OTEL baggage crossing sandboxes/messages is allow-listed.
 

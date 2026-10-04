@@ -22,6 +22,7 @@ from darkula.infrastructure.data_stream import RedpandaDataStream
 from darkula.infrastructure.object_store import (
     InMemoryObjectStore,
     LocalFileObjectStore,
+    S3CompatibleObjectStore,
 )
 from darkula.infrastructure.observability import NoOpAgentObservability
 from darkula.infrastructure.persistence.postgresql.spi import PostgresDarkulaSpi
@@ -96,27 +97,51 @@ class TestFailFast:
         runtime = compose(settings=settings)
         assert isinstance(runtime.data_stream, RedpandaDataStream)
 
-    def test_production_profile_fails_fast_until_pr8(self) -> None:
-        # PR 5 delivered Redpanda; S3 object storage still fails fast.
+    def test_production_profile_composes_s3_with_bucket(self) -> None:
+        # PR 8 delivered the S3-compatible adapter; production selects s3 and
+        # requires the operator to provide a bucket.
         with pytest.MonkeyPatch.context() as monkeypatch:
             monkeypatch.setenv("DARKULA_CONFIG_PROFILE", "production")
+            monkeypatch.setenv("DARKULA_OBJECT_STORE__BUCKET", "darkula-prod")
             settings = load_settings(config_dir=_SHIPPED_CONFIG)
-        with pytest.raises(UnavailableDriverError, match="S3"):
-            compose(settings=settings)
+        runtime = compose(settings=settings)
+        assert isinstance(runtime.object_store, S3CompatibleObjectStore)
 
-    def test_s3_object_store_fails_fast(self) -> None:
+    def test_s3_with_bucket_composes_adapter(self) -> None:
         with pytest.MonkeyPatch.context() as monkeypatch:
             monkeypatch.setenv("DARKULA_OBJECT_STORE__DRIVER", "s3")
+            monkeypatch.setenv("DARKULA_OBJECT_STORE__BUCKET", "darkula-s3")
             settings = load_settings(config_dir=_SHIPPED_CONFIG)
-        with pytest.raises(UnavailableDriverError, match="S3"):
-            compose(settings=settings)
+        runtime = compose(settings=settings)
+        assert isinstance(runtime.object_store, S3CompatibleObjectStore)
 
-    def test_r2_object_store_fails_fast(self) -> None:
+    def test_r2_with_bucket_composes_same_adapter(self) -> None:
         with pytest.MonkeyPatch.context() as monkeypatch:
             monkeypatch.setenv("DARKULA_OBJECT_STORE__DRIVER", "r2")
+            monkeypatch.setenv("DARKULA_OBJECT_STORE__BUCKET", "darkula-r2")
             settings = load_settings(config_dir=_SHIPPED_CONFIG)
-        with pytest.raises(UnavailableDriverError, match="R2"):
-            compose(settings=settings)
+        runtime = compose(settings=settings)
+        assert isinstance(runtime.object_store, S3CompatibleObjectStore)
+
+    def test_remote_without_bucket_fails_fast(self) -> None:
+        # C5: missing mandatory remote config fails fast (never falls back).
+        for driver in ("s3", "r2"):
+            with pytest.MonkeyPatch.context() as monkeypatch:
+                monkeypatch.setenv("DARKULA_OBJECT_STORE__DRIVER", driver)
+                settings = load_settings(config_dir=_SHIPPED_CONFIG)
+            with pytest.raises(UnavailableDriverError, match="bucket"):
+                compose(settings=settings)
+
+    def test_composition_makes_no_network_call(self) -> None:
+        # C9: constructing the S3-compatible adapter performs no network I/O.
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("DARKULA_OBJECT_STORE__DRIVER", "s3")
+            monkeypatch.setenv("DARKULA_OBJECT_STORE__BUCKET", "darkula-s3")
+            settings = load_settings(config_dir=_SHIPPED_CONFIG)
+        store = compose(settings=settings).object_store
+        assert isinstance(store, S3CompatibleObjectStore)
+        # Client is only built on first use; constructing is offline.
+        assert store._client_cache is None
 
     def test_langsmith_backend_fails_fast(self) -> None:
         with pytest.MonkeyPatch.context() as monkeypatch:

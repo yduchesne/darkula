@@ -23,6 +23,8 @@ EXPECTED_TABLES = {
     "source_assessment",
     "message_outbox",
     "processed_message",
+    "content_artifact",
+    "normalized_content",
 }
 
 EXPECTED_FUNCTIONS = {
@@ -43,6 +45,11 @@ EXPECTED_FUNCTIONS = {
     "outbox_claim_v1",
     "outbox_mark_published_v1",
     "processed_message_record_v1",
+    "content_artifact_create_v1",
+    "content_artifact_get_v1",
+    "content_artifact_find_v1",
+    "normalized_content_create_v1",
+    "normalized_content_get_v1",
 }
 
 
@@ -83,8 +90,8 @@ class TestMigrations:
                 ledger = [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
-        # The ledger head is the newest shipped artifact (PR 5 added 0002).
-        assert ledger[-1].startswith("0002_message_outbox.sql")
+        # The ledger head is the newest shipped artifact (PR 8 added 0003).
+        assert ledger[-1].startswith("0003_content.sql")
 
     def test_expected_tables_exist(self, database_settings: DatabaseSettings) -> None:
         conn = _raw_connect(database_settings)

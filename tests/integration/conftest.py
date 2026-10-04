@@ -52,6 +52,8 @@ TABLE_NAMES = (
     "source",
     "message_outbox",
     "processed_message",
+    "content_artifact",
+    "normalized_content",
 )
 
 #: Host-published Darkula Redpanda Kafka port (container port 9092).

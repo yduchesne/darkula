@@ -209,7 +209,7 @@ PR 2 delivered the Python project/tooling foundation and the foundational contra
 - Python 3.14 project managed by `uv` (`pyproject.toml`, committed `uv.lock`, `src/` layout), gated by Ruff, strict mypy, pytest (strict async), coverage >= 85%, `build.sh`, pre-commit, and pull-request CI (`./build.sh --qa`, `./build.sh --sec`).
 - Foundational interface modules: `darkula.app.llm` (`LlmClient`), `darkula.app.data_stream` (`DataStream`), `darkula.app.object_store` (`ObjectStore`), `darkula.app.persistence` (`UnitOfWork`/`DarkulaSpi`), `darkula.app.agent_observability` (`AgentObservability`), plus `darkula.domain.identifiers` and the `darkula.config.settings` skeleton and `darkula.telemetry.decorators` contract.
 
-PR 5 delivers the Redpanda DataStream adapter and the reliable-messaging foundation; PostgreSQL persistence shipped in PR 4. S3/R2, LangChain, LangSmith/Langfuse, and crawler work remain future work behind these interfaces.
+PR 5 delivers the Redpanda DataStream adapter and the reliable-messaging foundation; PostgreSQL persistence shipped in PR 4; PR 8 delivers S3/R2-compatible ObjectStore storage and the normalization/content boundary. LangChain, LangSmith/Langfuse, and agent/crawler-collection TBD items remain future work behind these interfaces.
 
 # PR 3 update — configuration, observability, and deterministic fakes
 
@@ -260,3 +260,54 @@ PR 5 adds **no** crawler/sandbox, Fake World, collection, ReconAgent/Coordinator
 ## Intentionally undecided in PR 1
 
 Exact Python package layout; detailed PostgreSQL schema (PR 4); stream topic names and serialization; crawler/browser/Tor technologies; sandbox technology; object-key layout; exact extraction ontology; scheduling implementation; deployment topology; detailed secret backend; exact provider selection; and multi-tenancy.
+
+# PR 8 update — normalization and artifact storage
+
+PR 8 delivered the deterministic trusted-side content-ingestion boundary that
+converts bounded crawler observations into durable normalized content plus
+ObjectStore-backed artifacts, with independent provenance.
+
+```text
+Crawler (bounded observations)
+   -> ContentObservation (Darkula-owned input DTO; section 13 mapper)
+   -> normalization boundary (deterministic, non-LLM, versioned "text-v1")
+   -> ObjectStore bytes (content-addressed, deduplicated)
+   -> PostgreSQL normalized metadata/provenance (short UoW)
+```
+
+- **Domain** (`src/darkula/domain/content.py`): `ArtifactCompleteness`,
+  `ArtifactKind`, `ContentArtifact`, `NormalizedContent`, and
+  `ContentObservation`, with frozen identity distinctions (content ID /
+  artifact ID / `ObjectKey` / `ContentHash` / provenance).
+- **Normalization** (`src/darkula/app/normalization.py`): one
+  `ContentNormalizer` capability (`DeterministicContentNormalizer`) that is
+  deterministic and non-LLM, canonicalizes text line endings/control chars,
+  hashes exact stored bytes, and resolves the stored artifact representation.
+- **Artifact storage** (`src/darkula/app/artifacts.py`): content-addressed
+  `sha256/<2>/<64>` keys and hash-first deduplication that verifies existing
+  objects (never trust-a-key silently) and preserves distinct artifact
+  records per representation. Reuses the existing ObjectStore SPI; no second
+  blob SPI.
+- **Orchestration** (`src/darkula/app/content.py`): `ContentIngestService`
+  performs ObjectStore I/O outside any PostgreSQL transaction, then persists
+  artifact metadata + normalized provenance atomically in a short unit of
+  work; dedup never merges provenance; retried observations are idempotent
+  on the provenance identity.
+- **Persistence** (`migrations/0003_content.sql`): `content_artifact` and
+  `normalized_content` tables plus versioned stored functions; production
+  Python persists only provider-neutral metadata (full text/bytes live in
+  ObjectStore, with a small bounded text preview in PostgreSQL).
+- **S3-compatible adapter** (`src/darkula/infrastructure/object_store/s3.py`):
+  `S3CompatibleObjectStore` serves both `s3` and `r2` drivers through
+  endpoint/credentials configuration, over `boto3` 1.43.x (Python 3.14) with
+  blocking SDK calls isolated via bounded `asyncio.to_thread`, single-PUT
+  streaming (PR 8 artifacts are bounded), and provider errors mapped to
+  bounded Darkula errors.
+- **Security**: the sandbox never receives an ObjectStore client or S3/R2
+  credentials; keys derive only from the SHA-256 representation hash (never
+  hostile URI/filename); samples/excerpts are `SAMPLE`, never complete
+  originals; normalization stays untrusted-by-design.
+
+PR 8 adds **no** collection orchestration (PR 9), no extraction/analysis
+(PR 11-14), no multi-tenancy, no live provider crawling, and no schema
+registry. It performs no rearchitecting of the PR 7 crawler.

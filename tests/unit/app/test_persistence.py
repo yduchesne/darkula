@@ -11,6 +11,7 @@ import pytest
 
 from darkula.app.persistence import DarkulaSpi, UnitOfWork
 from darkula.app.repositories import (
+    ContentRepository,
     OutboxRepository,
     ProcessedMessageRepository,
     SourceCandidateRepository,
@@ -51,6 +52,10 @@ class _RecordingUnitOfWork(UnitOfWork):
     @property
     def processed_messages(self) -> ProcessedMessageRepository:
         raise AssertionError("recording stub exposes no processed-message repository")
+
+    @property
+    def content(self) -> ContentRepository:
+        raise AssertionError("recording stub exposes no content repository")
 
 
 class _RecordingSpi(DarkulaSpi):

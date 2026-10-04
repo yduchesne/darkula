@@ -32,9 +32,18 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from darkula.app.data_stream import StreamMessage
+from darkula.app.object_store import ContentHash
+from darkula.domain.content import (
+    ArtifactCompleteness,
+    ArtifactKind,
+    ContentArtifact,
+    NormalizedContent,
+)
 from darkula.domain.identifiers import (
     ConsumerId,
+    ContentArtifactId,
     MessageId,
+    NormalizedContentId,
     SourceCandidateId,
     SourceId,
     StreamName,
@@ -50,6 +59,7 @@ from darkula.domain.source import (
 )
 
 __all__ = [
+    "ContentRepository",
     "OutboxRecord",
     "OutboxRepository",
     "ProcessedMessageRepository",
@@ -261,3 +271,55 @@ class SourceRepository(ABC):
         self, source_id: SourceId
     ) -> tuple[SourceAssessment, ...]:
         """Return the source's assessments in deterministic order."""
+
+
+class ContentRepository(ABC):
+    """Normalized-content and content-artifact persistence contract (PR 8).
+
+    All methods are transaction-scoped through the owning unit of work.
+    ObjectStore owns the artifact bytes; these methods persist only
+    structured metadata/provenance. ``create_observation`` is idempotent on
+    the provenance identity ``(crawl_request_id, observation_index,
+    source_uri)``: a retried observation raises :class:`ConflictError`
+    instead of creating an uncontrolled duplicate record.
+    """
+
+    @abstractmethod
+    async def create_artifact(self, artifact: ContentArtifact) -> None:
+        """Persist one logical artifact record.
+
+        :raises ConflictError: if the artifact identity or representation
+            already exists. The original record is never overwritten.
+        """
+
+    @abstractmethod
+    async def get_artifact(
+        self, artifact_id: ContentArtifactId
+    ) -> ContentArtifact | None:
+        """Return the artifact record or ``None`` when absent."""
+
+    @abstractmethod
+    async def find_artifact_by_representation(
+        self,
+        *,
+        content_hash: ContentHash,
+        kind: ArtifactKind,
+        completeness: ArtifactCompleteness,
+    ) -> ContentArtifact | None:
+        """Return the existing artifact record for a representation identity,
+        or ``None`` when none exists."""
+
+    @abstractmethod
+    async def create_observation(self, content: NormalizedContent) -> None:
+        """Persist one immutable normalized observation.
+
+        :raises ConflictError: if the provenance identity (or content id)
+            already exists.
+        :raises IntegrityError: if the referenced artifact does not exist.
+        """
+
+    @abstractmethod
+    async def get_observation(
+        self, content_id: NormalizedContentId
+    ) -> NormalizedContent | None:
+        """Return the normalized observation or ``None`` when absent."""

@@ -28,6 +28,21 @@ Before changing architecture or domain behavior, read docs/ARCHITECTURE.md, docs
 - Stream messages are small commands/events/references. Raw HTML, PDFs, screenshots, and other large artifacts belong in ObjectStore, never in the stream.
 - Kafka/Redpanda types never leak into domain/application code; the `DataStream` boundary is the only transport interface application code may use.
 - Treat all collected content as untrusted even after normalization.
+- Normalization/artifact invariants (PR 8, durable): ObjectStore owns bytes;
+  PostgreSQL owns structured identity/provenance for `ContentArtifact` and
+  `NormalizedContent`; an `ObjectKey` is a storage address (never identity,
+  never provenance, never a content hash); physical content-addressed
+  deduplication NEVER merges provenance — two observations with identical
+  bytes/hash remain distinct immutable observations; a bounded
+  sample/excerpt is never represented as the complete original artifact
+  (completeness applies to the specific stored representation); the crawler
+  sandbox never receives any ObjectStore client, S3/R2 credentials, or
+  storage capability (storage is trusted-side only); normalization is
+  deterministic and non-LLM — the same supported input yields the same
+  canonical bytes/hash and hostile content is stored as data, never
+  interpreted; no raw hostile artifact body or high-cardinality identity
+  (URI/object key/hash/title) may be placed in telemetry; S3 ETag is never
+  treated as the Darkula SHA-256 representation hash.
 - Crawler/sandbox invariants (PR 7, durable): exactly one fresh disposable container per sandbox execution, never container reuse; default-deny isolation (network, filesystem, runtime, resource, input, output capabilities granted only when the specific execution needs them); a crawl's authorized destination is exactly its `AllowedOrigin`, enforced below workload logic AND by the runtime's origin check; the sandbox never contains or receives Darkula application credentials, LLM/DB/DataStream/ObjectStore clients, or general secrets (only the narrowly scoped source credential of that crawl may cross); there is never an unsandboxed fallback — a missing podman/image/network fails closed; controller and sandbox podsman interactions use no broad cleanup and remove/repurpose only resources positively verified `darkula.owned=true` by exact metadata; raw HTML/PDF/download bodies never cross the boundary as output (only bounded JSON observations/samples; artifact storage is ObjectStore/PR 8 work); caller cancellation must terminate the workload and remove the disposable container before propagating.
 - For independent I/O-bound operations, prefer bounded asynchronous concurrency so I/O waits can overlap. Use `asyncio.gather()` where it fits, with an explicit concurrency bound (for example bounded batches, a semaphore, or a bounded worker/task pool). Never create unbounded task fan-out. Preserve ordering, transaction, rate-limit, resource, error, and cancellation semantics where they require serialization or tighter control.
 

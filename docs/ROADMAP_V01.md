@@ -73,7 +73,33 @@ illicit-source crawling is enabled; ReconAgent/DeepAgent remains outside the
 sandbox and is PR 10 scope.
 
 ## PR 8 — Normalization and artifact storage
-Implement ContentArtifact/NormalizedContent, safe normalization boundary, ObjectStore artifact flow, hashes/deduplication with independent provenance, and S3-compatible adapter work as appropriate.
+
+**DELIVERED** (implementation baseline `b97a751e96e3de2682f45ee9b110b590abcdbd5d`):
+
+- Domain: `ArtifactCompleteness`/`ArtifactKind`, `ContentArtifact`,
+  `NormalizedContent`, `ContentObservation`, `ContentArtifactId`/
+  `NormalizedContentId`, with frozen identity distinctions.
+- Deterministic non-LLM normalization (`normalization_version="text-v1"` in
+  `app/normalization.py`) with versioned canonicalization and typed bounded
+  errors; content-addressed ObjectStore storage
+  (`sha256/<2>/<64>`) with hash-first deduplication that preserves
+  independent provenance (`app/artifacts.py`); `app/content.py`
+  orchestration keeps ObjectStore I/O outside short PostgreSQL UoWs.
+- Persistence via immutable `migrations/0003_content.sql`
+  (`content_artifact`, `normalized_content`) and versioned stored
+  functions, exposed through the new `ContentRepository` on the UnitOfWork.
+- `S3CompatibleObjectStore` serving both `s3` and `r2` (boto3 1.43.x on
+  Python 3.14, `asyncio.to_thread` isolation, bounded single-PUT streaming,
+  provider errors mapped), S3/R2 composition/configuration, credential
+  redaction.
+- Tests: N/A/S/P/C unit matrices plus real-crawler -> normalization ->
+  ObjectStore -> PostgreSQL vertical slice, dedup/provenance slice,
+  changed-content slice, and failure slice (`./build.sh --intg`); static
+  guards proving the crawler runtime stays ObjectStore/SDK-free.
+
+PR 8 adds **no** CollectionPolicy/CollectionRun/SourceCollectionService
+(PR 9), no ReconAgent/DeepAgent (PR 10), no extraction/analysis (PR 11-14),
+no live provider crawling, and no rearchitecting of the PR 7 crawler.
 
 ## PR 9 — Collection
 Implement CollectionPolicy, CollectionRun, SourceCollectionService, asynchronous crawl work, durable state transitions, and collection telemetry.

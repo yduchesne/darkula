@@ -166,6 +166,26 @@ class SourceAssessmentId(_UuidId):
     """Identity of one immutable, time-windowed source assessment record."""
 
 
+class ContentArtifactId(_UuidId):
+    """Identity of one :class:`~darkula.domain.content.ContentArtifact`.
+
+    A logical artifact record/reference; distinct from the physical
+    ``ObjectKey`` it addresses and from every ``NormalizedContentId`` that
+    observes it. PR 8 freezes the rule that bytes deduplication never merges
+    these records.
+    """
+
+
+class NormalizedContentId(_UuidId):
+    """Identity of one normalized content observation (PR 8).
+
+    One observation's semantic/persistence identity, distinct from
+    ``ContentArtifactId``, from ``ObjectKey``, and from ``ContentHash``. Two
+    observations may share a physical artifact and its hash while remaining
+    distinct provenance records.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class _BoundedName:
     """Immutable bounded-name base for logical Darkula names."""
@@ -235,8 +255,10 @@ __all__ = [
     "CandidateEventId",
     "CausationId",
     "ConsumerId",
+    "ContentArtifactId",
     "CorrelationId",
     "MessageId",
+    "NormalizedContentId",
     "ObjectKey",
     "OperationName",
     "ReconAssessmentId",

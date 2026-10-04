@@ -51,6 +51,26 @@ Tracer/meter resolution goes through the injectable module seams `get_tracer` / 
 
 Explicitly deferred: OTLP exporters/Collector deployment, Prometheus/Loki/Jaeger/Grafana wiring, and vendor agent observability (LangSmith/Langfuse) remain future PRs.
 
+## PR 8 status — normalization and artifact telemetry
+
+PR 8 instruments the content boundary with the existing decorators and
+bounded direct counters:
+
+- **content.normalize** — one span per normalization plus
+  `darkula.content.normalize.count` and `content.normalize.duration`
+  (outcome success/error), emitted by
+  `DeterministicContentNormalizer.normalize`;
+- **artifact.store** — one span per storage operation plus
+  `darkula.artifact.store.count` / `artifact.store.duration`, and dynamic
+  low-cardinality counters `darkula.artifact.stored` (new physical object),
+  `darkula.artifact.deduplicated` (verified reuse), and
+  `darkula.artifact.bytes` (bytes stored on a new object).
+
+Attributes are limited to the static, bounded decorator attributes and the
+``darkula.outcome`` dimension. Telemetry never carries a URI, object key,
+content hash, title, source name, credential, or content body -- no
+high-cardinality or secret-bearing identifier (section 19 of the PR 8 plan).
+
 ## Operational telemetry
 Darkula standardizes client-side operational telemetry on OpenTelemetry:
 ```text

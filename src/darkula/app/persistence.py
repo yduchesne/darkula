@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
     from darkula.app.repositories import (
+        ContentRepository,
         OutboxRepository,
         ProcessedMessageRepository,
         SourceCandidateRepository,
@@ -129,6 +130,12 @@ class UnitOfWork(ABC):
     @abstractmethod
     def processed_messages(self) -> ProcessedMessageRepository:
         """Return the durable consumer-idempotency repository (PR 5)."""
+
+    @property
+    @abstractmethod
+    def content(self) -> ContentRepository:
+        """Return the content/artifact repository bound to this transaction
+        (PR 8)."""
 
 
 class DarkulaSpi(ABC):

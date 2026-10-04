@@ -123,6 +123,10 @@ class _FakeUoW(UnitOfWork):
     def processed_messages(self) -> Any:
         return self  # test seam: record() below
 
+    @property
+    def content(self) -> Any:
+        raise AssertionError("consumer test exposes no content repository")
+
     async def record(
         self,
         *,

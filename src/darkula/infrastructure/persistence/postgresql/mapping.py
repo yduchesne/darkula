@@ -19,13 +19,23 @@ from datetime import UTC
 from typing import Any
 
 from darkula.app.data_stream import StreamMessage
+from darkula.app.object_store import ContentHash, ContentType
 from darkula.app.persistence import MappingError
 from darkula.app.repositories import OutboxRecord
+from darkula.domain.content import (
+    ArtifactCompleteness,
+    ArtifactKind,
+    ContentArtifact,
+    NormalizedContent,
+)
 from darkula.domain.identifiers import (
     CandidateEventId,
     CausationId,
+    ContentArtifactId,
     CorrelationId,
     MessageId,
+    NormalizedContentId,
+    ObjectKey,
     ReconAssessmentId,
     SourceAssessmentId,
     SourceCandidateId,
@@ -53,6 +63,65 @@ from darkula.domain.source import (
 def _mapping_error(record: str, exc: Exception) -> MappingError:
     """Build a bounded, data-free mapping error for one record kind."""
     return MappingError(f"cannot map persisted {record}: unsupported or invalid value")
+
+
+def _content_hash(algorithm: str | None, digest: str | None) -> ContentHash | None:
+    """Rebuild a representation hash from persisted columns (pair)."""
+    if algorithm is None and digest is None:
+        return None
+    return ContentHash(algorithm=str(algorithm), digest_hex=str(digest))
+
+
+def map_content_artifact(row: tuple[Any, ...]) -> ContentArtifact:
+    """Map one content-artifact result row.
+
+    Column order: id, object_key, content_type, size_bytes,
+    content_hash_algorithm, content_hash_digest, artifact_kind, completeness,
+    created_at.
+    """
+    try:
+        return ContentArtifact(
+            artifact_id=ContentArtifactId.from_str(str(row[0])),
+            object_key=ObjectKey(str(row[1])),
+            content_type=None if row[2] is None else ContentType(str(row[2])),
+            size_bytes=int(row[3]),
+            content_hash=_content_hash(row[4], row[5]),
+            artifact_kind=ArtifactKind(row[6]),
+            completeness=ArtifactCompleteness(row[7]),
+            created_at=row[8],
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("content artifact", exc) from exc
+
+
+def map_normalized_content(row: tuple[Any, ...]) -> NormalizedContent:
+    """Map one normalized-content result row.
+
+    Column order: content_id, artifact_id, source_uri, title, text_preview,
+    content_type, observed_at, crawl_request_id, observation_index,
+    normalization_version, content_hash_algorithm, content_hash_digest,
+    completeness, structural_metadata, created_at.
+    """
+    try:
+        return NormalizedContent(
+            content_id=NormalizedContentId.from_str(str(row[0])),
+            artifact_id=(
+                None if row[1] is None else ContentArtifactId.from_str(str(row[1]))
+            ),
+            source_uri=str(row[2]),
+            title=row[3],
+            text=row[4],
+            content_type=None if row[5] is None else ContentType(str(row[5])),
+            observed_at=row[6],
+            crawl_request_id=str(row[7]),
+            observation_index=int(row[8]),
+            normalization_version=str(row[9]),
+            content_hash=_content_hash(row[10], row[11]),
+            completeness=ArtifactCompleteness(row[12]),
+            structural_metadata=row[13],
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("normalized content", exc) from exc
 
 
 def map_candidate(row: tuple[Any, ...]) -> SourceCandidate:
@@ -209,8 +278,10 @@ def map_outbox_record(row: tuple[Any, ...]) -> OutboxRecord:
 
 __all__ = [
     "map_candidate",
+    "map_content_artifact",
     "map_endpoint",
     "map_event",
+    "map_normalized_content",
     "map_outbox_record",
     "map_recon_assessment",
     "map_source",

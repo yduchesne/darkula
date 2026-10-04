@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Darkula production profile.
 #
-# PR 5 delivers the production Redpanda DataStream driver; S3 object
-# storage still fails fast at composition until its PR ships. Darkula
-# never silently substitutes a fake for an explicitly selected production
-# driver.
+# PR 5 delivers the production Redpanda DataStream driver; PR 8 delivers the
+# S3-compatible ObjectStore adapter. The remote bucket/credentials are never
+# committed here -- inject them via a non-empty environment variable
+# (DARKULA_OBJECT_STORE__BUCKET, ...) or the selection fails fast at
+# composition. Darkula never silently substitutes a fake for an explicitly
+# selected production driver.
 
 [datastream]
 driver = "redpanda"

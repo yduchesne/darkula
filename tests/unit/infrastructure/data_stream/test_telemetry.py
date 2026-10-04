@@ -189,6 +189,10 @@ class _Spi(DarkulaSpi):
             def processed_messages(self) -> Any:
                 return self
 
+            @property
+            def content(self) -> Any:
+                raise AssertionError("telemetry fake exposes no content repository")
+
             async def append(
                 self, message: StreamMessage, *, stream_name: StreamName
             ) -> None:

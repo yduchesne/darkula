@@ -31,6 +31,46 @@ History semantics frozen in code and persistence:
 - Structured JSON fields (`discovery_context`, `context`, `metadata`, `characteristics`) are validated JSON documents; keys and string values must not embed credentials/secrets.
 - Status changes are explicit expected-state transitions, atomic with exactly one history event (see PR 4 persistence).
 
+## PR 8 frozen status — normalization and content artifacts
+
+PR 8 gave the content-domain concepts their first executable form in
+`src/darkula/domain/content.py` and persisted structured metadata through
+PostgreSQL, with artifact bytes owned by ObjectStore.
+
+Identity rules frozen in code (section 1.4 of the PR 8 plan):
+
+- `NormalizedContent.id` (`NormalizedContentId`) — Darkula
+  semantic/persistence identity for one normalized observation;
+- `ContentArtifact.id` (`ContentArtifactId`) — Darkula identity for one
+  artifact reference/record;
+- `ObjectKey` — a logical ObjectStore address (never identity, never
+  provenance, never a hash);
+- `ContentHash` — representation/change identity for exact bytes
+  (sha-256);
+- `source URI + observation context` — provenance, never storage identity.
+
+Frozen semantics in code and persistence:
+
+- `ArtifactCompleteness` (`COMPLETE`/`SAMPLE`) is explicit; a bounded
+  crawler excerpt is `SAMPLE` and never the complete original body. A
+  `NORMALIZED_TEXT` artifact may be `COMPLETE` only for the synthesized
+  normalized representation, never the unknown original.
+- `ArtifactKind` — `NORMALIZED_TEXT`, `SOURCE_BODY`, `DOWNLOAD_SAMPLE`
+  (only kinds PR 8 exercises exist).
+- `ContentObservation` is the bounded, Darkula-owned normalization input DTO
+  (never a provider/runtime type); completeness is explicit at input.
+- Normalization is deterministic, versioned (`normalization_version =
+  "text-v1"`), and non-LLM: the same supported input yields the same
+  canonical bytes/hash; hostile content is stored as untrusted data, never
+  interpreted.
+- Physical deduplication is content-addressed (`sha256/<2>/<64>` ObjectKey)
+  and never merges provenance: many observations may reference one physical
+  object and remain distinct immutable records.
+- `ContentArtifact`/`NormalizedContent` are immutable historical records;
+  a new observation for the same URI at a new time is a new row. A
+  (crawl_request_id, observation_index, source_uri) unique key makes retried
+  observations idempotent.
+
 ## Discovery and reconnaissance
 ### SourceCandidate
 A discovered resource not yet accepted as a managed Source. It has identity, discovery provenance, entrypoint, timestamps, and lifecycle status.
