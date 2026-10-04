@@ -31,7 +31,7 @@ jobs:
         run: ./build.sh --sec
 
   integration:
-    name: Integration gates (Podman PostgreSQL)
+    name: Integration gates (Podman PostgreSQL + Redpanda)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
