@@ -45,6 +45,11 @@ from darkula.domain.extraction import (
     ExtractorIdentity,
     SourceSpan,
 )
+from darkula.domain.geography import (
+    GeographicResolution,
+    GeographicResolutionStatus,
+    GeographicResolverIdentity,
+)
 from darkula.domain.identifiers import (
     CandidateEventId,
     CausationId,
@@ -54,6 +59,7 @@ from darkula.domain.identifiers import (
     CorrelationId,
     ExtractedEntityId,
     ExtractionResultId,
+    GeographicResolutionId,
     MessageId,
     NormalizedContentId,
     ObjectKey,
@@ -266,7 +272,7 @@ def map_extracted_entity(row: tuple[Any, ...]) -> ExtractedEntity:
 
     Column order: id, extraction_result_id, content_id, entity_type,
     raw_value, normalized_value, span_start, span_end, extractor_name,
-    extractor_version, subtype.
+    extractor_version, subtype, extraction_confidence.
     """
     try:
         return ExtractedEntity(
@@ -279,9 +285,38 @@ def map_extracted_entity(row: tuple[Any, ...]) -> ExtractedEntity:
             source_span=SourceSpan(start=int(row[6]), end=int(row[7])),
             extractor=ExtractorIdentity(name=str(row[8]), version=str(row[9])),
             subtype=None if row[10] is None else str(row[10]),
+            extraction_confidence=(None if row[11] is None else float(row[11])),
         )
     except (ValueError, TypeError) as exc:
         raise _mapping_error("extracted entity", exc) from exc
+
+
+def map_geographic_resolution(row: tuple[Any, ...]) -> GeographicResolution:
+    """Map one geographic-resolution result row.
+
+    Column order: id, extracted_entity_id, status, resolver_name,
+    resolver_version, resolved_at, canonical_name, country_code,
+    administrative_area, locality, latitude, longitude, confidence,
+    resolver_reference.
+    """
+    try:
+        return GeographicResolution(
+            resolution_id=GeographicResolutionId.from_str(str(row[0])),
+            extracted_entity_id=ExtractedEntityId.from_str(str(row[1])),
+            status=GeographicResolutionStatus(row[2]),
+            resolver=GeographicResolverIdentity(name=str(row[3]), version=str(row[4])),
+            resolved_at=row[5],
+            canonical_name=None if row[6] is None else str(row[6]),
+            country_code=None if row[7] is None else str(row[7]),
+            administrative_area=None if row[8] is None else str(row[8]),
+            locality=None if row[9] is None else str(row[9]),
+            latitude=None if row[10] is None else float(row[10]),
+            longitude=None if row[11] is None else float(row[11]),
+            confidence=None if row[12] is None else float(row[12]),
+            resolver_reference=None if row[13] is None else str(row[13]),
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("geographic resolution", exc) from exc
 
 
 def map_candidate(row: tuple[Any, ...]) -> SourceCandidate:
@@ -445,6 +480,7 @@ __all__ = [
     "map_event",
     "map_extracted_entity",
     "map_extraction_result",
+    "map_geographic_resolution",
     "map_normalized_content",
     "map_outbox_record",
     "map_recon_assessment",

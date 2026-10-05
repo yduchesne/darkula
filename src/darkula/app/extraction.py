@@ -21,11 +21,17 @@ absence/inconsistency fails closed rather than silently falling back.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from darkula.app.canonical_input import (
+    CanonicalInputIntegrityError,
+    CanonicalInputTooLargeError,
+    CanonicalInputUnavailableError,
+    is_extractable,
+    load_canonical_text,
+)
 from darkula.app.extractors import (
     DETERMINISTIC_OBSERVABLES_PROFILE_NAME,
     DETERMINISTIC_OBSERVABLES_PROFILE_VERSION,
@@ -33,15 +39,10 @@ from darkula.app.extractors import (
     EntityMatch,
     deterministic_observables_extractors,
 )
-from darkula.app.object_store import (
-    ObjectNotFoundError,
-    ObjectStore,
-    ObjectStoreError,
-)
+from darkula.app.object_store import ObjectStore
 from darkula.app.persistence import ConflictError, DarkulaSpi
 from darkula.domain.content import (
     MAX_NORMALIZED_TEXT_BYTES,
-    ArtifactKind,
     ContentArtifact,
     NormalizedContent,
 )
@@ -59,9 +60,6 @@ from darkula.domain.identifiers import (
 )
 from darkula.telemetry.decorators import counted, timed, traced
 from darkula.telemetry.metrics import get_counter
-
-#: Canonical media type required of an extractable normalized-text artifact.
-_NORMALIZED_TEXT_CONTENT_TYPE = "text/plain"
 
 
 class ExtractionError(RuntimeError):
@@ -280,58 +278,21 @@ class DeterministicExtractionService:
 
     # -- phase 2: ObjectStore bounded read + integrity verification ------
     async def _load_canonical_text(self, artifact: ContentArtifact) -> str:
-        if artifact.content_hash is None:
-            raise ExtractionIntegrityError(
-                "canonical artifact has no representation hash"
-            )
-        if artifact.content_hash.algorithm != "sha-256":
-            raise ExtractionIntegrityError(
-                "canonical artifact does not use the sha-256 representation hash"
-            )
-        if artifact.size_bytes > MAX_NORMALIZED_TEXT_BYTES:
-            raise ExtractionTooLargeError(
-                "canonical representation exceeds the input byte bound"
-            )
-
-        hasher = hashlib.sha256()
-        chunks: list[bytes] = []
-        total = 0
         try:
-            reader = await self._object_store.get(artifact.object_key)
-            async for chunk in reader:
-                if not isinstance(chunk, bytes):
-                    raise ExtractionIntegrityError(
-                        "canonical representation yielded non-byte data"
-                    )
-                total += len(chunk)
-                if total > MAX_NORMALIZED_TEXT_BYTES:
-                    raise ExtractionTooLargeError(
-                        "canonical representation exceeds the input byte bound"
-                    )
-                hasher.update(chunk)
-                chunks.append(chunk)
-        except ObjectNotFoundError as exc:
+            return await load_canonical_text(
+                self._object_store, artifact, max_bytes=MAX_NORMALIZED_TEXT_BYTES
+            )
+        except CanonicalInputUnavailableError as exc:
             raise ExtractionInputUnavailableError(
                 "canonical representation is unavailable"
             ) from exc
-        except ObjectStoreError as exc:
-            raise ExtractionInputUnavailableError(
-                "canonical representation could not be read"
+        except CanonicalInputTooLargeError as exc:
+            raise ExtractionTooLargeError(
+                "canonical representation exceeds the input byte bound"
             ) from exc
-
-        if total != artifact.size_bytes:
+        except CanonicalInputIntegrityError as exc:
             raise ExtractionIntegrityError(
-                "canonical representation size does not match persisted metadata"
-            )
-        if hasher.hexdigest() != artifact.content_hash.digest_hex:
-            raise ExtractionIntegrityError(
-                "canonical representation hash does not match persisted metadata"
-            )
-        try:
-            return b"".join(chunks).decode("utf-8", errors="strict")
-        except UnicodeDecodeError as exc:
-            raise ExtractionIntegrityError(
-                "canonical representation is not valid UTF-8 text"
+                "canonical representation failed integrity verification"
             ) from exc
 
     # -- phase 4: atomic persistence -------------------------------------
@@ -421,12 +382,7 @@ class DeterministicExtractionService:
 
 def _is_extractable(artifact: ContentArtifact) -> bool:
     """Return whether an artifact is the canonical normalized-text representation."""
-    return (
-        artifact.artifact_kind is ArtifactKind.NORMALIZED_TEXT
-        and artifact.content_type is not None
-        and artifact.content_type.value == _NORMALIZED_TEXT_CONTENT_TYPE
-        and artifact.content_hash is not None
-    )
+    return is_extractable(artifact)
 
 
 __all__ = [

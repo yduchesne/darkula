@@ -44,6 +44,14 @@ from darkula.domain.identifiers import (
 DETERMINISTIC_OBSERVABLES_PROFILE_NAME = "deterministic-observables"
 DETERMINISTIC_OBSERVABLES_PROFILE_VERSION = "v1"
 
+#: Fixed PR 12 model-backed semantic profile identity.
+SEMANTIC_ENTITIES_PROFILE_NAME = "semantic-entities"
+SEMANTIC_ENTITIES_PROFILE_VERSION = "v1"
+#: Logical semantic extractor identity (the Darkula contract/version, never a
+#: transient provider response id).
+SEMANTIC_LLM_EXTRACTOR_NAME = "semantic-llm"
+SEMANTIC_LLM_EXTRACTOR_VERSION = "v1"
+
 #: Bounds applied to every extracted/metadata value before persistence.
 MAX_RAW_VALUE_LENGTH = 2048
 MAX_NORMALIZED_VALUE_LENGTH = 2048
@@ -60,18 +68,62 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class EntityType(StrEnum):
-    """Finite PR 11 deterministic observable/entity vocabulary.
+    """Finite Darkula extraction vocabulary (PR 11 observables + PR 12 semantics).
 
-    PR 12 owns semantic/geographic types (PERSON, ORGANIZATION, LOCATION,
-    MALWARE, ...). They are deliberately absent here so this enum stays a
-    truthful, bounded PR 11 contract.
+    PR 11 deterministic extractors emit only the five syntactic observable
+    types. PR 12 model-backed semantic extraction emits only the semantic
+    types below. The enum stays finite and truthful: there is deliberately no
+    ``OTHER`` catch-all.
     """
 
+    # PR 11 syntactic observables.
     IP_ADDRESS = "IP_ADDRESS"
     DOMAIN = "DOMAIN"
     URL = "URL"
     EMAIL = "EMAIL"
     HASH = "HASH"
+
+    # PR 12 model-backed semantic types.
+    PERSON = "PERSON"
+    ORGANIZATION = "ORGANIZATION"
+    ONLINE_IDENTITY = "ONLINE_IDENTITY"
+    THREAT_ACTOR = "THREAT_ACTOR"
+    MALWARE = "MALWARE"
+    LOCATION = "LOCATION"
+    INDUSTRY = "INDUSTRY"
+    ORGANIZATION_TYPE = "ORGANIZATION_TYPE"
+    CREDENTIAL_TYPE = "CREDENTIAL_TYPE"
+    ACCESS_TYPE = "ACCESS_TYPE"
+    CRYPTO_ADDRESS = "CRYPTO_ADDRESS"
+
+
+#: The syntactic observable types produced by PR 11 deterministic extractors.
+DETERMINISTIC_ENTITY_TYPES: frozenset[EntityType] = frozenset(
+    {
+        EntityType.IP_ADDRESS,
+        EntityType.DOMAIN,
+        EntityType.URL,
+        EntityType.EMAIL,
+        EntityType.HASH,
+    }
+)
+
+#: The model-backed semantic types produced by PR 12 semantic extraction.
+SEMANTIC_ENTITY_TYPES: frozenset[EntityType] = frozenset(
+    {
+        EntityType.PERSON,
+        EntityType.ORGANIZATION,
+        EntityType.ONLINE_IDENTITY,
+        EntityType.THREAT_ACTOR,
+        EntityType.MALWARE,
+        EntityType.LOCATION,
+        EntityType.INDUSTRY,
+        EntityType.ORGANIZATION_TYPE,
+        EntityType.CREDENTIAL_TYPE,
+        EntityType.ACCESS_TYPE,
+        EntityType.CRYPTO_ADDRESS,
+    }
+)
 
 
 class HashSubtype(StrEnum):
@@ -107,6 +159,20 @@ def _require_utc(value: datetime, *, field_name: str) -> datetime:
     if value.tzinfo is None:
         raise ValueError(f"{field_name} must be timezone-aware (UTC)")
     return value.astimezone(UTC)
+
+
+def _validate_confidence(value: float, *, field_name: str) -> float:
+    """Return a finite confidence in inclusive ``[0, 1]`` or raise."""
+    import math
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a number")
+    number = float(value)
+    if math.isnan(number) or math.isinf(number):
+        raise ValueError(f"{field_name} must be finite")
+    if number < 0.0 or number > 1.0:
+        raise ValueError(f"{field_name} must be within [0.0, 1.0]")
+    return number
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +259,14 @@ def _validate_manifest(
 
 @dataclass(frozen=True, slots=True)
 class ExtractedEntity:
-    """One persisted extracted-entity occurrence with exact provenance."""
+    """One persisted extracted-entity occurrence with exact provenance.
+
+    ``extraction_confidence`` is the confidence that the content contains the
+    extracted semantic concept. It is ``None`` for PR 11 deterministic
+    occurrences (no fabricated probabilistic confidence) and a finite value
+    in ``[0, 1]`` for PR 12 model-backed semantic occurrences. It is never
+    geographic resolution confidence.
+    """
 
     entity_id: ExtractedEntityId
     extraction_result_id: ExtractionResultId
@@ -204,6 +277,7 @@ class ExtractedEntity:
     source_span: SourceSpan
     extractor: ExtractorIdentity
     subtype: str | None = None
+    extraction_confidence: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.entity_type, EntityType):
@@ -234,6 +308,14 @@ class ExtractedEntity:
                     self.subtype,
                     field_name="subtype",
                     max_length=MAX_SUBTYPE_LENGTH,
+                ),
+            )
+        if self.extraction_confidence is not None:
+            object.__setattr__(
+                self,
+                "extraction_confidence",
+                _validate_confidence(
+                    self.extraction_confidence, field_name="extraction_confidence"
                 ),
             )
 
@@ -293,6 +375,7 @@ class ExtractionResult:
 
 
 __all__ = [
+    "DETERMINISTIC_ENTITY_TYPES",
     "DETERMINISTIC_OBSERVABLES_PROFILE_NAME",
     "DETERMINISTIC_OBSERVABLES_PROFILE_VERSION",
     "MAX_ENTITY_COUNT",
@@ -304,6 +387,11 @@ __all__ = [
     "MAX_PROFILE_VERSION_LENGTH",
     "MAX_RAW_VALUE_LENGTH",
     "MAX_SUBTYPE_LENGTH",
+    "SEMANTIC_ENTITIES_PROFILE_NAME",
+    "SEMANTIC_ENTITIES_PROFILE_VERSION",
+    "SEMANTIC_ENTITY_TYPES",
+    "SEMANTIC_LLM_EXTRACTOR_NAME",
+    "SEMANTIC_LLM_EXTRACTOR_VERSION",
     "EntityType",
     "ExtractedEntity",
     "ExtractionResult",

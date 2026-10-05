@@ -572,6 +572,9 @@ class _RacingExtractionRepository(ExtractionRepository):
     ) -> tuple[ExtractedEntity, ...]:
         return await self._inner.list_entities_for_content(content_id)
 
+    async def get_entity(self, entity_id: ExtractedEntityId) -> ExtractedEntity | None:
+        return await self._inner.get_entity(entity_id)
+
 
 class _RacingUnitOfWork(MemExtractionUnitOfWork):
     def __init__(self, state: MemExtractionState) -> None:

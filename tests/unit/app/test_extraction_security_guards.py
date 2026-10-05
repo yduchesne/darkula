@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Static architecture/security guards for PR 11 deterministic extraction.
+"""Static architecture/security guards for PR 11/PR 12 extraction.
 
-Proves that the production extraction application/domain modules never import
-LLM/provider/network/browser/sandbox/DataStream/Fake-World boundaries and
+Proves that the production deterministic/semantic extraction and geographic
+resolution application/domain modules never import LLM-provider, network,
+browser, sandbox, DataStream, ReconAgent, or Fake-World-truth boundaries and
 contain no SQL. Telemetry uses only static developer-controlled attributes.
 """
 
@@ -20,23 +21,34 @@ _SRC = _REPO_ROOT / "src" / "darkula"
 _EXTRACTION_MODULES = (
     _SRC / "app" / "extraction.py",
     _SRC / "app" / "extractors.py",
+    _SRC / "app" / "canonical_input.py",
     _SRC / "domain" / "extraction.py",
+)
+
+_SEMANTIC_GEOGRAPHY_MODULES = (
+    _SRC / "app" / "semantic_extraction.py",
+    _SRC / "app" / "geography.py",
+    _SRC / "domain" / "geography.py",
 )
 
 _FORBIDDEN_IMPORTS: dict[str, str] = {
     "darkula.app.llm": "deterministic extraction is LLM-free",
-    "darkula.app.recon": "deterministic extraction is not reconnaissance",
-    "darkula.app.recon_agent": "deterministic extraction is not agentic",
+    "darkula.app.recon": "extraction is not reconnaissance",
+    "darkula.app.recon_agent": "extraction is not agentic",
     "darkula.infrastructure": "application extraction must stay provider-neutral",
     "darkula.testing.fake_world": "production never imports Fake World truth",
     "openai": "no provider SDK",
     "langchain": "no LangChain",
     "anthropic": "no provider SDK",
+    "deepagents": "no agent framework",
     "playwright": "no browser",
     "podman": "no sandbox",
     "aiokafka": "Kafka/Redpanda types never leak into application code",
     "boto3": "S3/R2 SDKs never appear in the application layer",
     "botocore": "S3/R2 SDKs never appear in the application layer",
+    "googlemaps": "no concrete geocoder SDK",
+    "geopy": "no concrete geocoder SDK",
+    "nominatim": "no concrete geocoder SDK",
     "requests": "no synchronous network client",
     "httpx": "no network client",
     "aiohttp": "no network client",
@@ -64,17 +76,22 @@ def _imports(path: Path) -> list[str]:
     return names
 
 
+def _violations(path: Path, *, allow_llm: bool) -> list[str]:
+    forbidden = dict(_FORBIDDEN_IMPORTS)
+    if allow_llm:
+        forbidden.pop("darkula.app.llm", None)
+    found: list[str] = []
+    for imported in _imports(path):
+        for prefix, reason in forbidden.items():
+            if imported == prefix or imported.startswith(prefix + "."):
+                found.append(f"{imported}: {reason}")
+    return found
+
+
 class TestExtractionImportGuards:
     @pytest.mark.parametrize("path", _EXTRACTION_MODULES, ids=lambda p: p.name)
     def test_ts6_no_forbidden_boundaries(self, path: Path) -> None:
-        violations: list[str] = []
-        for imported in _imports(path):
-            for forbidden, reason in _FORBIDDEN_IMPORTS.items():
-                if imported == forbidden or imported.startswith(forbidden + "."):
-                    violations.append(f"{imported}: {reason}")
-        assert violations == [], (
-            f"{path.name} imports forbidden boundaries: {violations}"
-        )
+        assert _violations(path, allow_llm=False) == []
 
     @pytest.mark.parametrize("path", _EXTRACTION_MODULES, ids=lambda p: p.name)
     def test_ts7_no_sql_in_application_or_domain(self, path: Path) -> None:
@@ -90,14 +107,68 @@ class TestExtractionImportGuards:
         )
 
 
-class TestExtractionTelemetryExclusions:
-    def test_ts1_ts2_telemetry_uses_only_static_attributes(self) -> None:
-        source = (_SRC / "app" / "extraction.py").read_text(encoding="utf-8")
-        # Decorators carry only bounded static metric/span names.
-        assert "attributes=" not in source
+class TestSemanticGeographyImportGuards:
+    @pytest.mark.parametrize("path", _SEMANTIC_GEOGRAPHY_MODULES, ids=lambda p: p.name)
+    def test_ts12_1_no_provider_or_forbidden_boundaries(self, path: Path) -> None:
+        # The semantic extractor is allowed to depend on the Darkula LlmClient
+        # contract; geography is not (it uses the provider-neutral SPI).
+        allow_llm = path.name == "semantic_extraction.py"
+        violations = _violations(path, allow_llm=allow_llm)
+        if not allow_llm:
+            for imported in _imports(path):
+                if imported == "darkula.app.llm" or imported.startswith(
+                    "darkula.app.llm."
+                ):
+                    violations.append("darkula.app.llm: geography must not use an LLM")
+        assert violations == [], (
+            f"{path.name} imports forbidden boundaries: {violations}"
+        )
 
-    def test_ts5_no_values_or_identifiers_in_telemetry_names(self) -> None:
-        source = (_SRC / "app" / "extraction.py").read_text(encoding="utf-8")
+    @pytest.mark.parametrize("path", _SEMANTIC_GEOGRAPHY_MODULES, ids=lambda p: p.name)
+    def test_ts12_4_no_sql(self, path: Path) -> None:
+        assert _SQL_PATTERN.search(path.read_text(encoding="utf-8")) is None
+
+    def test_ts12_3_no_crawler_or_sandbox_imports(self) -> None:
+        for path in _SEMANTIC_GEOGRAPHY_MODULES:
+            names = _imports(path)
+            assert not any(
+                name == "darkula.crawler" or name.startswith("darkula.crawler.")
+                for name in names
+            )
+            assert not any(
+                name == "darkula.sandbox" or name.startswith("darkula.sandbox.")
+                for name in names
+            )
+
+    def test_ts12_10_semantic_extraction_does_not_use_recon(self) -> None:
+        names = _imports(_SRC / "app" / "semantic_extraction.py")
+        assert not any(name.startswith("darkula.app.recon") for name in names)
+
+
+class TestExtractionTelemetryExclusions:
+    @pytest.mark.parametrize(
+        "path",
+        (
+            _SRC / "app" / "extraction.py",
+            _SRC / "app" / "semantic_extraction.py",
+            _SRC / "app" / "geography.py",
+        ),
+        ids=lambda p: p.name,
+    )
+    def test_ts1_ts2_telemetry_uses_only_static_attributes(self, path: Path) -> None:
+        # Decorators carry only bounded static metric/span names.
+        assert "attributes=" not in path.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        "path",
+        (
+            _SRC / "app" / "semantic_extraction.py",
+            _SRC / "app" / "geography.py",
+        ),
+        ids=lambda p: p.name,
+    )
+    def test_ts12_7_no_values_in_telemetry_names(self, path: Path) -> None:
+        source = path.read_text(encoding="utf-8")
         names = re.findall(r'metric="([^"]+)"', source) + re.findall(
             r'span_name="([^"]+)"', source
         )

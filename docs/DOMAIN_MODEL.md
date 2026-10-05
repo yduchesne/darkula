@@ -108,6 +108,40 @@ Semantics frozen in code and persistence:
 - `SourceSpan` is valid only against the exact persisted canonical text; the
   DB preview is never an extraction source.
 
+## PR 12 frozen status — semantic extraction and geographic resolution
+
+PR 12 extends the extraction domain with a finite semantic vocabulary and a
+separate geographic-resolution lifecycle.
+
+- `EntityType` now holds a **disjoint** PR 11 syntactic set
+  (`DETERMINISTIC_ENTITY_TYPES`) and PR 12 semantic set
+  (`SEMANTIC_ENTITY_TYPES`): `PERSON`, `ORGANIZATION`, `ONLINE_IDENTITY`,
+  `THREAT_ACTOR`, `MALWARE`, `LOCATION`, `INDUSTRY`, `ORGANIZATION_TYPE`,
+  `CREDENTIAL_TYPE`, `ACCESS_TYPE`, `CRYPTO_ADDRESS`. There is deliberately
+  no `OTHER`/catch-all.
+- `ExtractedEntity.extraction_confidence` is `None` for deterministic
+  occurrences (no fabricated probabilistic confidence) and a finite `[0, 1]`
+  value for model-backed semantic occurrences. It is **not** geographic
+  resolution confidence.
+- Semantic extraction is the fixed `semantic-entities/v1` profile with the
+  logical `semantic-llm/v1` extractor and uses the existing `LlmClient`.
+- `GeographicResolution` (`src/darkula/domain/geography.py`) is an immutable
+  observation of how one `LOCATION` occurrence resolves: identity
+  `GeographicResolutionId`, the resolved `ExtractedEntityId`, status
+  (`RESOLVED`/`AMBIGUOUS`/`UNRESOLVED`), `GeographicResolverIdentity`
+  (name/version), resolved timestamp, canonical name/country/administrative
+  area/locality, WGS84 latitude/longitude, its **own** confidence, and a
+  bounded provider-neutral reference. Identity stays distinct from resolved
+  attributes.
+- Status invariants are enforced in code: `RESOLVED` requires a canonical
+  name and confidence; `AMBIGUOUS`/`UNRESOLVED` must not carry canonical
+  fields or geometry. A resolution is append-only and versioned by
+  `(extracted_entity_id, resolver_name, resolver_version)`; a new resolver
+  version coexists and never rewrites history.
+- `LOCATION` mention extraction never requires successful resolution, and a
+  resolution never mutates the mention's raw/normalized value, span, or
+  extraction confidence.
+
 ## Discovery and reconnaissance
 ### SourceCandidate
 A discovered resource not yet accepted as a managed Source. It has identity, discovery provenance, entrypoint, timestamps, and lifecycle status.
@@ -160,12 +194,26 @@ immutable/versioned and idempotent on
 ### ExtractedEntity
 A content-derived entity occurrence with type, raw and normalized values,
 exact source span, and extractor name/version provenance. **PR 11
-delivered**: occurrence-based (never a global IOC table), append-only, with
-no manufactured probabilistic confidence for deterministic recognition.
-Initial families are network observables (IP/domain/URL/email/hash); semantic
-families (organizations/people/online identities/threat actors/malware,
-locations, industry/organization type, credential/access type) remain PR
-12-14 work and the exact ontology stays TBD.
+delivered**: deterministic observable occurrences. **PR 12 delivered**: the
+same occurrence model carrying bounded `extraction_confidence` for
+model-backed semantic types (PERSON/ORGANIZATION/ONLINE_IDENTITY/
+THREAT_ACTOR/MALWARE/LOCATION/INDUSTRY/ORGANIZATION_TYPE/CREDENTIAL_TYPE/
+ACCESS_TYPE/CRYPTO_ADDRESS). Occurrence-based (never a global IOC/entity
+table), append-only, and never a fabricated probabilistic confidence for
+PR 11 regexes.
+
+### GeographicResolution (PR 12)
+An immutable, versioned interpretation of one extracted `LOCATION` mention:
+status (`RESOLVED`/`AMBIGUOUS`/`UNRESOLVED`), logical resolver name/version,
+resolved timestamp, canonical attributes, WGS84 geometry when available, its
+own resolution confidence, and bounded provider-neutral provenance. It is
+separate from extraction and never promotes a mention to global truth; there
+is no global location table or entity registry in PR 12.
+
+### GeographicResolver (PR 12)
+A Darkula-owned provider-neutral SPI that resolves one bounded location
+mention + exact source context into a `GeographicResolverResult`. Concrete
+gocoder SDKs, HTTP clients, and provider payloads never cross it.
 
 ### GeographicResolution
 Resolution of an extracted geographic mention, separate from extraction confidence. It supports RESOLVED, AMBIGUOUS, and UNRESOLVED outcomes plus canonical geography, country/admin/locality information, geometry when available, resolver provenance, and confidence. PostgreSQL/PostGIS geometry is a likely persistence choice but is not fixed by PR 1.

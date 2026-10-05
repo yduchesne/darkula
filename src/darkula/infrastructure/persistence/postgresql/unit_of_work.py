@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         CollectionRepository,
         ContentRepository,
         ExtractionRepository,
+        GeographicResolutionRepository,
         OutboxRepository,
         ProcessedMessageRepository,
         SourceCandidateRepository,
@@ -58,6 +59,9 @@ if TYPE_CHECKING:
     )
     from darkula.infrastructure.persistence.postgresql.extraction_repository import (
         PostgresExtractionRepository,
+    )
+    from darkula.infrastructure.persistence.postgresql.geography_repository import (
+        PostgresGeographicResolutionRepository,
     )
     from darkula.infrastructure.persistence.postgresql.outbox_repository import (
         PostgresOutboxRepository,
@@ -97,6 +101,7 @@ class PostgresUnitOfWork(UnitOfWork):
         self._content_repository: PostgresContentRepository | None = None
         self._collection_repository: PostgresCollectionRepository | None = None
         self._extraction_repository: PostgresExtractionRepository | None = None
+        self._geography_repository: PostgresGeographicResolutionRepository | None = None
 
     async def __aenter__(self) -> Self:
         if self._state is not _State.CREATED:
@@ -279,6 +284,18 @@ class PostgresUnitOfWork(UnitOfWork):
 
             self._extraction_repository = PostgresExtractionRepository(self)
         return self._extraction_repository
+
+    @property
+    def geography(self) -> GeographicResolutionRepository:
+        """Return the transaction-bound geographic-resolution repository (PR 12)."""
+        self.ensure_open()
+        if self._geography_repository is None:
+            from darkula.infrastructure.persistence.postgresql.geography_repository import (  # noqa: E501
+                PostgresGeographicResolutionRepository,
+            )
+
+            self._geography_repository = PostgresGeographicResolutionRepository(self)
+        return self._geography_repository
 
     async def _release_connection(self) -> None:
         """Return the borrowed connection to the pool exactly once."""

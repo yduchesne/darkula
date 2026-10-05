@@ -227,6 +227,10 @@ class MemCandidateUnitOfWork(UnitOfWork):
     def extraction(self) -> Any:
         raise AssertionError("recon fake exposes no extraction repository")
 
+    @property
+    def geography(self) -> Any:
+        raise AssertionError("recon fake exposes no geography repository")
+
 
 class MemCandidateSpi(DarkulaSpi):
     """DarkulaSpi handing out :class:`MemCandidateUnitOfWork` instances."""

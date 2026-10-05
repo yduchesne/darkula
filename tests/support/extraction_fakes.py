@@ -25,6 +25,7 @@ from darkula.app.repositories import (
     CollectionRepository,
     ContentRepository,
     ExtractionRepository,
+    GeographicResolutionRepository,
 )
 from darkula.domain.content import (
     ArtifactCompleteness,
@@ -33,10 +34,12 @@ from darkula.domain.content import (
     NormalizedContent,
 )
 from darkula.domain.extraction import ExtractedEntity, ExtractionResult
+from darkula.domain.geography import GeographicResolution
 from darkula.domain.identifiers import (
     ContentArtifactId,
     ExtractedEntityId,
     ExtractionResultId,
+    GeographicResolutionId,
     NormalizedContentId,
 )
 
@@ -54,6 +57,12 @@ class MemExtractionState:
         default_factory=dict
     )
     entities: dict[ExtractedEntityId, ExtractedEntity] = field(default_factory=dict)
+    resolutions: dict[GeographicResolutionId, GeographicResolution] = field(
+        default_factory=dict
+    )
+    resolution_keys: dict[tuple[str, str, str], GeographicResolutionId] = field(
+        default_factory=dict
+    )
 
     def snapshot(self) -> MemExtractionState:
         return MemExtractionState(
@@ -62,6 +71,8 @@ class MemExtractionState:
             results=dict(self.results),
             result_keys=dict(self.result_keys),
             entities=dict(self.entities),
+            resolutions=dict(self.resolutions),
+            resolution_keys=dict(self.resolution_keys),
         )
 
     def restore(self, other: MemExtractionState) -> None:
@@ -70,6 +81,8 @@ class MemExtractionState:
         self.results = other.results
         self.result_keys = other.result_keys
         self.entities = other.entities
+        self.resolutions = other.resolutions
+        self.resolution_keys = other.resolution_keys
 
 
 class _MemContentRepository(ContentRepository):
@@ -202,6 +215,66 @@ class _MemExtractionRepository(ExtractionRepository):
             ]
         )
 
+    async def get_entity(self, entity_id: ExtractedEntityId) -> ExtractedEntity | None:
+        return self._state.entities.get(entity_id)
+
+
+class _MemGeographicResolutionRepository(GeographicResolutionRepository):
+    def __init__(self, state: MemExtractionState) -> None:
+        self._state = state
+
+    async def create(self, resolution: GeographicResolution) -> None:
+        key = (
+            str(resolution.extracted_entity_id),
+            resolution.resolver.name,
+            resolution.resolver.version,
+        )
+        if key in self._state.resolution_keys or (
+            resolution.resolution_id in self._state.resolutions
+        ):
+            raise ConflictError("a geographic resolution already exists")
+        if resolution.extracted_entity_id not in self._state.entities:
+            raise IntegrityError("the referenced extracted entity does not exist")
+        self._state.resolutions[resolution.resolution_id] = resolution
+        self._state.resolution_keys[key] = resolution.resolution_id
+
+    async def get(
+        self, resolution_id: GeographicResolutionId
+    ) -> GeographicResolution | None:
+        return self._state.resolutions.get(resolution_id)
+
+    async def get_for_entity(
+        self,
+        entity_id: ExtractedEntityId,
+        resolver_name: str,
+        resolver_version: str,
+    ) -> GeographicResolution | None:
+        key = (str(entity_id), resolver_name, resolver_version)
+        resolution_id = self._state.resolution_keys.get(key)
+        if resolution_id is None:
+            return None
+        return self._state.resolutions.get(resolution_id)
+
+    async def list_for_content(
+        self, content_id: NormalizedContentId
+    ) -> tuple[GeographicResolution, ...]:
+        entity_ids = {
+            entity.entity_id
+            for entity in self._state.entities.values()
+            if entity.content_id == content_id
+        }
+        resolutions = [
+            resolution
+            for resolution in self._state.resolutions.values()
+            if resolution.extracted_entity_id in entity_ids
+        ]
+        return tuple(
+            sorted(
+                resolutions,
+                key=lambda item: (item.resolved_at, str(item.resolution_id)),
+            )
+        )
+
 
 class MemExtractionUnitOfWork(UnitOfWork):
     """One in-memory transaction with snapshot/commit/rollback semantics."""
@@ -217,6 +290,7 @@ class MemExtractionUnitOfWork(UnitOfWork):
         self._working = state.snapshot()
         self._content: _MemContentRepository | None = None
         self._extraction: _MemExtractionRepository | None = None
+        self._geography: _MemGeographicResolutionRepository | None = None
 
     async def __aenter__(self) -> Self:
         self._working = self._state.snapshot()
@@ -270,6 +344,12 @@ class MemExtractionUnitOfWork(UnitOfWork):
                 self._working, fail_on_entity_index=self._fail_on_entity_index
             )
         return self._extraction
+
+    @property
+    def geography(self) -> GeographicResolutionRepository:
+        if self._geography is None:
+            self._geography = _MemGeographicResolutionRepository(self._working)
+        return self._geography
 
 
 class MemExtractionSpi(DarkulaSpi):

@@ -495,3 +495,87 @@ crawler abstractions, and PR 12 may add
 The Fake World canonical scenario gains one additive PUBLIC thread
 (`thr-collector-samples`) containing synthetic observables for the PR 11
 canonical slice; existing canonical page semantics are unchanged.
+
+# PR 12 update — model-backed semantic extraction and geographic resolution
+
+PR 12 adds a **separate** semantic path beside the PR 11 deterministic one. It
+does not convert `deterministic-observables/v1` into an LLM profile and does
+not weaken PR 11 behavior.
+
+```text
+NormalizedContent
+  ├─ deterministic-observables/v1   (PR 11, pure, LLM-free)
+  ├─ semantic-entities/v1           (PR 12, LlmClient structured output)
+  │      └─ LOCATION occurrences
+  │             └─ geographic resolution (PR 12, provider-neutral SPI)
+  └─ (PR 13 relationships / PR 14 SourceAssessment remain separate)
+```
+
+## Semantic extraction (PR 12 1.3-1.6, 6)
+
+- `src/darkula/app/semantic_extraction.py` owns the strict Pydantic response
+  contract (`SemanticExtractionResponse` / `SemanticMentionCandidate`) and the
+  `SemanticExtractionService`. It uses the existing Darkula `LlmClient`
+  (`generate_structured`) — never a provider SDK or a second model abstraction
+  — and `FakeLlmClient` is the deterministic test boundary.
+- The profile is `semantic-entities/v1`; the logical extractor is
+  `semantic-llm/v1`. Both coexist immutably with the deterministic profile for
+  the same `NormalizedContent` via the existing
+  `(content_id, profile_name, profile_version)` semantic key.
+- The model proposes only `entity_type`, `raw_value`, optional
+  `normalized_value`, `confidence`, and bounded left/right context. Darkula
+  deterministically grounds every accepted mention to an exact canonical-text
+  code-point span (`text[start:end] == raw_value`, no fuzzy/case-folded/
+  whitespace-normalized matching); zero occurrences and ambiguous repeated
+  occurrences are rejected and counted, never guessed. All model offsets are
+  ignored.
+- Source text is delimited as untrusted data in the user prompt; the system
+  prompt states that source instructions must never be followed, browsing/
+  tools/relationships/source-assessment are forbidden, and `LOCATION` is a
+  mention rather than a geocoded result.
+
+## Geographic mention vs resolution (PR 12 1.7, 8-10)
+
+A `LOCATION` `ExtractedEntity` is a content-derived mention; a
+`GeographicResolution` is a later, separate interpretation. Resolution never
+mutates the occurrence and carries its own status (`RESOLVED` / `AMBIGUOUS` /
+`UNRESOLVED`), resolver identity/version, timestamp, canonical attributes,
+WGS84 latitude/longitude (PostGIS is not enabled; the plan's approved bounded
+numeric fallback is used), and its own resolution confidence — distinct from
+extraction confidence.
+
+`GeographicResolver` (`src/darkula/app/geography.py`) is a Darkula-owned
+provider-neutral SPI. `GeographicResolutionService` passes only a bounded
+mention + exact code-point context window and accepts only
+`GeographicResolverResult`; raw provider/HTTP/SDK objects cannot cross it.
+`FakeGeographicResolver` is the deterministic external boundary and is never
+silently composed as production.
+
+## Transaction boundaries (PR 12 1.13)
+
+No PostgreSQL transaction spans ObjectStore, LLM, or resolver I/O:
+
+```text
+short read UoW -> close
+ObjectStore bounded verified read
+LlmClient structured call (semantic) / resolver call (geography)
+grounding + validation (no UoW)
+short write UoW: result/resolution rows commit atomically
+```
+
+## Persistence additions (PR 12 7, 11)
+
+`migrations/0006_semantic_geography.sql` is additive; `0005_extraction.sql` is
+unchanged. It adds nullable `extracted_entity.extraction_confidence` (NULL for
+PR 11 rows), widens the finite entity-type check to the semantic vocabulary,
+adds `extracted_entity_create_v2`/list v2/get functions (v1 remains immutable),
+and adds the `geographic_resolution` table with
+`(extracted_entity_id, resolver_name, resolver_version)` uniqueness plus
+versioned stored functions. Storage access stays stored-function-only.
+
+## Explicit non-goals
+
+No relationships (PR 13), no global entity registry/canonicalization, no
+SourceAnalyst/SourceAssessment (PR 14), no live geocoder, no background
+extraction workers, no chunking, and no Fake World/`"Washington"` special
+cases in production code.

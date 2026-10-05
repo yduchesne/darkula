@@ -23,7 +23,11 @@ from psycopg.types.json import Jsonb
 from darkula.app.persistence import ConflictError, IntegrityError
 from darkula.app.repositories import ExtractionRepository
 from darkula.domain.extraction import ExtractedEntity, ExtractionResult
-from darkula.domain.identifiers import ExtractionResultId, NormalizedContentId
+from darkula.domain.identifiers import (
+    ExtractedEntityId,
+    ExtractionResultId,
+    NormalizedContentId,
+)
 from darkula.infrastructure.persistence.postgresql.errors import map_driver_error
 from darkula.infrastructure.persistence.postgresql.mapping import (
     map_extracted_entity,
@@ -40,11 +44,12 @@ _GET_RESULT_BY_PROFILE_FN = (
     "SELECT * FROM extraction_result_get_by_profile_v1(%s, %s, %s)"
 )
 _CREATE_ENTITY_FN = (
-    "SELECT * FROM extracted_entity_create_v1("
-    "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    "SELECT * FROM extracted_entity_create_v2("
+    "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
-_LIST_ENTITIES_FOR_RESULT_FN = "SELECT * FROM extracted_entity_list_for_result_v1(%s)"
-_LIST_ENTITIES_FOR_CONTENT_FN = "SELECT * FROM extracted_entity_list_for_content_v1(%s)"
+_LIST_ENTITIES_FOR_RESULT_FN = "SELECT * FROM extracted_entity_list_for_result_v2(%s)"
+_LIST_ENTITIES_FOR_CONTENT_FN = "SELECT * FROM extracted_entity_list_for_content_v2(%s)"
+_GET_ENTITY_FN = "SELECT * FROM extracted_entity_get_v1(%s)"
 
 
 def _manifest_json(result: ExtractionResult) -> list[dict[str, str]]:
@@ -142,6 +147,7 @@ class PostgresExtractionRepository(ExtractionRepository):
                         entity.extractor.name,
                         entity.extractor.version,
                         entity.subtype,
+                        entity.extraction_confidence,
                     ),
                 )
                 row = await cur.fetchone()
@@ -168,6 +174,18 @@ class PostgresExtractionRepository(ExtractionRepository):
         self, content_id: NormalizedContentId
     ) -> tuple[ExtractedEntity, ...]:
         return await self._list(_LIST_ENTITIES_FOR_CONTENT_FN, str(content_id))
+
+    async def get_entity(self, entity_id: ExtractedEntityId) -> ExtractedEntity | None:
+        conn = self._uow.connection()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(_GET_ENTITY_FN, (str(entity_id),))
+                row = await cur.fetchone()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise map_driver_error(exc) from exc
+        return None if row is None else map_extracted_entity(row)
 
     async def _list(self, function: str, parameter: str) -> tuple[ExtractedEntity, ...]:
         conn = self._uow.connection()

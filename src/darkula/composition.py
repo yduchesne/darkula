@@ -46,16 +46,19 @@ from darkula.app.extraction import (
     DeterministicExtractionService,
     deterministic_observables_profile,
 )
+from darkula.app.geography import GeographicResolutionService
 from darkula.app.llm import LlmClient
 from darkula.app.normalization import ContentNormalizer, DeterministicContentNormalizer
 from darkula.app.object_store import ObjectStore
 from darkula.app.persistence import DarkulaSpi
 from darkula.app.recon import ReconCoordinator
 from darkula.app.recon_agent import ReconAgent
+from darkula.app.semantic_extraction import SemanticExtractionService
 from darkula.config.settings import (
     AgentObservabilityBackend,
     DatabaseDriver,
     DataStreamDriver,
+    GeographicResolverDriver,
     LlmDriver,
     ObjectStoreDriver,
     SandboxDriver,
@@ -74,6 +77,7 @@ from darkula.infrastructure.persistence.postgresql.spi import PostgresDarkulaSpi
 from darkula.infrastructure.sandbox import PodmanSandbox
 from darkula.telemetry.setup import TelemetryRuntime, configure_telemetry
 from darkula.testing.fake_data_stream import FakeDataStream
+from darkula.testing.fake_geographic_resolver import FakeGeographicResolver
 from darkula.testing.fake_llm import FakeLlmClient
 
 
@@ -99,6 +103,8 @@ class Runtime:
     content_normalizer: ContentNormalizer
     content_ingest: ContentIngestService
     extraction_service: DeterministicExtractionService
+    semantic_extraction_service: SemanticExtractionService | None
+    geography_service: GeographicResolutionService | None
     collection_service: SourceCollectionService
     collection_scheduler: CollectionScheduler
     collection_worker: CollectionWorker
@@ -174,6 +180,59 @@ def _compose_content_ingest(
 ) -> ContentIngestService:
     """Compose the content-ingestion orchestration (PR 8)."""
     return ContentIngestService(normalizer=normalizer, spi=persistence)
+
+
+def _compose_semantic_extraction(
+    persistence: DarkulaSpi,
+    object_store: ObjectStore,
+    llm: LlmClient,
+    settings: Settings,
+) -> SemanticExtractionService | None:
+    """Compose PR 12 model-backed semantic extraction with the existing LlmClient.
+
+    Semantic extraction receives only persistence, ObjectStore, and the
+    composed ``LlmClient``; it never receives ReconAgent, Crawler, DataStream,
+    or agent observability.
+    """
+    if not settings.semantic_extraction.enabled:
+        return None
+    return SemanticExtractionService(
+        spi=persistence,
+        object_store=object_store,
+        llm=llm,
+        max_entities=settings.semantic_extraction.max_entities_per_content,
+        max_input_bytes=settings.semantic_extraction.max_input_bytes,
+    )
+
+
+def _compose_geography(
+    persistence: DarkulaSpi,
+    object_store: ObjectStore,
+    settings: Settings,
+) -> GeographicResolutionService | None:
+    """Compose PR 12 geographic resolution only on explicit resolver selection.
+
+    The fake resolver is never silently substituted: an enabled configuration
+    with no resolver driver fails fast, and the fake is used only when it is
+    explicitly selected (tests) or injected by a test directly.
+    """
+    geography = settings.geography
+    if not geography.enabled:
+        return None
+    if geography.resolver is GeographicResolverDriver.FAKE:
+        resolver = FakeGeographicResolver()
+    else:
+        raise UnavailableDriverError(
+            "geography.enabled requires an explicit resolver driver "
+            "(no live resolver provider is delivered by PR 12)"
+        )
+    return GeographicResolutionService(
+        spi=persistence,
+        object_store=object_store,
+        resolver=resolver,
+        context_chars=geography.context_chars,
+        max_input_bytes=geography.max_input_bytes,
+    )
 
 
 def _compose_extraction(
@@ -334,6 +393,10 @@ def compose(*, settings: Settings) -> Runtime:
     )
     llm = _compose_llm(settings)
     observability = _compose_observability(settings)
+    semantic_extraction_service = _compose_semantic_extraction(
+        persistence, object_store, llm, settings
+    )
+    geography_service = _compose_geography(persistence, object_store, settings)
     recon_agent, recon_coordinator = _compose_recon(
         persistence=persistence,
         llm=llm,
@@ -347,6 +410,8 @@ def compose(*, settings: Settings) -> Runtime:
         content_normalizer=content_normalizer,
         content_ingest=content_ingest,
         extraction_service=extraction_service,
+        semantic_extraction_service=semantic_extraction_service,
+        geography_service=geography_service,
         collection_service=collection_service,
         collection_scheduler=collection_scheduler,
         collection_worker=collection_worker,

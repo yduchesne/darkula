@@ -48,12 +48,15 @@ from darkula.domain.content import (
     NormalizedContent,
 )
 from darkula.domain.extraction import ExtractedEntity, ExtractionResult
+from darkula.domain.geography import GeographicResolution
 from darkula.domain.identifiers import (
     CollectionPolicyId,
     CollectionRunId,
     ConsumerId,
     ContentArtifactId,
+    ExtractedEntityId,
     ExtractionResultId,
+    GeographicResolutionId,
     MessageId,
     NormalizedContentId,
     SourceCandidateId,
@@ -76,6 +79,7 @@ __all__ = [
     "CollectionRepository",
     "ContentRepository",
     "ExtractionRepository",
+    "GeographicResolutionRepository",
     "OutboxRecord",
     "OutboxRepository",
     "ProcessedMessageRepository",
@@ -579,3 +583,48 @@ class ExtractionRepository(ABC):
     ) -> tuple[ExtractedEntity, ...]:
         """Return a content's occurrences across all results, in
         deterministic order."""
+
+    @abstractmethod
+    async def get_entity(self, entity_id: ExtractedEntityId) -> ExtractedEntity | None:
+        """Return one extracted-entity occurrence by identity or ``None``."""
+
+
+class GeographicResolutionRepository(ABC):
+    """Immutable/versioned geographic-resolution persistence contract (PR 12).
+
+    All methods are transaction-scoped through the owning unit of work. The
+    semantic idempotency key is
+    ``(extracted_entity_id, resolver_name, resolver_version)``: a duplicate
+    raises :class:`ConflictError`; a new resolver version coexists. Resolutions
+    are append-only and never mutate the extracted occurrence.
+    """
+
+    @abstractmethod
+    async def create(self, resolution: GeographicResolution) -> None:
+        """Persist one immutable resolution.
+
+        :raises ConflictError: if the semantic key or resolution identity
+            already exists (no overwrite).
+        :raises IntegrityError: if the referenced occurrence does not exist.
+        """
+
+    @abstractmethod
+    async def get(
+        self, resolution_id: GeographicResolutionId
+    ) -> GeographicResolution | None:
+        """Return one resolution by identity or ``None``."""
+
+    @abstractmethod
+    async def get_for_entity(
+        self,
+        entity_id: ExtractedEntityId,
+        resolver_name: str,
+        resolver_version: str,
+    ) -> GeographicResolution | None:
+        """Return the resolution for the occurrence/resolver key or ``None``."""
+
+    @abstractmethod
+    async def list_for_content(
+        self, content_id: NormalizedContentId
+    ) -> tuple[GeographicResolution, ...]:
+        """Return a content's resolutions in deterministic order."""

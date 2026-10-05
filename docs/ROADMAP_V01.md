@@ -181,8 +181,23 @@ ObjectStore -> real PostgreSQL -> real deterministic extractors -> real
 `SourceAssessment`, no PR 12 semantic/geographic extraction, and no changes
 to PR 7/PR 8/PR 9/PR 10 or migrations 0001-0004.
 
-## PR 12 — Semantic and geographic extraction
-Implement model-backed semantic extraction, geographic mention/resolution with separate confidence/provenance, and realistic Fake World ambiguity scenarios.
+## PR 12 — Model-backed semantic extraction and geographic resolution (delivered)
+Delivered a finite semantic entity vocabulary; a separate
+`semantic-entities/v1` profile using the existing `LlmClient` structured-output
+boundary; deterministic exact-source-span grounding that rejects ungrounded/
+ambiguous model claims; bounded persisted extraction confidence; a
+provider-neutral `GeographicResolver` SPI; `GeographicResolutionService` with
+RESOLVED/AMBIGUOUS/UNRESOLVED outcomes using a separate resolution confidence;
+immutable/versioned geographic persistence (additive `0006_semantic_geography.sql`,
+stored-function-only, PR 11 v1 functions retained, no PostGIS required); a
+deterministic `FakeGeographicResolver`; central composition/configuration;
+content-free OTEL; the SD/GR/SE/GS/RP12/TS12 test matrices; concurrency and
+failure slices; and a canonical real-browser slice (real crawler -> normalize ->
+ObjectStore -> real PostgreSQL -> real semantic extraction/grounding -> real
+geographic resolution) with BlackGate Washington State / Washington, D.C. /
+ambiguous `Washington` cases. No relationships (PR 13), no SourceAnalyst or
+SourceAssessment (PR 14), no global entity registry, no live geocoder, no
+background workers, and no changes to migrations 0001-0005.
 
 ## PR 13 — Extracted relationships
 Implement content-derived relationships and provenance without promoting assertions to global truth.

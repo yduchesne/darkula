@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 import pytest
 
 from darkula.domain.extraction import (
+    DETERMINISTIC_ENTITY_TYPES,
+    SEMANTIC_ENTITY_TYPES,
     EntityType,
     ExtractedEntity,
     ExtractionResult,
@@ -129,11 +131,27 @@ class TestExtractedEntity:
             )
 
     def test_dm10_entity_types_are_the_finite_pr11_set(self) -> None:
-        assert {item.value for item in EntityType} == {
-            "IP_ADDRESS",
-            "DOMAIN",
-            "URL",
-            "EMAIL",
-            "HASH",
-        }
+        assert {
+            EntityType.IP_ADDRESS,
+            EntityType.DOMAIN,
+            EntityType.URL,
+            EntityType.EMAIL,
+            EntityType.HASH,
+        } == DETERMINISTIC_ENTITY_TYPES
+        # PR 12 adds a disjoint finite semantic vocabulary (no OTHER).
+        assert {
+            EntityType.PERSON,
+            EntityType.ORGANIZATION,
+            EntityType.ONLINE_IDENTITY,
+            EntityType.THREAT_ACTOR,
+            EntityType.MALWARE,
+            EntityType.LOCATION,
+            EntityType.INDUSTRY,
+            EntityType.ORGANIZATION_TYPE,
+            EntityType.CREDENTIAL_TYPE,
+            EntityType.ACCESS_TYPE,
+            EntityType.CRYPTO_ADDRESS,
+        } == SEMANTIC_ENTITY_TYPES
+        assert DETERMINISTIC_ENTITY_TYPES.isdisjoint(SEMANTIC_ENTITY_TYPES)
+        assert set(EntityType) == DETERMINISTIC_ENTITY_TYPES | SEMANTIC_ENTITY_TYPES
         assert {item.value for item in HashSubtype} == {"MD5", "SHA1", "SHA256"}

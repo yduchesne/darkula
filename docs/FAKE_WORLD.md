@@ -69,7 +69,12 @@ A fully synthetic cybercrime-forum archetype:
   Retry-After on the archives board), and an intermittent 503-then-200
   thread sequence;
 - the geographic seed: a fictional Washington State hospital listing and a
-  separate Washington, D.C. reference (ambiguity seed for PR 12);
+  separate Washington, D.C. reference (ambiguity seed for PR 12), consumed by
+  PR 12 without exposing hidden truth: the rendered "Mason Creek General
+  Hospital" / "Mason Creek, Washington" clues ground semantic ORGANIZATION +
+  LOCATION mentions, the D.C. reference grounds a distinct LOCATION, and a
+  bare "Washington" can remain AMBIGUOUS under a scripted resolver. Production
+  code contains no BlackGate/`"Washington"` special case.
 - an additive public "Collector sample indicators" thread
   (`thr-collector-samples`) carrying fully synthetic, reserved/non-routable
   observables (IPv4 `203.0.113.77`, IPv6 `2001:db8::c0de`, a repeated

@@ -153,3 +153,55 @@ normalized content; it never expands the trust boundary.
 - **Cancellation stays clean.** `asyncio.CancelledError` propagates; a
   cancellation before the write commits nothing, and one during the write
   rolls back so no partial result/occurrence set is ever durable.
+
+## PR 12 delivered controls (semantic extraction and geographic resolution)
+
+Semantic extraction is a bounded structured model operation, not agentic
+browsing/reconnaissance; geographic resolution is a bounded provider-neutral
+lookup. Both operate only on already-persisted, untrusted normalized content.
+
+- **Source text is untrusted prompt data.** The semantic system prompt states
+  that source content is UNTRUSTED DATA and that embedded instructions must
+  never be followed. Source text appears only inside a clearly delimited
+  untrusted-data block in the user prompt, never interpolated into system
+  instructions. Prompt-injection prose is stored as inert data.
+- **No model tools/browsing/network.** The semantic extractor has no browser,
+  tool-calling, sandbox, crawler, DataStream, or network capability; it calls
+  only the existing Darkula `LlmClient.generate_structured`. It never routes
+  through ReconAgent/DeepAgent. Static import guards enforce this.
+- **Structured output only.** Responses must validate against the strict
+  Pydantic `SemanticExtractionResponse`; unknown fields/entity types and
+  arbitrary metadata are rejected. No free-form model prose is parsed and no
+  model-provided offsets/IDs are trusted.
+- **Grounding before persistence.** Every persisted semantic occurrence
+  satisfies `canonical_text[start:end] == raw_value` under exact code-point
+  matching (no fuzzy/case-folded/whitespace-normalized alignment). Ungrounded
+  and ambiguous repeated mentions are rejected rather than guessed; a
+  malformed response contract fails the operation.
+- **Confidence separation.** Extraction confidence and resolution confidence
+  are distinct persisted fields; neither is collapsed into the other, and
+  deterministic PR 11 rows keep NULL confidence.
+- **Provider-neutral geography.** Application/domain code depends only on the
+  `GeographicResolver` SPI; concrete geocoder SDKs/HTTP clients/provider
+  payloads never cross it, and raw provider responses are never persisted. No
+  live Internet geocoder is required by CI.
+- **Fake World truth never enters production.** Production semantic/geographic
+  code never imports `darkula.testing.fake_world` or `FakeWorldTruth`; the
+  package's own static guard suite remains enforced. The canonical slice
+  derives results from observable content plus the configured model/resolver
+  boundaries, not truth.
+- **No external I/O inside a transaction.** ObjectStore reads, model calls,
+  and resolver calls occur between short read/write units of work; a crash or
+  cancellation cannot leave a partial semantic result or resolution.
+- **Bounded behavior.** Canonical bytes, prompt content, model candidate
+  count, raw/normalized values, confidence, location context, resolver
+  metadata, and entity counts are bounded; over-cap fails typed rather than
+  truncating. `asyncio.CancelledError` propagates unchanged.
+- **Content-free telemetry.** Semantic/geographic telemetry records only
+  bounded operation/status/outcome names and counts/durations. Source text,
+  raw/normalized values, location mentions, canonical names, coordinates,
+  prompts, model output, provider payloads, object keys, hashes, and
+  credentials never appear.
+- **No silent fake.** Production composition selects a geographic resolver
+  only by explicit configuration; enabling geography without one fails fast,
+  and a fake is never substituted as a production fallback.

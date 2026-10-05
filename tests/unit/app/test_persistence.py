@@ -14,6 +14,7 @@ from darkula.app.repositories import (
     CollectionRepository,
     ContentRepository,
     ExtractionRepository,
+    GeographicResolutionRepository,
     OutboxRepository,
     ProcessedMessageRepository,
     SourceCandidateRepository,
@@ -66,6 +67,10 @@ class _RecordingUnitOfWork(UnitOfWork):
     @property
     def extraction(self) -> ExtractionRepository:
         raise AssertionError("recording stub exposes no extraction repository")
+
+    @property
+    def geography(self) -> GeographicResolutionRepository:
+        raise AssertionError("recording stub exposes no geography repository")
 
 
 class _RecordingSpi(DarkulaSpi):
