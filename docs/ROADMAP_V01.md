@@ -269,8 +269,33 @@ browser/sandbox integration slices require the provisioned Podman environment
 lack of credentials does not block merge, provided runner/config validation
 and deterministic coverage are complete. PR 16 owns full-stack hardening.
 
-## PR 16 — v0.1 end-to-end hardening
+## PR 16 — v0.1 end-to-end hardening (delivered)
 Exercise PostgreSQL + Redpanda + ObjectStore + sandbox + extraction + agents + OTEL stack end to end; test replay/idempotency/failures/security controls; document production-readiness gaps.
+
+**Delivered:** an optional real OTLP/HTTP exporter path composed through the
+existing `configure_telemetry`/`TelemetryRuntime` (bounded fail-open
+`force_flush`/`shutdown`); a Darkula-owned, ownership-safe local observability
+stack (`darkula_observability.sh` + Collector/Jaeger/Prometheus configs) on
+explicit prefix-`3` host ports; trap-based `./build.sh --intg` cleanup that
+preserves the primary exit status; a real OTLP export integration test
+(Collector -> Jaeger traces + Prometheus metrics, with sensitive-sentinel
+negatives); a v0.1 full-stack slice (async Redpanda collection -> sandbox/
+browser/Fake World -> ObjectStore/PostgreSQL -> deterministic + semantic
+extraction, replay-convergent); the pinned migration-hash guard extended
+through `0008`; and `docs/PRODUCTION_READINESS.md` with verified behavior vs
+accepted v0.1 limitations and pre-production gaps.
+
+**Security/architecture:** no new orchestration layer or domain concept; no
+PostgreSQL transaction across external I/O; at-least-once messaging stays
+idempotent; sandbox controls unchanged; telemetry carries no content/prompts/
+credentials/hidden-truth and is fail-open; migrations `0001`–`0008`
+byte-identical and no `0009`; evaluation/Fake World truth remain out of
+production; no live Internet/model/geocoder required by CI.
+
+**Validation:** `./build.sh --qa`, `./build.sh --sec`, and `./build.sh --intg`
+pass locally on the Podman-capable environment (197 integration tests,
+including the new full-stack and OTLP export slices), with no leftover
+Darkula-owned integration resources.
 
 ## Deferred beyond v0.1 unless required
 Multi-tenancy; commercial/private collectors; ATI integration; full threat-investigation synthesis; detailed product UI; production-scale deployment architecture.

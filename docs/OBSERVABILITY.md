@@ -37,7 +37,7 @@ become a covert channel (see `Sandbox propagation`).
 ## PR 3 status — OTEL SDK emission delivered
 
 PR 3 upgraded the three decorators to emit real OpenTelemetry while keeping every PR 2 preservation guarantee, added the support modules
-`telemetry/attributes.py`, `telemetry/tracing.py`, `telemetry/metrics.py`, and `telemetry/setup.py`, and pinned `opentelemetry-sdk` (API + SDK only; **no** OTLP exporters, Collectors, or vendor backends).
+`telemetry/attributes.py`, `telemetry/tracing.py`, `telemetry/metrics.py`, and `telemetry/setup.py`, and pinned `opentelemetry-sdk` (API + SDK). PR 16 added an optional OTLP/HTTP exporter path (see below); the default remains local-only with no network.
 
 Delivered decorator behavior:
 
@@ -49,7 +49,7 @@ Delivered decorator behavior:
 
 Tracer/meter resolution goes through the injectable module seams `get_tracer` / `get_histogram` / `get_counter`; deterministic tests bind in-memory SDK providers through those seams (`tests/unit/conftest.py`, `tests/support/otel.py`) and never touch global OTel state or any external service. `configure_telemetry` composes local `TracerProvider`/`MeterProvider` for the configured `service.name` without exporters, network, or background threads.
 
-Explicitly deferred: OTLP exporters/Collector deployment, Prometheus/Loki/Jaeger/Grafana wiring, and the Langfuse agent-observability backend remain future work. PR 15 delivered the LangSmith adapter behind the existing SPI.
+PR 15 delivered the LangSmith adapter behind the existing SPI. PR 16 delivered real OTLP trace/metric export, a local Collector, and local Jaeger/Prometheus backends (see the PR 16 section). The Langfuse agent-observability backend remains explicitly unavailable.
 
 ## PR 8 status — normalization and artifact telemetry
 
@@ -272,3 +272,78 @@ payloads. Agent observability is not the evaluation result store.
 
 **OTEL stays authoritative for operational telemetry.** Agent/LLM
 observability is a separate concern and does not replace OTEL.
+
+## PR 16 status — OTLP export, Collector, and local backends
+
+PR 16 closes the v0.1 telemetry gap by composing a real exporter path
+through the existing `configure_telemetry`/`TelemetryRuntime` composition —
+no rival telemetry abstraction, no vendor SDK in application/domain code.
+
+```text
+Darkula instrumentation (traced/timed/counted, OTEL API)
+     |
+     +-- OTLP/HTTP (spans) ----------------------------------+
+     |                                                       |
+     +-- OTLP/HTTP (metrics) --------------------------------+--> OTEL Collector
+                                                             |       |-> Jaeger (traces)
+                                                             |       |-> Prometheus (metrics)
+```
+
+### Settings and selection
+
+`TelemetrySettings` (see `docs/CONFIGURATION.md`) selects:
+
+- `enabled=false` — no-op (no providers, no export, no threads);
+- `enabled=true, export=none` — the PR 3 local in-process providers;
+- `enabled=true, export=otlp` — real OTLP/HTTP span exporter behind a
+  `BatchSpanProcessor` plus a periodic OTLP/HTTP metric reader/exporter.
+
+Only the OTLP/HTTP protocol is supported in v0.1: no arbitrary header map, no
+vendor exporter selection, and no secret-bearing endpoint configuration.
+Composition registers the providers as the process-global OTEL providers
+**only** when OTLP export is selected, so the installed decorators emit to
+the composed exporter; local-only composition keeps the PR 3 behavior.
+
+### Lifecycle and failure behavior
+
+- `TelemetryRuntime.force_flush(timeout_millis=...)` and `shutdown(...)` are
+  bounded and fail-open: exporter/backend failure never raises into domain
+  behavior. `tracer_provider.shutdown()` is called before the meter provider
+  shutdown, and both are idempotent/safe.
+- Exporter or backend outage cannot partially commit domain state, change a
+  decision, cause duplicate work, or trigger a business-operation retry.
+
+### Local infrastructure and ports
+
+`scripts/darkula_observability.sh` owns three pinned, `darkula.owned=true`
+containers plus the `darkula-observability` network:
+
+| Resource | Image | Host port -> container |
+| --- | --- | --- |
+| `darkula-otel-collector` | `otel/opentelemetry-collector-contrib:0.115.1` | `34317:4317`, `34318:4318`, `31333:13133` |
+| `darkula-jaeger` | `jaegertracing/all-in-one:1.62.0` | `31686:16686` |
+| `darkula-prometheus` | `prom/prometheus:v2.55.1` | `39090:9090` |
+
+`config/observability/otel-collector.yaml` receives OTLP and routes traces to
+Jaeger (OTLP/gRPC) and metrics to a Prometheus scrape endpoint; there is no
+debug exporter. `config/observability/prometheus.yml` scrapes the Collector.
+Ports are explicit five-digit prefix-`3` choices (standard container port with
+the Darkula `3` prefix); no generalized prefix rule is invented. Ownership is
+positive (`darkula.owned=true`), images are pinned (never `latest`), foreign
+resources/ports fail closed, and there is no prune.
+
+### Integration proof
+
+`tests/integration/observability/test_otel_export.py` (OI16) runs against the
+real Collector/Jaeger/Prometheus: it emits a real span/counter, flushes, then
+polls Jaeger (trace present) and Prometheus (metric present) with bounded
+deadlines, and asserts that known sensitive sentinels are absent from the
+exported data. `./build.sh --intg` provisions the stack and removes it in a
+trap-cleanup that preserves the primary exit status.
+
+### Remaining gaps
+
+Loki/log aggregation was deliberately not added (no second logging
+architecture for a single line in the plan); traces + metrics are the v0.1
+mandatory proof. Alerting/SLOs, telemetry auth/TLS, durable backends, and
+sampling policy remain production gaps (see `docs/PRODUCTION_READINESS.md`).

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Darkula local Prometheus configuration (PR 16).
+#
+# Scrapes the Darkula OTEL Collector's Prometheus exporter endpoint. It is
+# a local, offline integration backend (machine-queryable through the
+# Prometheus HTTP API); it is not an application dependency.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: darkula-otel-collector
+    static_configs:
+      - targets: ["darkula-otel-collector:8889"]

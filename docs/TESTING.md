@@ -840,3 +840,57 @@ imported only inside the infrastructure adapter.
 is never invoked by `--qa`, `--sec`, or `--intg`; ordinary CI never requires
 live-model or SaaS credentials. Live-model acceptance runs are manual and
 documented; lack of credentials does not block deterministic coverage.
+
+## PR 16 testing status — v0.1 full-stack hardening
+
+### Telemetry unit matrix (`tests/unit/telemetry/test_otlp.py`, OT16)
+
+- disabled -> no providers/export/network;
+- local-only -> no exporters/readers;
+- OTLP -> one `BatchSpanProcessor` and one periodic metric reader composed;
+- invalid/missing OTLP endpoint and invalid timeout/interval fail closed;
+- non-empty env overrides win; empty env has no effect;
+- bounded fail-open `force_flush`/`shutdown`, including exporter errors;
+- SDK/exporter imports stay confined to `darkula/telemetry/`;
+- telemetry settings expose no secret-like fields.
+
+### Real OTLP export integration (`tests/integration/observability/test_otel_export.py`, OI16)
+
+Runs against the real Darkula-owned Collector/Jaeger/Prometheus provisioned by
+`./build.sh --intg`: emits a real span and counter, flushes, then queries
+Jaeger (trace present) and Prometheus (metric present) with bounded polling
+and asserts known sensitive sentinels are absent from the exported data.
+
+### v0.1 full-stack slice (`tests/integration/crawler/test_v01_end_to_end.py`, E2E16)
+
+- E2E16-1: real PostgreSQL scheduler + transactional outbox -> real Redpanda ->
+  real `CollectionWorker` -> `CrawlerController`/`PodmanSandbox`/Chromium ->
+  Fake World HTTP -> normalization -> local ObjectStore -> PostgreSQL;
+  asserts completion, persisted content, and no truth/password leaks.
+- E2E16-2: downstream deterministic extraction over persisted content plus
+  model-backed semantic extraction through `FakeLlmClient`, with exact
+  grounding and replay convergence (`created_result is False`, no second model
+  call).
+- E2E16-3: a second logical source (AccessBay virtual host) stays
+  content-local: every persisted URI belongs to that source and no hidden
+  truth leaks.
+
+### Replay/failure/security
+
+Replay/idempotency and failure/recovery are exercised across the existing PR
+5/8/9/11–14 integration slices (outbox publish retry, Redpanda redelivery and
+`processed_message` no-op, content-addressed dedup with provenance, semantic
+key replay without a second model call) and the sandbox security suites
+(`tests/integration/crawler/test_network_isolation.py`,
+`tests/unit/app/test_*_security_guards.py`). The pinned migration-hash guard
+now covers `0001`–`0008`.
+
+### Integration lifecycle
+
+`./build.sh --intg` installs a trap **before** the first provisioning step, so
+a partial provision still removes only positively-identified Darkula-owned
+resources and preserves the original non-zero exit status. The observability
+script has deterministic lifecycle tests
+(`tests/unit/scripts/test_darkula_observability_script.py`) covering ownership
+labels, pinned images, explicit ports, foreign-resource refusal, occupied-port
+refusal, and safe/idempotent cleanup.

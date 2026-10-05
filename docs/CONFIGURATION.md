@@ -314,6 +314,30 @@ Deliberately **not** configurable: the `source-analysis/v1` profile identity,
 characteristics schema, evidence-kind/ref format, score semantics, and
 grounding rules. A semantic change requires a new profile version.
 
+### Telemetry (OTEL) group (PR 3; OTLP export PR 16)
+
+Operational telemetry composition. `export=none` keeps the PR 3 local-only
+in-process providers; `export=otlp` composes real OTLP/HTTP exporters to the
+configured Collectors.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Compose local providers; `false` is a full no-op (no providers/threads/export). |
+| `service_name` | `darkula` | OTEL `service.name` resource attribute. |
+| `export` | `none` | `none` (local-only) or `otlp` (real OTLP/HTTP export). |
+| `otlp_endpoint` | `None` | OTLP/HTTP base URL (required for `otlp`); signal paths `/v1/traces` and `/v1/metrics` are appended by composition. |
+| `timeout_seconds` | `10.0` | Bounded per-export timeout (`(0, 60]`). |
+| `metric_interval_seconds` | `60.0` | Bounded periodic metric export interval (`(0, 3600]`). |
+
+Overrides: `DARKULA_TELEMETRY__ENABLED`, `DARKULA_TELEMETRY__EXPORT`,
+`DARKULA_TELEMETRY__OTLP_ENDPOINT`, ... The local integration stack exports to
+`http://127.0.0.1:34318`.
+
+Deliberately **not** configurable: an arbitrary header map, vendor exporter
+selection, or secret-bearing endpoint. Selecting `otlp` without an
+`http(s)` `otlp_endpoint` fails fast at configuration time. Exporter failure
+is fail-open and never changes domain behavior.
+
 ### Agent observability group (PR 15)
 
 Selects and configures the agent/LLM observability backend. The existing LLM

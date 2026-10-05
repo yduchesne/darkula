@@ -788,3 +788,54 @@ composition fails fast when LangSmith is selected without configuration.
 Langfuse remains explicitly unavailable. `./build.sh --eval` is the only
 opt-in evaluation entry point and is never part of `--qa`/`--sec`/`--intg` or
 ordinary CI.
+
+# PR 16 update — v0.1 full-stack hardening and OTLP telemetry
+
+## No new orchestration layer
+
+PR 16 verifies the assembled v0.1 system by executing the existing production
+components together: PostgreSQL scheduler/admission -> transactional outbox ->
+Redpanda -> `CollectionWorker` -> `SourceCollectionService` ->
+`CrawlerController` -> `PodmanSandbox` -> `CrawlerRuntime`/Chromium -> Fake
+World HTTP -> normalization -> local ObjectStore -> PostgreSQL -> deterministic
+extraction -> semantic extraction (`FakeLlmClient`) -> geographic resolution
+(`FakeGeographicResolver`) -> relationship extraction (`FakeLlmClient`) ->
+`SourceAnalysisContextBuilder`/`SourceAnalyst` (`FakeLlmClient`) ->
+`SourceAssessment`. Downstream stages are invoked explicitly through their
+existing services; no `FullStackCoordinator`/pipeline/orchestrator is added.
+
+Ownership is unchanged: Coordinator/application policy authorizes, the
+CrawlerController validates, the Sandbox isolates, the CrawlerRuntime
+interacts with the hostile world, ingestion normalizes/stores, extraction
+derives facts, SourceAnalyst reasons over bounded persisted context, and
+PostgreSQL remains authoritative. No model receives persistence/browser/
+Podman/shell/network-policy authority. No PostgreSQL transaction spans
+crawler/browser, ObjectStore, Redpanda, LLM, resolver, LangSmith, or OTLP I/O.
+
+## Operational telemetry export
+
+Operational telemetry remains OpenTelemetry. PR 16 extends the existing
+`configure_telemetry`/`TelemetryRuntime` (no rival abstraction) with an
+optional OTLP/HTTP path:
+
+```text
+Darkula decorators (OTEL API) -> OTLP/HTTP -> OTEL Collector
+                                            -> Jaeger (traces)
+                                            -> Prometheus (metrics)
+```
+
+- `export=none` preserves the PR 3 local-only providers;
+- `export=otlp` composes a `BatchSpanProcessor` + OTLP/HTTP span exporter and
+  a periodic OTLP/HTTP metric reader/exporter;
+- composition registers the providers as process globals only when OTLP is
+  selected, so decorator emission reaches the exporter;
+- lifecycle (`force_flush`/`shutdown`) is bounded and fail-open; exporter
+  failure never alters domain behavior or triggers business retries;
+- exporter/SDK types stay in `darkula/telemetry/`; application/domain code
+  gains no vendor telemetry dependency.
+
+The local Collector/Jaeger/Prometheus stack is provisioned by
+`scripts/darkula_observability.sh` on the Darkula-owned
+`darkula-observability` network under the prefix-`3` host-port convention; it
+is an integration backend, not a production telemetry deployment. See
+`docs/OBSERVABILITY.md` and `docs/PRODUCTION_READINESS.md`.

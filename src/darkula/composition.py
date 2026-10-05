@@ -70,6 +70,7 @@ from darkula.config.settings import (
     ObjectStoreDriver,
     SandboxDriver,
     Settings,
+    TelemetryExport,
 )
 from darkula.crawler import Crawler, CrawlerController
 from darkula.infrastructure.data_stream import RedpandaDataStream
@@ -513,6 +514,14 @@ def compose(*, settings: Settings) -> Runtime:
         telemetry=configure_telemetry(
             enabled=settings.telemetry.enabled,
             service_name=settings.telemetry.service_name,
+            export=settings.telemetry.export,
+            otlp_endpoint=settings.telemetry.otlp_endpoint,
+            timeout_seconds=settings.telemetry.timeout_seconds,
+            metric_interval_seconds=settings.telemetry.metric_interval_seconds,
+            register_globals=(
+                settings.telemetry.enabled
+                and settings.telemetry.export is TelemetryExport.OTLP
+            ),
         ),
     )
 

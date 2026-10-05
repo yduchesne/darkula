@@ -35,6 +35,10 @@ dependencies = [
   # inside the infrastructure adapter; the application boundary never sees
   # them. Bounded to a verified Python-3.14-compatible range.
   "langsmith>=0.14,<0.15",
+  # Official OTLP/HTTP span+metric exporter (PR 16). SDK/exporter types stay
+  # inside darkula.telemetry; application/domain code only uses OTEL APIs
+  # and Darkula decorators. Bounded to the verified SDK minor range.
+  "opentelemetry-exporter-otlp-proto-http>=1.45,<2",
 ]
 
 [dependency-groups]
