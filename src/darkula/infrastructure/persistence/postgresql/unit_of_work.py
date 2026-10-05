@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         GeographicResolutionRepository,
         OutboxRepository,
         ProcessedMessageRepository,
+        RelationshipRepository,
         SourceCandidateRepository,
         SourceRepository,
     )
@@ -68,6 +69,9 @@ if TYPE_CHECKING:
     )
     from darkula.infrastructure.persistence.postgresql.processed_message_repository import (  # noqa: E501
         PostgresProcessedMessageRepository,
+    )
+    from darkula.infrastructure.persistence.postgresql.relationship_repository import (
+        PostgresRelationshipRepository,
     )
     from darkula.infrastructure.persistence.postgresql.source_repository import (
         PostgresSourceRepository,
@@ -102,6 +106,7 @@ class PostgresUnitOfWork(UnitOfWork):
         self._collection_repository: PostgresCollectionRepository | None = None
         self._extraction_repository: PostgresExtractionRepository | None = None
         self._geography_repository: PostgresGeographicResolutionRepository | None = None
+        self._relationship_repository: PostgresRelationshipRepository | None = None
 
     async def __aenter__(self) -> Self:
         if self._state is not _State.CREATED:
@@ -296,6 +301,18 @@ class PostgresUnitOfWork(UnitOfWork):
 
             self._geography_repository = PostgresGeographicResolutionRepository(self)
         return self._geography_repository
+
+    @property
+    def relationships(self) -> RelationshipRepository:
+        """Return the transaction-bound relationship-assertion repository (PR 13)."""
+        self.ensure_open()
+        if self._relationship_repository is None:
+            from darkula.infrastructure.persistence.postgresql.relationship_repository import (  # noqa: E501
+                PostgresRelationshipRepository,
+            )
+
+            self._relationship_repository = PostgresRelationshipRepository(self)
+        return self._relationship_repository
 
     async def _release_connection(self) -> None:
         """Return the borrowed connection to the pool exactly once."""

@@ -579,3 +579,94 @@ No relationships (PR 13), no global entity registry/canonicalization, no
 SourceAnalyst/SourceAssessment (PR 14), no live geocoder, no background
 extraction workers, no chunking, and no Fake World/`"Washington"` special
 cases in production code.
+
+# PR 13 update — content-derived relationship assertions
+
+PR 13 adds a **third** extraction profile beside PR 11 deterministic and
+PR 12 semantic extraction. A persisted relationship means only that one
+normalized content observation asserted a predicate between two extracted
+entity occurrences:
+
+> assertion != global truth
+
+It is never a canonical graph edge, an entity-resolution result, a
+cross-document corroboration, or source-independent truth.
+
+```text
+NormalizedContent
+  ├─ deterministic-observables/v1   (PR 11, pure, LLM-free)
+  ├─ semantic-entities/v1           (PR 12, LlmClient structured output)
+  └─ relationship-assertions/v1     (PR 13, over persisted occurrences)
+         -> relationship-extraction-result + extracted-relationship[]
+         -> (PR 14 SourceAnalyst consumes these; still not implemented)
+```
+
+## Boundaries (PR 13)
+
+- `src/darkula/domain/relationships.py` owns the finite
+  `RelationshipPredicate` vocabulary, `RelationshipExtractionResult`,
+  `ExtractedRelationship`, and the exact-support invariant
+  (`text[start:end] == support_text`, span and text length equal).
+- `src/darkula/app/relationship_extraction.py` owns the strict Pydantic
+  protocol (`RelationshipExtractionResponse` / `RelationshipCandidate`), the
+  deterministic endpoint catalog (`E1..En` invocation-local refs), exact
+  support grounding, and `RelationshipExtractionService`. It uses the existing
+  `LlmClient.generate_structured` — never a provider SDK or second model
+  abstraction — with `FakeLlmClient` as the deterministic test boundary.
+- `src/darkula/app/repositories.py` adds `RelationshipRepository`, exposed as
+  `UnitOfWork.relationships`; PostgreSQL owns result/assertion persistence
+  through versioned stored functions (`migrations/0007_relationships.sql`).
+
+## Endpoints, direction, and provenance
+
+- Endpoints are persisted `ExtractedEntityId` **occurrences**, never endpoint
+  values, `(EntityType, normalized_value)` pairs, global ids, or geographic
+  resolution ids. Both endpoints must belong to the relationship content;
+  cross-content relationships are future analysis scope.
+- Direction is explicit (`source --predicate--> target`); endpoints are never
+  auto-sorted and reverse edges are never inferred.
+- Trusted code creates deterministic invocation-local `E1..En` refs from
+  persisted occurrences across `deterministic-observables/v1` and
+  `semantic-entities/v1`. The model returns refs only: unknown refs cannot
+  persist, and model-supplied UUIDs/offsets are not part of the schema.
+- Exact support is mandatory: trusted code locates the supporting text in the
+  canonical normalized text with exact code-point matching (no fuzzy,
+  case-folded, whitespace-normalized, or model-offset provenance), and the
+  support span must contain both endpoint occurrence spans.
+- Individual invalid candidates (unknown ref, absent/ambiguous support,
+  endpoint-excluding support, self-edge) are rejected and counted; malformed
+  structured output fails the whole operation; the accepted cap fails typed
+  rather than truncating.
+
+## Canonical input and transaction boundary
+
+The relationship service reuses the shared canonical input helper and never
+uses the PostgreSQL text preview. No transaction spans ObjectStore or LLM I/O:
+
+```text
+short read UoW (content + existing result + eligible occurrences) -> close
+ObjectStore bounded verified read
+LlmClient structured call
+trusted ref resolution + exact support grounding (no UoW)
+short write UoW: result + ALL assertions commit atomically
+```
+
+A successfully evaluated content/profile with no endpoint pair or no grounded
+candidate records a durable zero-count result, distinguishing "processed, none
+found" from "never processed".
+
+## Identity and idempotency
+
+`RelationshipExtractionResultId` identifies one result,
+`ExtractedRelationshipId` one assertion occurrence, and
+`(content_id, profile_name, profile_version)` is the UNIQUE semantic key. Same
+bytes in two observations, and the same values at two spans or in two
+documents, keep separate immutable provenance. A new profile version coexists;
+history is never rewritten. A concurrent loser reloads the durable winner.
+
+## Explicit non-goals
+
+No global/canonical entity registry, no cross-document merge/corroboration, no
+graph database/framework, no SourceAnalyst/SourceAssessment, no ATT&CK/STIX/
+MISP/OpenCTI semantics, no background worker/DataStream messages, no reverse/
+transitive inference, and no automatic global relationship truth.

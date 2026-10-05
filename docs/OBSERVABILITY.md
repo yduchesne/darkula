@@ -211,3 +211,20 @@ location mentions, canonical names, coordinates, prompts, model output,
 provider payloads, IDs as metric labels, object keys, hashes, and credentials.
 No argument or return value is captured by the decorators; the only dynamic
 dimension is the bounded resolution status.
+
+## PR 13 status — relationship-assertion extraction telemetry
+
+Relationship extraction is instrumented with the existing decorators plus
+bounded counters:
+
+- **Span** — `relationship_extraction.extract`.
+- **Counters** — `darkula.relationship_extraction.executions` (one per call),
+  `darkula.relationship_extraction.assertions` (accepted assertions), and
+  `darkula.relationship_extraction.rejected_candidates` (unknown ref, missing/
+  ambiguous support, endpoint-excluding support, or self-edge).
+- **Histogram** — `darkula.relationship_extraction.duration` (seconds).
+
+Prohibited (mirroring PR 11/12): source text, support text, endpoint values,
+refs, ids, predicates as labels, prompts, model output, object keys, hashes,
+and credentials. No argument or return value is captured by the decorators;
+the only attributes are static developer-controlled span/metric names.

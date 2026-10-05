@@ -139,6 +139,10 @@ class _FakeUnitOfWork(UnitOfWork):
     def geography(self) -> Any:
         raise AssertionError("outbox test exposes no geography repository")
 
+    @property
+    def relationships(self) -> Any:
+        raise AssertionError("outbox test exposes no relationship repository")
+
 
 class _RecordingSpi(DarkulaSpi):
     def __init__(self, shared: _Shared) -> None:

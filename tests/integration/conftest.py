@@ -60,6 +60,8 @@ TABLE_NAMES = (
     "extracted_entity",
     "extraction_result",
     "geographic_resolution",
+    "extracted_relationship",
+    "relationship_extraction_result",
 )
 
 #: Host-published Darkula Redpanda Kafka port (container port 9092).

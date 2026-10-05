@@ -59,6 +59,7 @@ from darkula.app.repositories import (
     GeographicResolutionRepository,
     OutboxRepository,
     ProcessedMessageRepository,
+    RelationshipRepository,
     SourceCandidateRepository,
     SourceRepository,
 )
@@ -166,6 +167,10 @@ class _SliceUnitOfWork(UnitOfWork):
     @property
     def geography(self) -> GeographicResolutionRepository:
         raise AssertionError("slice stub exposes no geography repository")
+
+    @property
+    def relationships(self) -> RelationshipRepository:
+        raise AssertionError("slice stub exposes no relationship repository")
 
 
 def _slice_message() -> StreamMessage:

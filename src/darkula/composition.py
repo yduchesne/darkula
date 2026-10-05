@@ -53,6 +53,7 @@ from darkula.app.object_store import ObjectStore
 from darkula.app.persistence import DarkulaSpi
 from darkula.app.recon import ReconCoordinator
 from darkula.app.recon_agent import ReconAgent
+from darkula.app.relationship_extraction import RelationshipExtractionService
 from darkula.app.semantic_extraction import SemanticExtractionService
 from darkula.config.settings import (
     AgentObservabilityBackend,
@@ -104,6 +105,7 @@ class Runtime:
     content_ingest: ContentIngestService
     extraction_service: DeterministicExtractionService
     semantic_extraction_service: SemanticExtractionService | None
+    relationship_extraction_service: RelationshipExtractionService | None
     geography_service: GeographicResolutionService | None
     collection_service: SourceCollectionService
     collection_scheduler: CollectionScheduler
@@ -202,6 +204,33 @@ def _compose_semantic_extraction(
         llm=llm,
         max_entities=settings.semantic_extraction.max_entities_per_content,
         max_input_bytes=settings.semantic_extraction.max_input_bytes,
+    )
+
+
+def _compose_relationship_extraction(
+    persistence: DarkulaSpi,
+    object_store: ObjectStore,
+    llm: LlmClient,
+    settings: Settings,
+) -> RelationshipExtractionService | None:
+    """Compose PR 13 relationship-assertion extraction with the existing LlmClient.
+
+    The service receives only persistence, ObjectStore, and the composed
+    ``LlmClient``; it never receives ReconAgent, Crawler, DataStream, or
+    agent observability and it never creates a second LLM boundary.
+    """
+    relationship = settings.relationship_extraction
+    if not relationship.enabled:
+        return None
+    return RelationshipExtractionService(
+        spi=persistence,
+        object_store=object_store,
+        llm=llm,
+        max_relationships=relationship.max_relationships_per_content,
+        max_support_chars=relationship.max_support_chars,
+        max_model_candidates=relationship.max_model_candidates,
+        max_context_chars=relationship.max_context_chars,
+        max_input_bytes=relationship.max_input_bytes,
     )
 
 
@@ -396,6 +425,9 @@ def compose(*, settings: Settings) -> Runtime:
     semantic_extraction_service = _compose_semantic_extraction(
         persistence, object_store, llm, settings
     )
+    relationship_extraction_service = _compose_relationship_extraction(
+        persistence, object_store, llm, settings
+    )
     geography_service = _compose_geography(persistence, object_store, settings)
     recon_agent, recon_coordinator = _compose_recon(
         persistence=persistence,
@@ -411,6 +443,7 @@ def compose(*, settings: Settings) -> Runtime:
         content_ingest=content_ingest,
         extraction_service=extraction_service,
         semantic_extraction_service=semantic_extraction_service,
+        relationship_extraction_service=relationship_extraction_service,
         geography_service=geography_service,
         collection_service=collection_service,
         collection_scheduler=collection_scheduler,

@@ -541,6 +541,50 @@ class SemanticExtractionSettings(BaseModel):
         return value
 
 
+class RelationshipExtractionSettings(BaseModel):
+    """Content-derived relationship-assertion group (PR 13).
+
+    Bounds only; the predicate vocabulary, prompt/response contract, and
+    profile versions are frozen developer-controlled code, never runtime
+    configuration. Relationship extraction consumes already-persisted entity
+    occurrences and uses the existing composed ``LlmClient``.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = True
+    #: Hard cap on assertions persisted for one content/profile extraction.
+    #: Exceeding it fails typed (never silently truncates assertions).
+    max_relationships_per_content: int = 500
+    #: Hard bound on raw model-returned candidates (bounds untrusted output).
+    max_model_candidates: int = 500
+    #: Hard bound on one stored support text (code points).
+    max_support_chars: int = 4096
+    #: Hard per-candidate bound on disambiguation context (code points).
+    max_context_chars: int = 256
+    #: Hard bound on canonical text sent to the model.
+    max_input_bytes: int = 262144
+
+    @field_validator(
+        "max_relationships_per_content",
+        "max_model_candidates",
+        "max_support_chars",
+        "max_input_bytes",
+    )
+    @classmethod
+    def _validate_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("relationship extraction bounds must be positive")
+        return value
+
+    @field_validator("max_context_chars")
+    @classmethod
+    def _validate_context(cls, value: int) -> int:
+        if value < 0 or value > 4096:
+            raise ValueError("relationship max_context_chars must be within [0, 4096]")
+        return value
+
+
 class GeographicResolverDriver(StrEnum):
     """Selected geographic-resolver driver (PR 12).
 
@@ -737,6 +781,9 @@ class Settings(BaseSettings):
     telemetry: TelemetrySettings = TelemetrySettings()
     extraction: ExtractionSettings = ExtractionSettings()
     semantic_extraction: SemanticExtractionSettings = SemanticExtractionSettings()
+    relationship_extraction: RelationshipExtractionSettings = (
+        RelationshipExtractionSettings()
+    )
     geography: GeographySettings = GeographySettings()
     collection: CollectionSettings = CollectionSettings()
     recon: ReconSettings = ReconSettings()
@@ -761,6 +808,7 @@ __all__ = [
     "ObjectStoreDriver",
     "ObjectStoreSettings",
     "ReconSettings",
+    "RelationshipExtractionSettings",
     "SandboxDriver",
     "SemanticExtractionSettings",
     "Settings",

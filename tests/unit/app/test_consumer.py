@@ -139,6 +139,10 @@ class _FakeUoW(UnitOfWork):
     def geography(self) -> Any:
         raise AssertionError("consumer test exposes no geography repository")
 
+    @property
+    def relationships(self) -> Any:
+        raise AssertionError("consumer test exposes no relationship repository")
+
     async def record(
         self,
         *,

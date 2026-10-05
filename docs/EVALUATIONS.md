@@ -59,3 +59,10 @@ Every eval should correlate scenario ID, experiment/run ID, agent run, LLM invoc
 
 ## Gates
 Exact metrics, thresholds, datasets, and CI gating policy are intentionally TBD until representative Fake World scenarios exist. Binary pass/fail may be used where requirements are categorical; graded measures require explicit rubrics and reproducibility.
+
+## Relationship assertions (PR 13)
+PR 13 delivered deterministic relationship-assertion provenance (exact
+endpoint occurrences and exact canonical support spans) but no evaluation
+framework: a live-model relationship-assertion eval would measure grounded
+precision/recall against Fake World truth and require model/provider
+selection. That remains PR 15 scope and is intentionally not implemented here.

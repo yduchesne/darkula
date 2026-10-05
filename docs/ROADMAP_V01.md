@@ -199,8 +199,24 @@ ambiguous `Washington` cases. No relationships (PR 13), no SourceAnalyst or
 SourceAssessment (PR 14), no global entity registry, no live geocoder, no
 background workers, and no changes to migrations 0001-0005.
 
-## PR 13 — Extracted relationships
-Implement content-derived relationships and provenance without promoting assertions to global truth.
+## PR 13 — Content-derived relationship assertions (delivered)
+Delivered a finite `relationship-assertions/v1` predicate vocabulary; an
+immutable/versioned `RelationshipExtractionResult`; provenance-bearing
+`ExtractedRelationship` assertions whose endpoints are already-persisted
+`ExtractedEntityId` occurrences; trusted invocation-local `E1..En` endpoint
+refs (the model can never invent endpoints or offsets); exact canonical
+support grounding (`text[start:end] == support_text`, span contains both
+endpoints); a bounded structured response using the existing `LlmClient`;
+additive stored-function-only persistence (`0007_relationships.sql`) with
+endpoint/content integrity, self-edge rejection, and semantic-key uniqueness;
+existing `UnitOfWork.relationships`; durable zero-count results and idempotent
+replay/race convergence; content-free OTEL; the RD/EC/RP/RG/RS/RDB/RTS test
+matrices; failure/concurrency slices; a cross-content provenance proof; and a
+canonical real-browser slice (real crawler -> normalize -> ObjectStore -> real
+PostgreSQL -> real semantic extraction -> real relationship assertions). No
+global/canonical entity resolution, cross-document merge, graph framework,
+SourceAnalyst/SourceAssessment (PR 14), ATT&CK/STIX/MISP/OpenCTI semantics,
+background workers, or changes to migrations 0001-0006.
 
 ## PR 14 — Source analysis
 Implement SourceAnalyst and immutable/time-windowed SourceAssessment history, triggered by explicit analysis policy rather than necessarily per document.

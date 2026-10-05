@@ -58,17 +58,24 @@ from darkula.domain.identifiers import (
     ContentArtifactId,
     CorrelationId,
     ExtractedEntityId,
+    ExtractedRelationshipId,
     ExtractionResultId,
     GeographicResolutionId,
     MessageId,
     NormalizedContentId,
     ObjectKey,
     ReconAssessmentId,
+    RelationshipExtractionResultId,
     SourceAssessmentId,
     SourceCandidateId,
     SourceEndpointId,
     SourceId,
     StreamName,
+)
+from darkula.domain.relationships import (
+    ExtractedRelationship,
+    RelationshipExtractionResult,
+    RelationshipPredicate,
 )
 from darkula.domain.source import (
     CandidateEventType,
@@ -319,6 +326,59 @@ def map_geographic_resolution(row: tuple[Any, ...]) -> GeographicResolution:
         raise _mapping_error("geographic resolution", exc) from exc
 
 
+def map_relationship_extraction_result(
+    row: tuple[Any, ...],
+) -> RelationshipExtractionResult:
+    """Map one relationship-extraction-result result row.
+
+    Column order: id, content_id, profile_name, profile_version,
+    extractor_manifest (jsonb array of name/version objects), extracted_at,
+    relationship_count.
+    """
+    try:
+        raw_manifest = row[4] or []
+        manifest = tuple(
+            ExtractorIdentity(name=str(entry["name"]), version=str(entry["version"]))
+            for entry in raw_manifest
+        )
+        return RelationshipExtractionResult(
+            result_id=RelationshipExtractionResultId.from_str(str(row[0])),
+            content_id=NormalizedContentId.from_str(str(row[1])),
+            profile_name=str(row[2]),
+            profile_version=str(row[3]),
+            extractor_manifest=manifest,
+            extracted_at=row[5],
+            relationship_count=int(row[6]),
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        raise _mapping_error("relationship extraction result", exc) from exc
+
+
+def map_extracted_relationship(row: tuple[Any, ...]) -> ExtractedRelationship:
+    """Map one extracted-relationship result row.
+
+    Column order: id, relationship_extraction_result_id, content_id,
+    source_entity_id, predicate, target_entity_id, support_text,
+    support_span_start, support_span_end, extractor_name, extractor_version,
+    extraction_confidence.
+    """
+    try:
+        return ExtractedRelationship(
+            relationship_id=ExtractedRelationshipId.from_str(str(row[0])),
+            extraction_result_id=RelationshipExtractionResultId.from_str(str(row[1])),
+            content_id=NormalizedContentId.from_str(str(row[2])),
+            source_entity_id=ExtractedEntityId.from_str(str(row[3])),
+            predicate=RelationshipPredicate(row[4]),
+            target_entity_id=ExtractedEntityId.from_str(str(row[5])),
+            support_span=SourceSpan(start=int(row[7]), end=int(row[8])),
+            support_text=str(row[6]),
+            extractor=ExtractorIdentity(name=str(row[9]), version=str(row[10])),
+            extraction_confidence=float(row[11]),
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("extracted relationship", exc) from exc
+
+
 def map_candidate(row: tuple[Any, ...]) -> SourceCandidate:
     """Map one ``candidate_get_v1`` result row.
 
@@ -479,11 +539,13 @@ __all__ = [
     "map_endpoint",
     "map_event",
     "map_extracted_entity",
+    "map_extracted_relationship",
     "map_extraction_result",
     "map_geographic_resolution",
     "map_normalized_content",
     "map_outbox_record",
     "map_recon_assessment",
+    "map_relationship_extraction_result",
     "map_scheduled_occurrence",
     "map_source",
     "map_source_assessment",

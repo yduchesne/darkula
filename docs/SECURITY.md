@@ -205,3 +205,48 @@ lookup. Both operate only on already-persisted, untrusted normalized content.
 - **No silent fake.** Production composition selects a geographic resolver
   only by explicit configuration; enabling geography without one fails fast,
   and a fake is never substituted as a production fallback.
+
+## PR 13 delivered controls (content-derived relationship assertions)
+
+Relationship extraction is a bounded structured model operation over
+already-persisted occurrences; it never browses, resolves entities, or
+promotes global truth. It consumes only the canonical normalized text and
+persisted `ExtractedEntity` occurrences.
+
+- **Assertion is not truth.** A persisted relationship records only that one
+  content observation asserted a predicate between two extracted occurrences;
+  it is never a canonical graph edge, entity-resolution result, or
+  source-independent fact. There is no global relationship table.
+- **The model cannot invent endpoints.** Trusted code builds a bounded
+  invocation-local `E1..En` catalog from persisted occurrences. The model may
+  return only those refs; unknown refs and self-edges are rejected and
+  counted, and model-supplied UUIDs/offsets are absent from the strict
+  `extra="forbid"` schema.
+- **Finite predicates only.** `RelationshipPredicate` is a frozen
+  `relationship-assertions/v1` vocabulary enforced in domain validation, the
+  Pydantic schema, and a PostgreSQL CHECK constraint; arbitrary free-text
+  predicates fail closed.
+- **Exact support grounding.** `support_text` must satisfy
+  `canonical_text[start:end] == support_text` under exact code-point matching
+  (no fuzzy/case-folded/whitespace-normalized matching); the support span must
+  contain both endpoint occurrence spans. Trusted code resolves offsets;
+  model offsets are never authoritative and repeated support without unique
+  exact context is rejected rather than guessed.
+- **Source text is untrusted prompt data.** The relationship system prompt
+  states that source content is UNTRUSTED DATA and that embedded instructions
+  must never be followed. The endpoint catalog and canonical text are placed
+  in a delimited user-prompt block; source text never reaches system
+  instructions. Prompt-injection prose is stored as inert data.
+- **No tools, browsing, network, or source assessment.** Relationship
+  extraction uses only the Darkula `LlmClient.generate_structured`; static
+  import guards forbid provider SDKs, browser, sandbox, DataStream, crawler,
+  recon, and SourceAnalyst boundaries in the production modules.
+- **Bounded behavior.** Canonical bytes, endpoint catalog size, model
+  candidate count, support/context lengths, and accepted assertions are
+  bounded; over-cap fails typed rather than truncating and individual invalid
+  candidates are rejected without fabricated provenance.
+  `asyncio.CancelledError` propagates unchanged and leaves persistence clean.
+- **Content-free telemetry.** Relationship telemetry records only static
+  operation/outcome names and counts/durations. Source text, support text,
+  raw/normalized values, refs, ids, prompts, model output, object keys, and
+  hashes never appear.

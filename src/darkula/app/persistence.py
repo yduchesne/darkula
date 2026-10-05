@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         GeographicResolutionRepository,
         OutboxRepository,
         ProcessedMessageRepository,
+        RelationshipRepository,
         SourceCandidateRepository,
         SourceRepository,
     )
@@ -157,6 +158,12 @@ class UnitOfWork(ABC):
     def geography(self) -> GeographicResolutionRepository:
         """Return the geographic-resolution repository bound to this
         transaction (PR 12)."""
+
+    @property
+    @abstractmethod
+    def relationships(self) -> RelationshipRepository:
+        """Return the relationship-assertion repository bound to this
+        transaction (PR 13)."""
 
 
 class DarkulaSpi(ABC):
