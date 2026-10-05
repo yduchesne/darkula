@@ -35,6 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from darkula.testing.fake_world.identifiers import SourceId
 from darkula.testing.fake_world.registry import get_scenario
 from darkula.testing.fake_world.rendering import (
+    CrossSourceRenderer,
     FakeWorldRenderer,
     FakeWorldRequest,
     FakeWorldSession,
@@ -76,11 +77,32 @@ class FakeWorldHttpService:
     threaded HTTP server.
     """
 
-    def __init__(self, renderer: FakeWorldRenderer | None = None) -> None:
+    def __init__(
+        self,
+        renderer: FakeWorldRenderer | CrossSourceRenderer | None = None,
+        *,
+        scenario_id: str = SCENARIO_ID,
+        version: int = SCENARIO_VERSION,
+        source_id: str = "blackgate",
+        host_map: Mapping[str, str] | None = None,
+    ) -> None:
         self._renderer = renderer or FakeWorldRenderer()
-        self._scenario = get_scenario(SCENARIO_ID, version=SCENARIO_VERSION)
+        self._scenario = get_scenario(scenario_id, version=version)
+        self._default_source = SourceId(source_id)
+        #: Optional virtual-host dispatch: ``Host`` header -> source id.
+        self._host_map = {
+            host.lower(): SourceId(source) for host, source in (host_map or {}).items()
+        }
         self._sessions: dict[str, FakeWorldSession] = {}
         self._lock = threading.Lock()
+
+    def _source_for(self, headers: Mapping[str, str]) -> SourceId:
+        host = _host_from_headers(headers)
+        if host is not None:
+            source = self._host_map.get(host)
+            if source is not None:
+                return source
+        return self._default_source
 
     # -- translatable pure interface (unit tests without sockets) ---------
     def handle(
@@ -103,7 +125,7 @@ class FakeWorldHttpService:
         header_cookie = _cookie_from_headers(header_map)
         session = self._session_for_cookie(header_cookie) if header_cookie else None
         request = FakeWorldRequest(
-            source_id=_SOURCE_ID,
+            source_id=self._source_for(header_map),
             method=http_method,
             path=path,
             query=FrozenParams.from_mapping(query),
@@ -117,19 +139,20 @@ class FakeWorldHttpService:
 
     # -- cookie/session mapping -------------------------------------------
     def _session_for_cookie(self, cookie_header: str) -> FakeWorldSession | None:
-        token = _cookie_value(cookie_header)
-        if token is None:
-            return None
-        return self._sessions.get(token)
+        for token in _cookie_values(cookie_header):
+            session = self._sessions.get(token)
+            if session is not None:
+                return session
+        return None
 
     def _apply_session_update(self, cookie_header: str | None, update: object) -> None:
         from darkula.testing.fake_world.rendering import SessionUpdate
 
         if not isinstance(update, SessionUpdate):
             return
-        old_token = _cookie_value(cookie_header) if cookie_header else None
+        old_tokens = _cookie_values(cookie_header) if cookie_header else []
         if update.session is None:
-            if old_token is not None:
+            for old_token in old_tokens:
                 self._sessions.pop(old_token, None)
             return
         self._sessions[update.session.token] = update.session
@@ -140,15 +163,27 @@ class FakeWorldHttpService:
         self._sessions.clear()
 
 
-def _cookie_value(cookie_header: str) -> str | None:
-    """Extract the BlackGate session token from a Cookie header (bounded)."""
+def _cookie_values(cookie_header: str) -> list[str]:
+    """Extract every bounded cookie value from a Cookie header."""
+    values: list[str] = []
     for part in cookie_header.split(";"):
-        name, sep, value = part.strip().partition("=")
-        if sep and name.strip().lower() == SESSION_COOKIE:
-            token = value.strip()
-            if len(token) > 512:
+        _name, sep, value = part.strip().partition("=")
+        if not sep:
+            continue
+        token = value.strip()
+        if token and len(token) <= 512:
+            values.append(token)
+    return values
+
+
+def _host_from_headers(headers: Mapping[str, str]) -> str | None:
+    """Return the lowercased ``Host`` header without any port (or ``None``)."""
+    for name, value in headers.items():
+        if name.lower() == "host":
+            host = value.strip().lower()
+            if not host:
                 return None
-            return token
+            return host.split(":", 1)[0]
     return None
 
 

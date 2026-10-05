@@ -49,7 +49,7 @@ Delivered decorator behavior:
 
 Tracer/meter resolution goes through the injectable module seams `get_tracer` / `get_histogram` / `get_counter`; deterministic tests bind in-memory SDK providers through those seams (`tests/unit/conftest.py`, `tests/support/otel.py`) and never touch global OTel state or any external service. `configure_telemetry` composes local `TracerProvider`/`MeterProvider` for the configured `service.name` without exporters, network, or background threads.
 
-Explicitly deferred: OTLP exporters/Collector deployment, Prometheus/Loki/Jaeger/Grafana wiring, and vendor agent observability (LangSmith/Langfuse) remain future PRs.
+Explicitly deferred: OTLP exporters/Collector deployment, Prometheus/Loki/Jaeger/Grafana wiring, and the Langfuse agent-observability backend remain future work. PR 15 delivered the LangSmith adapter behind the existing SPI.
 
 ## PR 8 status — normalization and artifact telemetry
 
@@ -246,3 +246,29 @@ content hash values, evidence refs, evidence summaries, prompts, model output,
 characteristics, scores, credentials, and raw errors. No argument or return
 value is captured by the decorators; the only attributes are static
 developer-controlled span/metric names.
+
+## PR 15 status — LangSmith agent-observability adapter and evaluation correlation
+
+PR 15 implements the existing provider-neutral `AgentObservability` SPI for
+LangSmith in `darkula.infrastructure.observability.langsmith`:
+
+- only bounded, content-free `AgentOperationMetadata` is mapped to LangSmith
+  metadata (`darkula.operation_name`, agent, model provider/name/profile,
+  prompt version, and safely-representable source/collection identifiers);
+- prompts, model outputs, collected content, credentials, and hidden reasoning
+  are not representable through the SPI and are never sent;
+- the backend is fail-open: start/post/end/patch/flush failures never fail,
+  retry, or otherwise alter the observed application operation, and
+  `BaseException` (including `asyncio.CancelledError` and `KeyboardInterrupt`)
+  is never swallowed;
+- LangSmith SDK types stay inside the infrastructure adapter; application and
+  domain code only see `AgentObservability`.
+
+Composition fails fast when the LangSmith backend is selected without a
+project and API key (no silent no-op fallback). Langfuse remains explicitly
+unavailable. Evaluation result correlation uses run/case/scenario/evaluator/
+model identities and operation names only — never source bodies or truth
+payloads. Agent observability is not the evaluation result store.
+
+**OTEL stays authoritative for operational telemetry.** Agent/LLM
+observability is a separate concern and does not replace OTEL.

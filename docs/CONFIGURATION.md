@@ -313,3 +313,42 @@ Deliberately **not** configurable: the `source-analysis/v1` profile identity,
 `source.analyze` operation name, `source-analysis-v1` prompt, response/
 characteristics schema, evidence-kind/ref format, score semantics, and
 grounding rules. A semantic change requires a new profile version.
+
+### Agent observability group (PR 15)
+
+Selects and configures the agent/LLM observability backend. The existing LLM
+credentials are reused for evaluations and are not duplicated here.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `backend` | `none` | `none` (no-op) or `langsmith` (PR 15 adapter). `langfuse` fails fast as not delivered. |
+| `project` | `None` | LangSmith project name (required for the `langsmith` backend). |
+| `api_key` | `None` | LangSmith API key; falls back to `LANGSMITH_API_KEY`/`LANGCHAIN_API_KEY`. Secret; redacted in diagnostics. |
+| `endpoint_url` | `None` | Optional LangSmith API endpoint override (self-hosted). |
+
+Overrides: `DARKULA_AGENT_OBSERVABILITY__BACKEND`,
+`DARKULA_AGENT_OBSERVABILITY__PROJECT`, ...
+
+Selecting `langsmith` without a project or API key fails fast at composition
+(no silent `none` fallback).
+
+### Evaluation group (PR 15)
+
+Evaluation is explicit and opt-in; the ordinary build never requires it.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Enable the explicit evaluation CLI. |
+| `live_model_enabled` | `false` | Request a live-model run; fails fast when the composed `LlmClient` is the fake. |
+| `dataset` | `darkula-cross-source` | Scenario/dataset identity for default runs. |
+| `case_ids` | `()` | Case filter; empty selects the full registered suite. |
+| `output_dir` | `.eval-results` | Bounded artifact output root (git-ignored). |
+| `fail_on_case_error` | `true` | CLI exits non-zero when a case fails. |
+| `quality_gate_enabled` | `false` | Enable an explicit caller-supplied quality gate. |
+
+Overrides: `DARKULA_EVALUATION__ENABLED`,
+`DARKULA_EVALUATION__LIVE_MODEL_ENABLED`, ...
+
+Deliberately **not** configurable: metric definitions, evaluator semantics,
+case expectations, and any universal quality threshold. Thresholds are
+caller-supplied and explicit; there is no hard-coded model-quality gate.

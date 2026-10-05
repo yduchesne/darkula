@@ -48,6 +48,13 @@ from darkula.testing.fake_world.model import (
     ForumPost,
     ForumSource,
     ForumThread,
+    LeakEntry,
+    LeakPublicationState,
+    LeakSource,
+    ListingState,
+    MarketplaceListing,
+    MarketplaceSeller,
+    MarketplaceSource,
     Visibility,
 )
 
@@ -405,7 +412,7 @@ class FakeWorldRenderer:
         session: FakeWorldSession | None = None,
     ) -> RenderResult:
         """Render one deterministic response for the request."""
-        source = scenario.source(request.source_id)
+        source = scenario.forum_source(request.source_id)
         token = self._presented_token(request, session)
         path = request.path
         method = request.method
@@ -814,7 +821,11 @@ def _public_preview(scenario: FakeWorldScenario, source: ForumSource) -> str:
     return "<p>No public announcements yet.</p>"  # pragma: no cover - v1 has one
 
 
-def _login_body(source: ForumSource, *, error: str | None = None) -> str:
+def _login_body(
+    source: ForumSource | MarketplaceSource | LeakSource,
+    *,
+    error: str | None = None,
+) -> str:
     invite = _escape(source.policy.invite_only_message)
     body = [
         "<h1>Log in</h1>",
@@ -1011,13 +1022,522 @@ def _legacy_body(board: ForumBoard) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# Additive PR 15 archetype renderers (marketplace / leak).
+# ---------------------------------------------------------------------------
+
+#: Static routes implemented by the marketplace renderer.
+MARKETPLACE_STATIC_ROUTES = ("/", "/login", "/register", "/logout", "/listings")
+#: Static routes implemented by the leak renderer.
+LEAK_STATIC_ROUTES = ("/", "/login", "/logout", "/leaks")
+
+_MARKETPLACE_SESSION_COOKIE = "accessbay_session"
+_LEAK_SESSION_COOKIE = "nightleak_session"
+
+
+def _archetype_page(page_title: str, body: str, footer: str) -> str:
+    """Assemble one deterministic page for a non-forum archetype."""
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        f"<title>{_escape(page_title)}</title>\n"
+        "</head>\n"
+        "<body>\n"
+        f"{body}\n"
+        f"<footer><p>{_escape(footer)}</p></footer>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+
+
+def _archetype_response(
+    status: int, page_title: str, body: str, footer: str
+) -> RenderedSourceResponse:
+    payload = _archetype_page(page_title, body, footer).encode("utf-8")
+    return RenderedSourceResponse(
+        status_code=status,
+        headers=FrozenParams.from_mapping(
+            {"content-type": _HTML, "content-length": str(len(payload))}
+        ),
+        media_type=_HTML,
+        body=payload,
+    )
+
+
+def _archetype_plain(
+    status: int, text: str, extra_headers: Mapping[str, str] | None = None
+) -> RenderedSourceResponse:
+    payload = text.encode("utf-8")
+    headers = {"content-type": _PLAIN, "content-length": str(len(payload))}
+    headers.update(extra_headers or {})
+    return RenderedSourceResponse(
+        status_code=status,
+        headers=FrozenParams.from_mapping(headers),
+        media_type=_PLAIN,
+        body=payload,
+    )
+
+
+def _mirror_list(mirrors: tuple[str, ...]) -> str:
+    if not mirrors:
+        return ""
+    items = "".join(f"<li>{_escape(mirror)}</li>" for mirror in mirrors)
+    return f'<section class="mirrors"><h2>Known mirrors</h2><ul>{items}</ul></section>'
+
+
+class MarketplaceRenderer:
+    """Deterministic, offline renderer for a synthetic access marketplace."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        """Restore canonical runtime state."""
+        self._login_serial = 0
+
+    def render(
+        self,
+        scenario: FakeWorldScenario,
+        request: FakeWorldRequest,
+        session: FakeWorldSession | None = None,
+    ) -> RenderResult:
+        """Render one deterministic marketplace response."""
+        source = scenario.marketplace_source(request.source_id)
+        authenticated = (
+            session is not None and session.alias == source.policy.login_username
+        )
+        path = request.path
+        if path == "/login":
+            if request.method is HttpMethod.GET:
+                return RenderResult(
+                    self._page(source, 200, "Log in", _login_body(source))
+                )
+            if request.method is HttpMethod.POST:
+                return self._login_submit(source, request)
+            return RenderResult(self._method_not_allowed())
+        if path == "/logout":
+            return RenderResult(_redirect("/"), SessionUpdate(None))
+        if request.method is not HttpMethod.GET:
+            return RenderResult(self._method_not_allowed())
+        if path == "/":
+            return RenderResult(
+                self._page(source, 200, source.title, _marketplace_landing(source))
+            )
+        if path == "/listings":
+            return RenderResult(
+                self._page(
+                    source,
+                    200,
+                    f"Listings \u2014 {source.title}",
+                    _marketplace_listings(scenario, source),
+                )
+            )
+        if path.startswith("/listing/"):
+            return self._listing(scenario, source, path, authenticated)
+        if path.startswith("/seller/"):
+            return self._seller(scenario, source, path)
+        return RenderResult(self._not_found(source))
+
+    def _login_submit(
+        self, source: MarketplaceSource, request: FakeWorldRequest
+    ) -> RenderResult:
+        fields = _parse_form(request)
+        policy = source.policy
+        if (
+            fields.get("username", "") == policy.login_username
+            and fields.get("password", "") == policy.login_password
+        ):
+            self._login_serial += 1
+            token = f"accessbay-session-{self._login_serial:03d}"
+            target = _safe_next(fields.get("next"))
+            session = FakeWorldSession(token=token, alias=policy.login_username)
+            response = _redirect(
+                target,
+                extra_headers={
+                    "set-cookie": (
+                        f"{_MARKETPLACE_SESSION_COOKIE}={token}; Path=/; HttpOnly"
+                    )
+                },
+            )
+            return RenderResult(response, SessionUpdate(session))
+        return RenderResult(
+            self._page(
+                source,
+                200,
+                "Log in",
+                _login_body(source, error="Invalid username or password."),
+            )
+        )
+
+    def _listing(
+        self,
+        scenario: FakeWorldScenario,
+        source: MarketplaceSource,
+        path: str,
+        authenticated: bool,
+    ) -> RenderResult:
+        listing_id = path[len("/listing/") :]
+        if not listing_id or "/" in listing_id:
+            return RenderResult(self._not_found(source))
+        try:
+            listing = scenario.find_listing(listing_id)
+        except FakeWorldValidationError:
+            return RenderResult(self._not_found(source))
+        if listing.visibility is not Visibility.PUBLIC and not authenticated:
+            return RenderResult(_redirect(_login_url(path)))
+        seller = scenario.find_seller(listing.seller_id.value)
+        return RenderResult(
+            self._page(
+                source,
+                200,
+                listing.title,
+                _marketplace_listing_body(listing, seller),
+            )
+        )
+
+    def _seller(
+        self,
+        scenario: FakeWorldScenario,
+        source: MarketplaceSource,
+        path: str,
+    ) -> RenderResult:
+        seller_id = path[len("/seller/") :]
+        if not seller_id or "/" in seller_id:
+            return RenderResult(self._not_found(source))
+        try:
+            seller = scenario.find_seller(seller_id)
+        except FakeWorldValidationError:
+            return RenderResult(self._not_found(source))
+        listings = tuple(
+            listing
+            for listing in source.listings
+            if listing.seller_id == seller.seller_id
+        )
+        return RenderResult(
+            self._page(
+                source,
+                200,
+                f"Seller {seller.alias}",
+                _marketplace_seller_body(seller, listings),
+            )
+        )
+
+    def _page(
+        self, source: MarketplaceSource, status: int, title: str, body: str
+    ) -> RenderedSourceResponse:
+        return _archetype_response(
+            status, title, body, f"{source.base_domain} \u2014 marketplace specimen"
+        )
+
+    def _not_found(self, source: MarketplaceSource) -> RenderedSourceResponse:
+        return _archetype_response(
+            404,
+            "Not found",
+            "<h1>Not found</h1><p>The requested listing does not exist.</p>",
+            f"{source.base_domain} \u2014 marketplace specimen",
+        )
+
+    @staticmethod
+    def _method_not_allowed() -> RenderedSourceResponse:
+        return _archetype_plain(405, "Method not allowed.", {"allow": "GET, POST"})
+
+
+class LeakRenderer:
+    """Deterministic, offline renderer for a synthetic leak site."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        """Restore canonical runtime state."""
+        self._login_serial = 0
+
+    def render(
+        self,
+        scenario: FakeWorldScenario,
+        request: FakeWorldRequest,
+        session: FakeWorldSession | None = None,
+    ) -> RenderResult:
+        """Render one deterministic leak-site response."""
+        source = scenario.leak_source(request.source_id)
+        path = request.path
+        if path == "/login":
+            if request.method is HttpMethod.GET:
+                return RenderResult(
+                    self._page(source, 200, "Log in", _login_body(source))
+                )
+            if request.method is HttpMethod.POST:
+                return self._login_submit(source, request)
+            return RenderResult(self._method_not_allowed())
+        if path == "/logout":
+            return RenderResult(_redirect("/"), SessionUpdate(None))
+        if request.method is not HttpMethod.GET:
+            return RenderResult(self._method_not_allowed())
+        if path == "/":
+            return RenderResult(
+                self._page(source, 200, source.title, _leak_landing(source))
+            )
+        if path == "/leaks":
+            return RenderResult(
+                self._page(
+                    source,
+                    200,
+                    f"Publications \u2014 {source.title}",
+                    _leak_index(source),
+                )
+            )
+        if path.startswith("/leak/"):
+            return self._entry(scenario, source, path)
+        return RenderResult(self._not_found(source))
+
+    def _login_submit(
+        self, source: LeakSource, request: FakeWorldRequest
+    ) -> RenderResult:
+        fields = _parse_form(request)
+        policy = source.policy
+        if (
+            fields.get("username", "") == policy.login_username
+            and fields.get("password", "") == policy.login_password
+        ):
+            self._login_serial += 1
+            token = f"nightleak-session-{self._login_serial:03d}"
+            target = _safe_next(fields.get("next"))
+            session = FakeWorldSession(token=token, alias=policy.login_username)
+            response = _redirect(
+                target,
+                extra_headers={
+                    "set-cookie": f"{_LEAK_SESSION_COOKIE}={token}; Path=/; HttpOnly"
+                },
+            )
+            return RenderResult(response, SessionUpdate(session))
+        return RenderResult(
+            self._page(
+                source,
+                200,
+                "Log in",
+                _login_body(source, error="Invalid username or password."),
+            )
+        )
+
+    def _entry(
+        self, scenario: FakeWorldScenario, source: LeakSource, path: str
+    ) -> RenderResult:
+        entry_id = path[len("/leak/") :]
+        if not entry_id or "/" in entry_id:
+            return RenderResult(self._not_found(source))
+        try:
+            entry = scenario.find_leak_entry(entry_id)
+        except FakeWorldValidationError:
+            return RenderResult(self._not_found(source))
+        return RenderResult(
+            self._page(
+                source,
+                200,
+                f"{entry.victim} \u2014 {source.title}",
+                _leak_entry_body(entry),
+            )
+        )
+
+    def _page(
+        self, source: LeakSource, status: int, title: str, body: str
+    ) -> RenderedSourceResponse:
+        return _archetype_response(
+            status,
+            title,
+            body,
+            f"{source.base_domain} \u2014 leak publication specimen",
+        )
+
+    def _not_found(self, source: LeakSource) -> RenderedSourceResponse:
+        return _archetype_response(
+            404,
+            "Not found",
+            "<h1>Not found</h1><p>The requested publication does not exist.</p>",
+            f"{source.base_domain} \u2014 leak publication specimen",
+        )
+
+    @staticmethod
+    def _method_not_allowed() -> RenderedSourceResponse:
+        return _archetype_plain(405, "Method not allowed.", {"allow": "GET, POST"})
+
+
+class CrossSourceRenderer:
+    """Dispatch one request to the renderer matching its source archetype.
+
+    Shared request/response/session contracts are preserved; each archetype
+    keeps its own deterministic renderer. The forum renderer is reused for
+    every ``ForumSource`` (including the secondary ShadowTalk forum).
+    """
+
+    def __init__(self) -> None:
+        self._forum = FakeWorldRenderer()
+        self._marketplace = MarketplaceRenderer()
+        self._leak = LeakRenderer()
+
+    def reset(self) -> None:
+        """Restore canonical runtime state for every archetype renderer."""
+        self._forum.reset()
+        self._marketplace.reset()
+        self._leak.reset()
+
+    def render(
+        self,
+        scenario: FakeWorldScenario,
+        request: FakeWorldRequest,
+        session: FakeWorldSession | None = None,
+    ) -> RenderResult:
+        """Render one response through the source's archetype renderer."""
+        source = scenario.source(request.source_id)
+        if isinstance(source, ForumSource):
+            return self._forum.render(scenario, request, session)
+        if isinstance(source, MarketplaceSource):
+            return self._marketplace.render(scenario, request, session)
+        return self._leak.render(scenario, request, session)
+
+
+def _marketplace_landing(source: MarketplaceSource) -> str:
+    active = sum(
+        1 for listing in source.listings if listing.state is ListingState.ACTIVE
+    )
+    return (
+        f"<header><h1>{_escape(source.title)}</h1>"
+        f"<p>{_escape(source.description)}</p></header>"
+        '<nav><a href="/listings">Browse listings</a> &middot; '
+        '<a href="/login">Log in</a></nav>'
+        f'<section class="stats"><p>{len(source.sellers)} sellers &middot; '
+        f"{active} active listings</p></section>"
+        f"{_mirror_list(source.mirrors)}"
+    )
+
+
+def _marketplace_listings(
+    scenario: FakeWorldScenario, source: MarketplaceSource
+) -> str:
+    rows = []
+    for listing in source.listings:
+        seller = scenario.find_seller(listing.seller_id.value)
+        rows.append(
+            f'<li class="listing state-{listing.state.value.lower()}">'
+            f'<a href="/listing/{listing.listing_id}">{_escape(listing.title)}</a> '
+            f'<span class="seller">{_escape(seller.alias)}</span> '
+            f'<span class="state">{listing.state.value}</span> '
+            f'<span class="price">{_escape(listing.price)}</span></li>'
+        )
+    return '<h1>Listings</h1><ul class="listings">' + "\n".join(rows) + "</ul>"
+
+
+def _marketplace_listing_body(
+    listing: MarketplaceListing, seller: MarketplaceSeller
+) -> str:
+    if listing.state is ListingState.REMOVED:
+        return (
+            f'<div class="listing removed"><h1>{_escape(listing.title)}</h1>'
+            "<p>This listing was removed by the seller or staff.</p></div>"
+        )
+    parts = [
+        f"<h1>{_escape(listing.title)}</h1>",
+        '<p class="meta">'
+        f'Seller <a href="/seller/{seller.seller_id}">{_escape(seller.alias)}</a> '
+        f"&middot; category {listing.category.value} "
+        f"&middot; price {_escape(listing.price)} "
+        f"&middot; state {listing.state.value}</p>",
+        f'<div class="content">{_escape(listing.body)}</div>',
+        f'<p class="date">Listed {_format_utc(listing.created_at)}</p>',
+    ]
+    if listing.updated_at is not None:
+        parts.append(
+            f'<p class="edit-note">Updated {_format_utc(listing.updated_at)}</p>'
+        )
+    if listing.duplicate_of is not None:
+        parts.append(
+            '<p class="duplicate">Marked as a duplicate of '
+            f'<a href="/listing/{listing.duplicate_of}">{listing.duplicate_of}</a>.</p>'
+        )
+    if listing.cross_references:
+        refs = ", ".join(_escape(ref) for ref in listing.cross_references)
+        parts.append(f'<p class="xref">Cross-reference: {refs}</p>')
+    parts.append(_mirror_list(listing.mirrors))
+    return "\n".join(part for part in parts if part)
+
+
+def _marketplace_seller_body(
+    seller: MarketplaceSeller, listings: tuple[MarketplaceListing, ...]
+) -> str:
+    items = "".join(
+        f'<li><a href="/listing/{listing.listing_id}">{_escape(listing.title)}</a> '
+        f"({listing.state.value})</li>"
+        for listing in listings
+    )
+    note = f"<p>{_escape(seller.note)}</p>" if seller.note else ""
+    return (
+        f"<h1>{_escape(seller.alias)}</h1>"
+        f'<p class="meta">Reputation {seller.reputation} &middot; joined '
+        f"{_format_utc(seller.joined_at)}</p>"
+        f"{note}"
+        f'<ul class="seller-listings">{items}</ul>'
+    )
+
+
+def _leak_landing(source: LeakSource) -> str:
+    return (
+        f"<header><h1>{_escape(source.title)}</h1>"
+        f"<p>{_escape(source.description)}</p></header>"
+        '<nav><a href="/leaks">Publications</a></nav>'
+        f'<section class="stats"><p>{len(source.entries)} entries</p></section>'
+        f"{_mirror_list(source.mirrors)}"
+    )
+
+
+def _leak_index(source: LeakSource) -> str:
+    rows = []
+    for entry in source.entries:
+        rows.append(
+            f'<li class="entry state-{entry.state.value.lower()}">'
+            f'<a href="/leak/{entry.entry_id}">{_escape(entry.victim)}</a> '
+            f'<span class="state">{entry.state.value}</span> '
+            f'<span class="operator">{_escape(entry.operator_alias)}</span></li>'
+        )
+    return "<h1>Publications</h1><ul>" + "\n".join(rows) + "</ul>"
+
+
+def _leak_entry_body(entry: LeakEntry) -> str:
+    parts = [
+        f"<h1>{_escape(entry.victim)}</h1>",
+        f'<p class="teaser">{_escape(entry.teaser)}</p>',
+        f'<p class="operator">Operator {_escape(entry.operator_alias)}</p>',
+        f'<p class="date">Published {_format_utc(entry.created_at)}</p>',
+    ]
+    if entry.state is LeakPublicationState.REMOVED:
+        parts.append('<p class="removed">This entry was removed.</p>')
+    elif entry.state in (LeakPublicationState.PUBLISHED, LeakPublicationState.CHANGED):
+        if entry.body is not None:
+            parts.append(f'<div class="content">{_escape(entry.body)}</div>')
+        if entry.sample_metadata:
+            parts.append(f'<p class="sample">{_escape(entry.sample_metadata)}</p>')
+        if entry.state is LeakPublicationState.CHANGED and entry.updated_at is not None:
+            parts.append(
+                f'<p class="updated">Entry updated {_format_utc(entry.updated_at)}.</p>'
+            )
+    else:
+        parts.append('<p class="withheld">Full dataset withheld until payment.</p>')
+    parts.append(_mirror_list(entry.mirrors))
+    return "\n".join(part for part in parts if part)
+
+
 __all__ = [
+    "LEAK_STATIC_ROUTES",
+    "MARKETPLACE_STATIC_ROUTES",
     "AttachmentDescriptor",
+    "CrossSourceRenderer",
     "FakeWorldRenderer",
     "FakeWorldRequest",
     "FakeWorldSession",
     "FrozenParams",
     "HttpMethod",
+    "LeakRenderer",
+    "MarketplaceRenderer",
     "RenderResult",
     "RenderedSourceResponse",
     "SessionUpdate",

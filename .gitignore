@@ -8,6 +8,9 @@ out/
 config/local.toml
 var/
 
+# PR 15 evaluation artifacts (bounded, never committed)
+.eval-results/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

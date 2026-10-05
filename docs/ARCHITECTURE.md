@@ -737,5 +737,54 @@ I/O.
 No automatic per-document analysis, scheduler, worker, or DataStream analysis
 messages; no source lifecycle mutation; no cross-source ranking; no global
 entity/relationship resolution or graph framework; no ATT&CK/STIX/MISP/
-OpenCTI semantics; no report/UI work; no live-model evaluation framework
-(PR 15).
+OpenCTI semantics; no report/UI work. PR 15 delivers the evaluation
+subsystem; PR 16 owns full-stack hardening.
+
+
+# PR 15 update — expanded Fake World and evaluation subsystem
+
+## Fake World expansion is additive
+
+PR 15 adds the versioned `darkula-cross-source` v1 scenario containing
+BlackGate (reused unmodified), AccessBay (typed access/credential
+marketplace), NightLeak (typed leak-publication site), and ShadowTalk
+(secondary forum). The new archetypes are minimum typed observable models
+(`MarketplaceSource`/`MarketplaceListing`/`LeakSource`/`LeakEntry`), not a
+generic website DSL. `CrossSourceRenderer` dispatches one request to the
+renderer matching its source archetype while sharing request/response/session
+contracts. Existing `FW-BG-*` behavior IDs and BlackGate v1 semantics are
+unchanged; new behaviors use `FW-AB-*`/`FW-NL-*`/`FW-ST-*`/`FW-XS-*`.
+
+Mirror behavior is reconnaissance-observable only: no Tor rotation, no new
+production endpoint resolver, and no automatic `SourceEndpoint` merging.
+
+## Evaluation is evaluator-side and outside production
+
+`src/darkula/evaluation/` is an evaluator-owned package that consumes
+production contracts from outside the production pipeline. Production
+domain/application/infrastructure/composition code never imports it (static
+guard). Evaluation identity (`EvalCaseId`/`EvalRunId`/`EvalInvocationId`) is
+distinct from production persistence identity; scenario/version and
+evaluator/version are explicit. Evaluation reuses the delivered PR 10–14
+capabilities and `LlmClient`/`AgentObservability`; it creates no eval-only
+agent, extractor, crawler, or persistence architecture and no eval
+PostgreSQL schema (no migration). Results are bounded JSON/JSONL artifacts
+under `.eval-results/`, finalized atomically with a distinguishable partial
+state.
+
+Scoring is deterministic and versioned (precision/recall/F1, exact counts,
+categorical correctness, grounding validity, rubric coverage); there is no
+LLM-as-judge and no arbitrary universal threshold. Hidden versus observable
+truth is explicit: hidden truth is used only for leakage detection, never for
+recall.
+
+## Agent observability adapter
+
+PR 15 implements the existing provider-neutral `AgentObservability` SPI for
+LangSmith in the infrastructure layer. Only bounded, content-free metadata is
+mapped; the backend is fail-open and never alters application behavior or
+swallows cancellation; provider SDK types stay infrastructure-only;
+composition fails fast when LangSmith is selected without configuration.
+Langfuse remains explicitly unavailable. `./build.sh --eval` is the only
+opt-in evaluation entry point and is never part of `--qa`/`--sec`/`--intg` or
+ordinary CI.

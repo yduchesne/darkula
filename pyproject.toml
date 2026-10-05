@@ -31,6 +31,10 @@ dependencies = [
   # SDK calls are isolated with asyncio.to_thread at the adapter boundary.
   "boto3>=1.43,<1.44",
   "openai>=1.109,<1.110",
+  # LangSmith agent-observability adapter (PR 15). Provider SDK types stay
+  # inside the infrastructure adapter; the application boundary never sees
+  # them. Bounded to a verified Python-3.14-compatible range.
+  "langsmith>=0.14,<0.15",
 ]
 
 [dependency-groups]

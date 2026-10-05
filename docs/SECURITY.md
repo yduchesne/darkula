@@ -291,3 +291,46 @@ DataStream, provider SDK, or Fake World truth capability:
   span/metric names and counts/durations. Source/assessment/content/entity
   ids, values, URIs, evidence refs, prompts, model output, characteristics,
   object keys, credentials, and raw errors never appear.
+
+## PR 15 — evaluation truth isolation and observability safety
+
+- **Truth is evaluator-side only.** `FakeWorldTruth`, expected answers, and
+  rubric answers never enter prompts, production contexts/results,
+  composition, or production imports. Evaluators compare bounded production
+  outputs with versioned truth *after* execution; hidden aliases/events are
+  used only for leakage detection, never required for recall.
+- **No eval-specific production agents.** Evaluation reuses the delivered
+  production contracts (ReconAgent/Coordinator, extraction services,
+  SourceAnalyst, `LlmClient`, `AgentObservability`) and the Fake World/crawler
+  stack; no rival agent/extractor/persistence architecture exists.
+- **Production cannot import evaluation.** Specialized static guards keep
+  `darkula.evaluation` out of production packages, and the existing Fake World
+  truth guard also covers the evaluator-side package. Evaluation uses the
+  evaluator-side Fake World truth from outside the production pipeline.
+- **Bounded, safe artifacts.** `.eval-results/<run-id>/` stores only
+  run/case/scenario/evaluator/model identities, metrics, bounded failure
+  codes, duration, and gate results. Prompts, outputs, unrestricted bodies,
+  credentials, secrets, and hidden reasoning are never persisted. A partial
+  or cancelled run is written `PARTIAL`/`CANCELLED`, never a false
+  `COMPLETED`.
+- **No live illicit data, no live geocoder, no global entity resolution.**
+  The PR 15 scenarios are fully synthetic; no stolen/victim data, live onion
+  address, or malware payload is added. Evaluation adds no live geocoder and
+  performs no cross-document merge.
+- **Live evaluation cannot silently use the fake.** Requesting a live run
+  while the composed model is deterministic fails fast. Ordinary builds and
+  CI never require live-model or SaaS credentials; `./build.sh --eval` is the
+  only explicit opt-in entry point.
+- **Observability is content-safe and fail-open.** The LangSmith adapter maps
+  only bounded `AgentOperationMetadata` (operation/agent/model/profile/
+  prompt-version and safely-representable identifiers). Prompts, outputs,
+  collected content, credentials, PII, truth, and hidden reasoning are not
+  representable. Backend failures never fail/retry/alter application work and
+  never swallow `BaseException`/cancellation. Provider SDK types remain
+  infrastructure-only, and missing LangSmith config fails fast.
+- **No arbitrary universal threshold.** Metrics are always recorded; gating
+  is explicit and caller-supplied. Categorical safety/grounding invariants
+  (for example hidden-truth leakage) may be strict.
+- **No production persistence change.** PR 15 adds no migration; migrations
+  0001–0008 and stored-function semantics are unchanged, and evaluation
+  results are bounded JSON/JSONL artifacts, not a PostgreSQL schema.

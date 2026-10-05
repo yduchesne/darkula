@@ -244,8 +244,30 @@ analysis messages, source lifecycle mutation, cross-source ranking, global
 entity/relationship resolution, graph framework, ATT&CK/STIX/MISP/OpenCTI
 semantics, report/UI, or changes to migrations 0001-0007.
 
-## PR 15 — Expanded Fake World and evaluations
+## PR 15 — Expanded Fake World and evaluations (delivered)
 Add marketplace/leak/mirror archetypes, cross-source scenarios, Recon/extraction/SourceAnalyst live-model evals, provider-neutral agent-observability integration, and experiment/result correlation.
+
+**Delivered:** the additive `darkula-cross-source` v1 scenario (BlackGate
+reused, AccessBay marketplace, NightLeak leak site, ShadowTalk forum, shared
+truth, hidden truth, false/noisy claim, mirror facts); the evaluator-side
+`src/darkula/evaluation/` package (bounded domain, deterministic metrics,
+Recon/semantic/geography/relationship/SourceAnalyst evaluators, explicit
+versioned case registry, atomic bounded artifacts, opt-in runner/CLI); the
+LangSmith `AgentObservability` adapter with fail-fast composition and explicit
+Langfuse unavailability; `./build.sh --eval`; and synchronized documentation.
+
+**Security/architecture:** truth stays evaluator-side only; production never
+imports evaluation; no eval-specific production agents; no production eval
+DB schema and no migration change (head remains `0008_source_analysis.sql`);
+no live illicit data, sandbox relaxation, live geocoder, global entity
+resolution, LLM-as-judge, or arbitrary universal threshold; live evaluation
+is opt-in and never part of ordinary CI.
+
+**Validation:** `./build.sh --qa` and `./build.sh --sec` pass; the real
+browser/sandbox integration slices require the provisioned Podman environment
+(`./build.sh --intg`). Live-model acceptance runs are optional and manual;
+lack of credentials does not block merge, provided runner/config validation
+and deterministic coverage are complete. PR 16 owns full-stack hardening.
 
 ## PR 16 — v0.1 end-to-end hardening
 Exercise PostgreSQL + Redpanda + ObjectStore + sandbox + extraction + agents + OTEL stack end to end; test replay/idempotency/failures/security controls; document production-readiness gaps.

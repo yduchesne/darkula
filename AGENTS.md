@@ -77,6 +77,45 @@ Before changing architecture or domain behavior, read docs/ARCHITECTURE.md, docs
 - Significant canonical behaviors keep stable `FW-*` behavior IDs linked to
   scenario/version, requirement, and deterministic tests; never drop or
   silently renumber existing behavior IDs.
+- PR 15 adds `darkula-cross-source` v1 (BlackGate reused, AccessBay,
+  NightLeak, ShadowTalk) with additive `FW-AB-*`/`FW-NL-*`/`FW-ST-*`/`FW-XS-*`
+  behavior IDs. Mirror behavior is recon-observable only: no Tor rotation,
+  no new production endpoint resolver, and no automatic `SourceEndpoint`
+  merging.
+
+## Evaluation and observability rules (PR 15, durable)
+- Evaluation is evaluator-side and outside the production pipeline:
+  `src/darkula/evaluation/` may consume Fake World truth, but production
+  domain/application/infrastructure/composition code must never import it.
+  The static guard stays enforced.
+- Truth is evaluator-side only: `FakeWorldTruth`, expected answers, and
+  rubric answers never enter prompts, production contexts/results, or
+  composition. Evaluators compare bounded production outputs with versioned
+  truth after execution; hidden truth is used only for leakage detection,
+  never required for recall.
+- Evaluation identity is distinct from production identity: case, run,
+  invocation, scenario/version, evaluator/version, and model identity are all
+  explicit; a semantic change requires a version bump, and repeated
+  experiments retain distinct run IDs with stable semantic case IDs.
+- Evaluation reuses delivered production contracts
+  (ReconAgent/Coordinator, semantic/geographic/relationship extraction,
+  SourceAnalysisService/SourceAnalyst, `LlmClient`, `AgentObservability`).
+  Never create eval-only production agents, extractors, crawler, a second LLM
+  abstraction, or an eval PostgreSQL schema.
+- Scoring is deterministic and versioned (P/R/F1, exact counts, categorical
+  correctness, grounding validity, rubric coverage); no LLM-as-judge and no
+  arbitrary universal threshold. Gating is explicit and caller-supplied.
+- Live-model evaluation is explicit and non-CI by default: ordinary
+  `--qa`/`--sec`/`--intg` builds and CI never require live-model or SaaS
+  credentials; `./build.sh --eval` is the only opt-in entry point; a requested
+  live run must fail fast rather than silently use `FakeLlmClient`.
+- Eval artifacts are bounded and safe: never persist unrestricted bodies,
+  prompts, outputs, credentials, secrets, or hidden reasoning; a
+  partial/cancelled run must never be recorded as completed.
+- Agent observability reuses the existing content-safe, fail-open
+  `AgentObservability` SPI. Provider SDK types stay infrastructure-only;
+  backend failures never alter application work or swallow cancellation;
+  missing backend configuration fails fast (no silent no-op).
 
 ## Local Podman infrastructure
 - Darkula owns only Podman resources explicitly provisioned for Darkula. Containers, pods, networks, volumes, and other named Podman resources must use an unambiguous `darkula` namespace/prefix. Darkula scripts, tests, cleanup commands, and developer tooling must never discover, stop, remove, recreate, prune, or otherwise control resources belonging to another application.

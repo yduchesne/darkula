@@ -150,6 +150,27 @@ class TestFailFast:
         with pytest.raises(UnavailableDriverError, match="LangSmith"):
             compose(settings=settings)
 
+    def test_langsmith_backend_composes_with_config(self) -> None:
+        from darkula.config.settings import (
+            AgentObservabilityBackend,
+            AgentObservabilitySettings,
+            ObjectStoreDriver,
+            ObjectStoreSettings,
+        )
+        from darkula.infrastructure.observability import LangSmithAgentObservability
+
+        settings = Settings(
+            datastream=DataStreamSettings(driver=DataStreamDriver.FAKE),
+            object_store=ObjectStoreSettings(driver=ObjectStoreDriver.IN_MEMORY),
+            agent_observability=AgentObservabilitySettings(
+                backend=AgentObservabilityBackend.LANGSMITH,
+                project="darkula-eval",
+                api_key="fake-key",
+            ),
+        )
+        runtime = compose(settings=settings)
+        assert isinstance(runtime.agent_observability, LangSmithAgentObservability)
+
     def test_langfuse_backend_fails_fast(self) -> None:
         with pytest.MonkeyPatch.context() as monkeypatch:
             monkeypatch.setenv("DARKULA_AGENT_OBSERVABILITY__BACKEND", "langfuse")

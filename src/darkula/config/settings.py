@@ -456,11 +456,52 @@ class LlmSettings(BaseModel):
 
 
 class AgentObservabilitySettings(BaseModel):
-    """Agent/LLM observability backend selection."""
+    """Agent/LLM observability backend selection and adapter config.
+
+    The LangSmith adapter is provider-isolated infrastructure: its project,
+    endpoint, and API key are configured here and never leak into
+    application/domain code. ``api_key`` is secret; diagnostics redact it.
+    Selecting LangSmith without the required configuration fails fast rather
+    than silently falling back to no-op.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     backend: AgentObservabilityBackend = AgentObservabilityBackend.NONE
+    #: LangSmith project name (required for the LangSmith backend).
+    project: str | None = None
+    #: LangSmith API key; falls back to the SDK's environment variable when
+    #: unset. Never logged or echoed.
+    api_key: str | None = None
+    #: Optional LangSmith API endpoint override (self-hosted instances).
+    endpoint_url: str | None = None
+
+    @field_validator("project", "endpoint_url")
+    @classmethod
+    def _validate_optional_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("agent_observability field must not be blank")
+        if any(ord(ch) < 32 for ch in stripped):
+            raise ValueError(
+                "agent_observability field must not contain control characters"
+            )
+        return stripped
+
+    @field_validator("api_key")
+    @classmethod
+    def _validate_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("agent_observability.api_key must not be blank")
+        if any(ord(ch) < 32 for ch in value):
+            raise ValueError(
+                "agent_observability.api_key must not contain control characters"
+            )
+        return value
 
 
 class TelemetrySettings(BaseModel):
@@ -817,6 +858,50 @@ class SourceAnalysisSettings(BaseModel):
         return self
 
 
+class EvaluationSettings(BaseModel):
+    """Evaluation subsystem group (PR 15).
+
+    Evaluation is explicit and opt-in. ``live_model_enabled`` requests a live
+    provider run and fails fast when the composed ``LlmClient`` is not live;
+    a requested live run never silently falls back to ``FakeLlmClient``.
+    ``case_ids`` is empty to select the full registered suite. Evaluation
+    reuses the existing LLM credentials and never duplicates them here.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = False
+    live_model_enabled: bool = False
+    dataset: str = "darkula-cross-source"
+    case_ids: tuple[str, ...] = ()
+    output_dir: pathlib.Path = pathlib.Path(".eval-results")
+    fail_on_case_error: bool = True
+    quality_gate_enabled: bool = False
+
+    @field_validator("dataset")
+    @classmethod
+    def _validate_dataset(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("evaluation.dataset must not be blank")
+        if any(ord(ch) < 32 for ch in stripped):
+            raise ValueError("evaluation.dataset must not contain control characters")
+        return stripped
+
+    @field_validator("case_ids")
+    @classmethod
+    def _validate_case_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for case_id in value:
+            stripped = case_id.strip()
+            if not stripped:
+                raise ValueError("evaluation.case_ids must not contain blank ids")
+            if any(ord(ch) < 32 for ch in stripped):
+                raise ValueError(
+                    "evaluation.case_ids must not contain control characters"
+                )
+        return value
+
+
 class Settings(BaseSettings):
     """Root typed settings with the frozen pydantic-settings contract.
 
@@ -852,6 +937,7 @@ class Settings(BaseSettings):
     collection: CollectionSettings = CollectionSettings()
     recon: ReconSettings = ReconSettings()
     source_analysis: SourceAnalysisSettings = SourceAnalysisSettings()
+    evaluation: EvaluationSettings = EvaluationSettings()
 
 
 __all__ = [
@@ -864,6 +950,7 @@ __all__ = [
     "DataStreamSettings",
     "DatabaseDriver",
     "DatabaseSettings",
+    "EvaluationSettings",
     "ExtractionSettings",
     "GeographicResolverDriver",
     "GeographySettings",

@@ -10,5 +10,8 @@ explicitly — no module auto-discovery.
 from darkula.testing.fake_world.scenarios.blackgate_v1 import (
     build_blackgate_core_v1,
 )
+from darkula.testing.fake_world.scenarios.cross_source_v1 import (
+    build_cross_source_v1,
+)
 
-__all__ = ["build_blackgate_core_v1"]
+__all__ = ["build_blackgate_core_v1", "build_cross_source_v1"]

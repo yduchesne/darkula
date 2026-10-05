@@ -21,6 +21,9 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 _SRC = _PROJECT_ROOT / "src"
 _FAKE_WORLD_PACKAGE = "darkula.testing.fake_world"
+#: Evaluator-side package allowed to consume Fake World truth from outside
+#: the production pipeline (PR 15). It is never imported by production.
+_EVALUATION_PACKAGE = "darkula.evaluation"
 _PRODUCTION_PACKAGES = (
     "darkula.domain",
     "darkula.app",
@@ -28,6 +31,8 @@ _PRODUCTION_PACKAGES = (
     "darkula.composition",
     "darkula.config",
     "darkula.telemetry",
+    "darkula.crawler",
+    "darkula.sandbox",
 )
 
 
@@ -43,6 +48,7 @@ class TestProductionNeverImportsFakeWorld:
             path
             for path in _iter_python_files(_SRC / "darkula")
             if not path.is_relative_to(_SRC / "darkula" / "testing")
+            and not path.is_relative_to(_SRC / "darkula" / "evaluation")
         ]
 
     def test_no_production_module_imports_fake_world(self) -> None:
@@ -100,6 +106,25 @@ class TestProductionNeverImportsFakeWorld:
 
         assert hasattr(truth, "FakeWorldTruth")
         assert fake_world.FakeWorldTruth is truth.FakeWorldTruth
+
+    def test_production_never_imports_evaluation(self) -> None:
+        offenders: list[str] = []
+        for path in self._production_files():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for child in ast.walk(tree):
+                if isinstance(child, ast.Import):
+                    names = [a.name for a in child.names]
+                elif isinstance(child, ast.ImportFrom) and child.module:
+                    names = [child.module]
+                else:
+                    continue
+                if any(
+                    name == _EVALUATION_PACKAGE
+                    or name.startswith(_EVALUATION_PACKAGE + ".")
+                    for name in names
+                ):
+                    offenders.append(f"{path.relative_to(_SRC)}: {names}")
+        assert not offenders, f"production code imports evaluation: {offenders}"
 
 
 class TestFakeWorldNeverImportsProduction:
