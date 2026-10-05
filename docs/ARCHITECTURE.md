@@ -409,3 +409,89 @@ the frozen snapshot governs.
   RUNNING runs with unexpired leases are never crawled concurrently; expired
   leases are reclaimed as the same run within `max_run_attempts`; crashed
   pre-terminal runs are never acknowledged.
+
+# PR 11 update — deterministic content extraction
+
+PR 11 delivers the first deterministic content-extraction capability: one
+persisted normalized representation becomes bounded, provenance-bearing
+structured observations. Extraction is **not** analysis: it performs no
+semantic/LLM reasoning, relationship inference, geographic resolution,
+reputation classification, or global-truth promotion (PR 12-14 own those).
+
+```text
+persisted NormalizedContent + ContentArtifact metadata
+    -> short read UoW
+    -> CLOSE DB transaction
+ObjectStore.get(canonical normalized representation)
+    -> bounded streaming read + incremental SHA-256 / size / UTF-8 verify
+deterministic-observables/v1 extractors (pure; no I/O)
+    -> ExtractionResult + ExtractedEntity[] (semantic order, bounded)
+    -> short write UoW: result + ALL entities commit atomically
+```
+
+## Boundaries (PR 11 1.1-1.3)
+
+- `src/darkula/domain/extraction.py` owns `EntityType`, `SourceSpan`,
+  `ExtractorIdentity`, `ExtractedEntity`, `ExtractionResult`, and the frozen
+  PR 11 entity vocabulary (`IP_ADDRESS`, `DOMAIN`, `URL`, `EMAIL`, `HASH`);
+  PR 12 semantic/geographic types are deliberately absent.
+- `src/darkula/app/extractors.py` owns the pure `DeterministicEntityExtractor`
+  contract and the five v1 extractors plus the fixed
+  `deterministic-observables/v1` profile. Extractors never perform I/O.
+- `src/darkula/app/extraction.py` owns `DeterministicExtractionService`: the
+  canonical-representation loader, eligibility check, deterministic run, and
+  atomic persistence.
+- `src/darkula/app/repositories.py` adds `ExtractionRepository`, exposed as
+  `UnitOfWork.extraction`; PostgreSQL owns result/occurrence persistence
+  through versioned stored functions (`migrations/0005_extraction.sql`).
+
+## ObjectStore is the extraction source (PR 11 1.4-1.5)
+
+PostgreSQL intentionally stores only a bounded text **preview**; extraction
+therefore MUST NOT read the preview. The service loads the canonical
+`NORMALIZED_TEXT` representation from ObjectStore and fails closed unless
+object existence, bounded byte count, SHA-256 against the persisted
+`ContentArtifact.content_hash`, UTF-8 decoding, and the normalized-text byte
+bound are all verified. There is no silent preview fallback.
+
+## Transaction boundary (PR 11 1.4, 1.11)
+
+No PostgreSQL transaction spans ObjectStore I/O:
+
+```text
+short read UoW (metadata + existing-result fast path) -> close
+ObjectStore bounded streaming read + integrity verify -> close
+deterministic extraction (no UoW)
+short write UoW (result + all entities) -> commit
+```
+
+The result fast path returns the existing durable result without touching
+ObjectStore or running extractors.
+
+## Identity, provenance, and idempotency (PR 11 1.6-1.10)
+
+- `NormalizedContentId`, `ContentArtifactId`, `ObjectKey`, `ContentHash`,
+  `ExtractionResultId`, `ExtractedEntityId`, extractor name/version, and
+  `SourceSpan` remain distinct identities.
+- Idempotency is semantic: `(content_id, profile_name, profile_version)` is
+  UNIQUE. A retry reuses the existing result; a concurrent loser reloads the
+  winner. Two normalized observations with identical bytes still get distinct
+  provenance-bearing results.
+- Results/entities are append-only. An incompatible extractor change requires
+  a new extractor/profile version and a new result, never rewriting history.
+- A persisted manifest freezes the exact historical extractor set; it is
+  never reconstructed from current code.
+
+## New profile, not a rival architecture
+
+PR 11 reuses `NormalizedContent`, `ContentArtifact`, `ArtifactKind`,
+`ArtifactCompleteness`, `ContentHash`, `ObjectStore`, `DarkulaSpi`,
+`UnitOfWork`, and the existing stored-function/error patterns. It does not
+introduce extraction-specific content, ObjectStore, database, UoW, LLM, or
+crawler abstractions, and PR 12 may add
+`semantic-geographic/<version>` as a sibling profile over the same
+`NormalizedContent`.
+
+The Fake World canonical scenario gains one additive PUBLIC thread
+(`thr-collector-samples`) containing synthetic observables for the PR 11
+canonical slice; existing canonical page semantics are unchanged.

@@ -479,9 +479,26 @@ class TelemetrySettings(BaseModel):
 
 
 class ExtractionSettings(BaseModel):
-    """Content-extraction group; behavior fields are owned by PR 11/12."""
+    """Content-extraction group (PR 11 deterministic bounds).
+
+    Only the deterministic PR 11 hard bound is configurable. Extractor
+    regexes, extractor/profile versions, and normalization semantics are
+    deliberately **not** runtime configuration: they are frozen,
+    developer-controlled contracts whose change requires a new version.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    #: Hard cap on entities persisted for one content/profile extraction.
+    #: Exceeding it fails typed (never silently truncates facts).
+    max_entities_per_content: int = 5000
+
+    @field_validator("max_entities_per_content")
+    @classmethod
+    def _validate_max_entities(cls, value: int) -> int:
+        if value < 1 or value > 1_000_000:
+            raise ValueError("max_entities_per_content must be within [1, 1000000]")
+        return value
 
 
 class CollectionSettings(BaseModel):

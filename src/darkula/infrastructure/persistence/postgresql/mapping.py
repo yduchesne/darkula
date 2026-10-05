@@ -38,6 +38,13 @@ from darkula.domain.content import (
     ContentArtifact,
     NormalizedContent,
 )
+from darkula.domain.extraction import (
+    EntityType,
+    ExtractedEntity,
+    ExtractionResult,
+    ExtractorIdentity,
+    SourceSpan,
+)
 from darkula.domain.identifiers import (
     CandidateEventId,
     CausationId,
@@ -45,6 +52,8 @@ from darkula.domain.identifiers import (
     CollectionRunId,
     ContentArtifactId,
     CorrelationId,
+    ExtractedEntityId,
+    ExtractionResultId,
     MessageId,
     NormalizedContentId,
     ObjectKey,
@@ -226,6 +235,55 @@ def map_normalized_content(row: tuple[Any, ...]) -> NormalizedContent:
         raise _mapping_error("normalized content", exc) from exc
 
 
+def map_extraction_result(row: tuple[Any, ...]) -> ExtractionResult:
+    """Map one extraction-result result row.
+
+    Column order: id, content_id, profile_name, profile_version,
+    extractor_manifest (jsonb array of name/version objects), extracted_at,
+    entity_count.
+    """
+    try:
+        raw_manifest = row[4] or []
+        manifest = tuple(
+            ExtractorIdentity(name=str(entry["name"]), version=str(entry["version"]))
+            for entry in raw_manifest
+        )
+        return ExtractionResult(
+            result_id=ExtractionResultId.from_str(str(row[0])),
+            content_id=NormalizedContentId.from_str(str(row[1])),
+            profile_name=str(row[2]),
+            profile_version=str(row[3]),
+            extractor_manifest=manifest,
+            extracted_at=row[5],
+            entity_count=int(row[6]),
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        raise _mapping_error("extraction result", exc) from exc
+
+
+def map_extracted_entity(row: tuple[Any, ...]) -> ExtractedEntity:
+    """Map one extracted-entity result row.
+
+    Column order: id, extraction_result_id, content_id, entity_type,
+    raw_value, normalized_value, span_start, span_end, extractor_name,
+    extractor_version, subtype.
+    """
+    try:
+        return ExtractedEntity(
+            entity_id=ExtractedEntityId.from_str(str(row[0])),
+            extraction_result_id=ExtractionResultId.from_str(str(row[1])),
+            content_id=NormalizedContentId.from_str(str(row[2])),
+            entity_type=EntityType(row[3]),
+            raw_value=str(row[4]),
+            normalized_value=str(row[5]),
+            source_span=SourceSpan(start=int(row[6]), end=int(row[7])),
+            extractor=ExtractorIdentity(name=str(row[8]), version=str(row[9])),
+            subtype=None if row[10] is None else str(row[10]),
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("extracted entity", exc) from exc
+
+
 def map_candidate(row: tuple[Any, ...]) -> SourceCandidate:
     """Map one ``candidate_get_v1`` result row.
 
@@ -385,6 +443,8 @@ __all__ = [
     "map_content_artifact",
     "map_endpoint",
     "map_event",
+    "map_extracted_entity",
+    "map_extraction_result",
     "map_normalized_content",
     "map_outbox_record",
     "map_recon_assessment",

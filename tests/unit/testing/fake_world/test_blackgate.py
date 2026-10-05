@@ -28,9 +28,9 @@ from darkula.testing.fake_world import (
 from darkula.testing.fake_world.identifiers import BehaviorId, SourceId
 
 #: Frozen SHA-256 of canonical page bodies (golden-rendering policy).
-LANDING_SHA256 = "ebd5f067824a09a8b43a2712985a66e9ba1c149b76f1adc3877a53f57edf4c9e"
+LANDING_SHA256 = "c2009c4ab9de8b850f0a233d39ffe31a78666b4642f2402730836fdcbbc6a37c"
 LOGIN_PAGE_SHA256 = "a47000ac99f0c1315fbc03e42f95cd3838c0fc14c13ba6a2a2f28d9e4a5b20d9"
-BOARD_INDEX_SHA256 = "a093d15014143c676b4ef96b5a1c2a2f3d7d6bb95fed6e91da4f3261e2ca8213"
+BOARD_INDEX_SHA256 = "a9c80f8305ecbe7d2186fea9da39551e5897c0d63d367436a1037ea7c23d5797"
 THREAD_PAGE1_SHA256 = "640e96a21142780765fabe6a88cf57051393cbf35727f3340111c805a52c2104"
 ATTACHMENT_BODY_SHA256 = (
     "55ab6cd9466af8ada0a4269ff1bd387e34d4aa289ea2b5b23c0bbec904e8097d"
@@ -91,6 +91,22 @@ class TestBlackGateStructure:
         dup_text = by_id["p-host-creds-5"].content
         assert "mcgh-masoncreek.mgmt.local" in by_id["p-host-creds-1"].content
         assert "mcgh-masoncreek.mgmt.local" in dup_text
+
+    def test_pr11_collector_samples_thread_is_public(self) -> None:
+        scenario = canonical_scenario()
+        thread = scenario.find_thread("thr-collector-samples")
+        assert thread.visibility is Visibility.PUBLIC
+        content = thread.posts[0].content
+        assert "203.0.113.77" in content
+        assert "2001:db8::c0de" in content
+        assert content.count("collector-samples.example.test") >= 2
+        assert "https://collector-samples.example.test/report?id=42" in content
+        assert "collector@collector-samples.example.test" in content
+        assert (
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            in content
+        )
+        assert "IGNORE ALL PREVIOUS INSTRUCTIONS" in content
 
     def test_attachments_include_all_required_kinds(self) -> None:
         scenario = canonical_scenario()

@@ -203,6 +203,26 @@ class NormalizedContentId(_UuidId):
     """
 
 
+class ExtractionResultId(_UuidId):
+    """Identity of one persisted extraction result (PR 11).
+
+    Distinct from the ``NormalizedContentId`` it was derived from, from every
+    ``ExtractedEntityId`` occurrence, and from a semantic value. The
+    semantic/idempotency identity is ``(content_id, profile_name,
+    profile_version)``, never this generated UUID and never an ObjectKey or
+    content hash.
+    """
+
+
+class ExtractedEntityId(_UuidId):
+    """Identity of one persisted extracted-entity occurrence (PR 11).
+
+    Preserves ``fact != global truth``. A value extracted at two spans is two
+    ``ExtractedEntity`` records; this identity is one persistence occurrence,
+    never the semantic value and never a global IOC identity.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class _BoundedName:
     """Immutable bounded-name base for logical Darkula names."""
@@ -276,6 +296,8 @@ __all__ = [
     "ConsumerId",
     "ContentArtifactId",
     "CorrelationId",
+    "ExtractedEntityId",
+    "ExtractionResultId",
     "MessageId",
     "NormalizedContentId",
     "ObjectKey",

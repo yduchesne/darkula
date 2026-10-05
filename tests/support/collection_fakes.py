@@ -485,6 +485,10 @@ class MemUnitOfWork(UnitOfWork):
             self._collection = MemCollectionRepository(self._state, self._pending)
         return self._collection
 
+    @property
+    def extraction(self) -> Any:
+        raise AssertionError("collection fake exposes no extraction repository")
+
 
 class MemSpi(DarkulaSpi):
     """DarkulaSpi handing out :class:`MemUnitOfWork` instances."""

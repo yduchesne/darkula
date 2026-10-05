@@ -223,6 +223,10 @@ class MemCandidateUnitOfWork(UnitOfWork):
     def collection(self) -> Any:
         raise AssertionError("recon fake exposes no collection repository")
 
+    @property
+    def extraction(self) -> Any:
+        raise AssertionError("recon fake exposes no extraction repository")
+
 
 class MemCandidateSpi(DarkulaSpi):
     """DarkulaSpi handing out :class:`MemCandidateUnitOfWork` instances."""

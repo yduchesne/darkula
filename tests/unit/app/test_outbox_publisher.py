@@ -131,6 +131,10 @@ class _FakeUnitOfWork(UnitOfWork):
     def collection(self) -> Any:
         raise AssertionError("outbox test exposes no collection repository")
 
+    @property
+    def extraction(self) -> Any:
+        raise AssertionError("outbox test exposes no extraction repository")
+
 
 class _RecordingSpi(DarkulaSpi):
     def __init__(self, shared: _Shared) -> None:
