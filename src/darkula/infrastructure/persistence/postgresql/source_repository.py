@@ -18,6 +18,7 @@ propagates unchanged.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -43,10 +44,13 @@ _ADD_ENDPOINT_FN = (
 )
 _LIST_ENDPOINTS_FN = "SELECT * FROM source_endpoint_list_v1(%s)"
 _APPEND_ASSESSMENT_FN = (
-    "SELECT * FROM source_assessment_append_v1("
-    "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    "SELECT * FROM source_assessment_append_v2("
+    "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
-_LIST_ASSESSMENTS_FN = "SELECT * FROM source_assessment_list_v1(%s)"
+_LIST_ASSESSMENTS_FN = "SELECT * FROM source_assessment_list_v2(%s)"
+_GET_ASSESSMENT_BY_PROFILE_FN = (
+    "SELECT * FROM source_assessment_get_by_profile_v1(%s, %s, %s, %s, %s)"
+)
 
 
 def _jsonb(value: Any) -> Any:
@@ -164,6 +168,8 @@ class PostgresSourceRepository(SourceRepository):
                         ),
                         _jsonb(list(assessment.evidence_references)),
                         _jsonb(assessment.characteristics),
+                        assessment.profile_name,
+                        assessment.profile_version,
                     ),
                 )
                 row = await cur.fetchone()
@@ -172,8 +178,8 @@ class PostgresSourceRepository(SourceRepository):
         except Exception as exc:
             raise map_driver_error(exc) from exc
         outcome = None if row is None else row[0]
-        if outcome == "duplicate":
-            raise ConflictError("an assessment with this identity already exists")
+        if outcome in ("duplicate", "semantic_duplicate"):
+            raise ConflictError("an assessment with this semantic key already exists")
         if outcome == "unknown_source":
             raise IntegrityError("the referenced source does not exist")
 
@@ -190,6 +196,34 @@ class PostgresSourceRepository(SourceRepository):
         except Exception as exc:
             raise map_driver_error(exc) from exc
         return tuple(map_source_assessment(row) for row in rows)
+
+    async def get_source_assessment_by_profile(
+        self,
+        source_id: SourceId,
+        window_start: datetime,
+        window_end: datetime,
+        profile_name: str,
+        profile_version: str,
+    ) -> SourceAssessment | None:
+        conn = self._uow.connection()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    _GET_ASSESSMENT_BY_PROFILE_FN,
+                    (
+                        str(source_id),
+                        window_start,
+                        window_end,
+                        profile_name,
+                        profile_version,
+                    ),
+                )
+                row = await cur.fetchone()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise map_driver_error(exc) from exc
+        return None if row is None else map_source_assessment(row)
 
 
 __all__ = ["PostgresSourceRepository"]

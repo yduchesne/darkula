@@ -477,11 +477,11 @@ def map_recon_assessment(row: tuple[Any, ...]) -> ReconAssessment:
 
 
 def map_source_assessment(row: tuple[Any, ...]) -> SourceAssessment:
-    """Map one ``source_assessment_list_v1`` result row.
+    """Map one ``source_assessment_list_v2`` / ``..._get_by_profile_v1`` row.
 
     Column order: assessment_id, source_id, assessed_at, window_start,
     window_end, confidence, relevance, activity, novelty,
-    evidence_references, characteristics.
+    evidence_references, characteristics, profile_name, profile_version.
     """
     try:
         return SourceAssessment(
@@ -496,6 +496,8 @@ def map_source_assessment(row: tuple[Any, ...]) -> SourceAssessment:
             novelty=None if row[8] is None else Confidence(row[8]),
             evidence_references=tuple(row[9]),
             characteristics=row[10],
+            profile_name=str(row[11]),
+            profile_version=str(row[12]),
         )
     except (ValueError, TypeError) as exc:
         raise _mapping_error("source assessment", exc) from exc

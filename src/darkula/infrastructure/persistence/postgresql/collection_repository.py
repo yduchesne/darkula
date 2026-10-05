@@ -75,6 +75,9 @@ _ENDPOINT_LIST_FN = "SELECT * FROM collection_policy_endpoint_list_v1(%s)"
 _ENDPOINT_GET_FN = "SELECT * FROM collection_endpoint_get_v1(%s)"
 _RUN_CREATE_FN = "SELECT * FROM collection_run_create_v1(%s, %s, %s, %s, %s, %s, %s)"
 _RUN_GET_FN = "SELECT * FROM collection_run_get_v1(%s)"
+_RUN_LIST_FOR_SOURCE_WINDOW_FN = (
+    "SELECT * FROM collection_run_list_for_source_window_v1(%s, %s, %s)"
+)
 _SCHEDULE_DUE_FN = "SELECT * FROM collection_schedule_due_v1(%s, %s, %s)"
 _RUN_CLAIM_FN = "SELECT * FROM collection_run_claim_v1(%s, %s, %s, %s)"
 _RUN_RECLAIM_FN = "SELECT * FROM collection_run_reclaim_v1(%s, %s, %s, %s, %s)"
@@ -284,6 +287,26 @@ class PostgresCollectionRepository(CollectionRepository):
         except Exception as exc:
             raise map_driver_error(exc) from exc
         return None if row is None else map_collection_run(row)
+
+    async def list_runs_for_source_window(
+        self,
+        source_id: SourceId,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> tuple[CollectionRun, ...]:
+        conn = self._uow.connection()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    _RUN_LIST_FOR_SOURCE_WINDOW_FN,
+                    (_str_uuid(source_id), window_start, window_end),
+                )
+                rows = await cur.fetchall()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise map_driver_error(exc) from exc
+        return tuple(map_collection_run(row) for row in rows)
 
     async def schedule_due(
         self,

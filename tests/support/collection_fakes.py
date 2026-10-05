@@ -194,6 +194,21 @@ class MemCollectionRepository(CollectionRepository):
     async def get_run(self, run_id: CollectionRunId) -> CollectionRun | None:
         return self._run_state().get(run_id)
 
+    async def list_runs_for_source_window(
+        self,
+        source_id: SourceId,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> tuple[CollectionRun, ...]:
+        matches = [
+            run
+            for run in self._run_state().values()
+            if run.source_id == source_id
+            and run.created_at <= window_end
+            and (run.completed_at is None or run.completed_at >= window_start)
+        ]
+        return tuple(sorted(matches, key=lambda run: (run.created_at, str(run.run_id))))
+
     async def schedule_due(
         self,
         *,

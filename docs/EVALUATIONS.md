@@ -66,3 +66,15 @@ endpoint occurrences and exact canonical support spans) but no evaluation
 framework: a live-model relationship-assertion eval would measure grounded
 precision/recall against Fake World truth and require model/provider
 selection. That remains PR 15 scope and is intentionally not implemented here.
+
+## Source analysis (PR 14)
+PR 14 delivered the deterministic bound of source-analysis behavior: the real
+`SourceAnalysisService` + `SourceAnalyst` over bounded persisted evidence with
+`FakeLlmClient`, trusted durable evidence grounding, immutable/versioned
+`SourceAssessment` history, and the canonical BlackGate browser slice. It did
+**not** add a live-model SourceAnalyst quality evaluation framework. A future
+PR 15 evaluation would measure source-level relevance/activity/novelty/
+geography/characteristics quality and evidence grounding against Fake World
+truth, and would require model/provider selection, metrics, thresholds, and
+datasets. PR 15 must be able to evaluate the delivered PR 14 SourceAnalyst
+without redesigning its production contract.

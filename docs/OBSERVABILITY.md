@@ -228,3 +228,21 @@ Prohibited (mirroring PR 11/12): source text, support text, endpoint values,
 refs, ids, predicates as labels, prompts, model output, object keys, hashes,
 and credentials. No argument or return value is captured by the decorators;
 the only attributes are static developer-controlled span/metric names.
+
+## PR 14 status — source-analysis telemetry
+
+Source analysis is instrumented with the existing decorators plus bounded
+counters:
+
+- **Span** — `source_analysis.analyze`.
+- **Counters** — `darkula.source_analysis.executions` (one per call),
+  `darkula.source_analysis.created` (newly persisted assessments),
+  `darkula.source_analysis.replays` (semantic replay short-circuits), and
+  `darkula.source_analysis.evidence_items` (bounded evidence items presented).
+- **Histogram** — `darkula.source_analysis.duration` (seconds).
+
+Prohibited: source/assessment/content/entity/relationship ids, URI/object key/
+content hash values, evidence refs, evidence summaries, prompts, model output,
+characteristics, scores, credentials, and raw errors. No argument or return
+value is captured by the decorators; the only attributes are static
+developer-controlled span/metric names.

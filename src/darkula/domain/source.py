@@ -58,6 +58,18 @@ MAX_FREE_TEXT_LENGTH = 2048
 #: Upper bound for structured JSON document size (serialized).
 MAX_JSON_DOCUMENT_BYTES = 65536
 
+#: Bounded length of a developer-controlled assessment profile name/version.
+#: Profile identity is provenance for one immutable assessment; it is never
+#: caller/model controlled and a semantic change requires a new version.
+MAX_PROFILE_NAME_LENGTH = 200
+MAX_PROFILE_VERSION_LENGTH = 50
+
+#: Deterministic profile attached to assessments written before PR 14.
+#: Keep in parity with ``migrations/0008_source_analysis.sql`` so a legacy
+#: row round-trips through the domain unchanged.
+SOURCE_ASSESSMENT_LEGACY_PROFILE_NAME = "legacy"
+SOURCE_ASSESSMENT_LEGACY_PROFILE_VERSION = "v0"
+
 #: Secret-like key/value markers rejected inside structured JSON documents.
 #: Keep in parity with ``darkula.config.loader.SECRET_MARKERS`` so domain
 #: validation and diagnostics agree on what counts as secret-bearing.
@@ -484,6 +496,8 @@ class SourceAssessment:
     novelty: Confidence | None = None
     evidence_references: tuple[str, ...] = ()
     characteristics: Mapping[str, Any] | None = None
+    profile_name: str = SOURCE_ASSESSMENT_LEGACY_PROFILE_NAME
+    profile_version: str = SOURCE_ASSESSMENT_LEGACY_PROFILE_VERSION
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -500,6 +514,24 @@ class SourceAssessment:
             self,
             "window_end",
             _require_utc(self.window_end, field_name="window_end"),
+        )
+        object.__setattr__(
+            self,
+            "profile_name",
+            _validate_text(
+                self.profile_name,
+                field_name="profile_name",
+                max_length=MAX_PROFILE_NAME_LENGTH,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "profile_version",
+            _validate_text(
+                self.profile_version,
+                field_name="profile_version",
+                max_length=MAX_PROFILE_VERSION_LENGTH,
+            ),
         )
         object.__setattr__(
             self,
@@ -520,7 +552,11 @@ class SourceAssessment:
 __all__ = [
     "MAX_FREE_TEXT_LENGTH",
     "MAX_JSON_DOCUMENT_BYTES",
+    "MAX_PROFILE_NAME_LENGTH",
+    "MAX_PROFILE_VERSION_LENGTH",
     "METADATA_SECRET_MARKERS",
+    "SOURCE_ASSESSMENT_LEGACY_PROFILE_NAME",
+    "SOURCE_ASSESSMENT_LEGACY_PROFILE_VERSION",
     "CandidateEventType",
     "CandidateStatus",
     "Confidence",

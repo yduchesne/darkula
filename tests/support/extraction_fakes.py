@@ -11,6 +11,7 @@ production composition.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from types import TracebackType
 from typing import Any, Self
 
@@ -142,6 +143,26 @@ class _MemContentRepository(ContentRepository):
         self, content_id: NormalizedContentId
     ) -> NormalizedContent | None:
         return self._state.observations.get(content_id)
+
+    async def list_observations_for_requests(
+        self,
+        request_ids: tuple[str, ...],
+        *,
+        window_start: datetime,
+        window_end: datetime,
+        limit: int,
+    ) -> tuple[NormalizedContent, ...]:
+        allowed = set(request_ids)
+        matches = [
+            content
+            for content in self._state.observations.values()
+            if content.crawl_request_id in allowed
+            and window_start <= content.observed_at <= window_end
+        ]
+        ordered = sorted(
+            matches, key=lambda item: (item.observed_at, str(item.content_id))
+        )
+        return tuple(ordered[:limit])
 
 
 class _MemExtractionRepository(ExtractionRepository):

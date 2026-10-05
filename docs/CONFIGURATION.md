@@ -290,3 +290,26 @@ Deliberately **not** configurable: the `RelationshipPredicate` vocabulary,
 response schema, prompts, endpoint-ref catalog ordering/grounding rules,
 extractor identity in code, and the `relationship-assertions/v1` profile
 identity.
+
+### Source analysis group (PR 14)
+
+Historical source analysis reuses the composed `LlmClient` and persisted
+Darkula observations; only bounds are configurable.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Compose `SourceAnalysisService` with the existing `LlmClient`; disabled -> `Runtime.source_analysis_service is None`. |
+| `max_window_days` | `30` | Maximum historical window one analysis request may span (`<= 3650`). |
+| `max_evidence_items` | `500` | Hard cap on evidence items in one bounded context. |
+| `max_context_chars` | `30000` | Hard aggregate bound (code points) on the analysis context text. |
+| `max_evidence_summary_chars` | `1000` | Hard per-evidence bound on one trusted summary (`<= max_context_chars`). |
+| `max_evidence_refs` | `100` | Hard cap on model-returned evidence references. |
+
+Overrides: `DARKULA_SOURCE_ANALYSIS__ENABLED`,
+`DARKULA_SOURCE_ANALYSIS__MAX_WINDOW_DAYS`,
+`DARKULA_SOURCE_ANALYSIS__MAX_EVIDENCE_ITEMS`, ...
+
+Deliberately **not** configurable: the `source-analysis/v1` profile identity,
+`source.analyze` operation name, `source-analysis-v1` prompt, response/
+characteristics schema, evidence-kind/ref format, score semantics, and
+grounding rules. A semantic change requires a new profile version.

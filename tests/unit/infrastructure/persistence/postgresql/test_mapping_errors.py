@@ -115,11 +115,14 @@ class TestRowMapping:
             0.5,
             ["analysis-2"],
             {"focus": "marketplace-focus"},
+            "source-analysis",
+            "v1",
         )
         assessment = map_source_assessment(row)
         assert assessment.relevance is not None
         assert assessment.activity is None
         assert assessment.confidence.value == 0.8
+        assert assessment.profile_name == "source-analysis"
 
 
 class TestMappingFailures:

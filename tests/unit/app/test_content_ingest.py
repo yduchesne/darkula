@@ -70,6 +70,26 @@ class _MemContentRepository(ContentRepository):
     ) -> NormalizedContent | None:
         return self.observations.get(content_id)
 
+    async def list_observations_for_requests(
+        self,
+        request_ids: tuple[str, ...],
+        *,
+        window_start: datetime,
+        window_end: datetime,
+        limit: int,
+    ) -> tuple[NormalizedContent, ...]:
+        allowed = set(request_ids)
+        matches = [
+            content
+            for content in self.observations.values()
+            if content.crawl_request_id in allowed
+            and window_start <= content.observed_at <= window_end
+        ]
+        ordered = sorted(
+            matches, key=lambda item: (item.observed_at, str(item.content_id))
+        )
+        return tuple(ordered[:limit])
+
 
 class _FakeUow:
     def __init__(self, repo: _MemContentRepository) -> None:

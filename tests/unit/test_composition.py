@@ -284,6 +284,23 @@ class TestLlmComposition:
         with pytest.raises(UnavailableDriverError):
             compose(settings=settings)
 
+    def test_runtime_exposes_source_analysis_service(self) -> None:
+        from darkula.app.source_analysis import SourceAnalysisService
+
+        runtime = compose(settings=_shipped())
+        assert isinstance(runtime.source_analysis_service, SourceAnalysisService)
+        assert runtime.source_analysis_service.profile_name == "source-analysis"
+        assert runtime.source_analysis_service.profile_version == "v1"
+        # The analyst reuses the single composed LlmClient, never a new one.
+        assert runtime.source_analysis_service._analyst._llm is runtime.llm
+
+    def test_source_analysis_disabled_is_not_composed(self) -> None:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("DARKULA_SOURCE_ANALYSIS__ENABLED", "false")
+            settings = load_settings(config_dir=_SHIPPED_CONFIG)
+        runtime = compose(settings=settings)
+        assert runtime.source_analysis_service is None
+
     def test_geography_enabled_with_explicit_fake_composes(self) -> None:
         from darkula.app.geography import GeographicResolutionService
 
