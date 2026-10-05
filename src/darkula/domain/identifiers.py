@@ -232,6 +232,25 @@ class GeographicResolutionId(_UuidId):
     """
 
 
+class RelationshipExtractionResultId(_UuidId):
+    """Identity of one persisted relationship-extraction result (PR 13).
+
+    Distinct from the ``NormalizedContentId`` it was derived from, from every
+    :class:`ExtractedRelationshipId` occurrence, and from a relationship
+    semantic value. The semantic/idempotency identity is ``(content_id,
+    profile_name, profile_version)``, never this generated UUID.
+    """
+
+
+class ExtractedRelationshipId(_UuidId):
+    """Identity of one persisted content-derived relationship assertion (PR 13).
+
+    Preserves ``assertion != global truth``. Two observations asserting the
+    same semantics are two occurrences; this identity is never an endpoint
+    value pair, a predicate, a content hash, or a global graph edge.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class _BoundedName:
     """Immutable bounded-name base for logical Darkula names."""
@@ -306,6 +325,7 @@ __all__ = [
     "ContentArtifactId",
     "CorrelationId",
     "ExtractedEntityId",
+    "ExtractedRelationshipId",
     "ExtractionResultId",
     "GeographicResolutionId",
     "MessageId",
@@ -313,6 +333,7 @@ __all__ = [
     "ObjectKey",
     "OperationName",
     "ReconAssessmentId",
+    "RelationshipExtractionResultId",
     "SourceAssessmentId",
     "SourceCandidateId",
     "SourceEndpointId",

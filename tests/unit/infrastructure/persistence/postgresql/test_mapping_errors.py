@@ -199,3 +199,54 @@ class TestDriverErrorMapping:
 
         with pytest.raises(asyncio.CancelledError):
             await repo_call()
+
+
+class TestRelationshipRowMapping:
+    """RDB19: invalid persisted relationship labels map boundedly."""
+
+    def test_valid_relationship_row_maps(self) -> None:
+        from darkula.infrastructure.persistence.postgresql.mapping import (
+            map_extracted_relationship,
+        )
+
+        row = (
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            "LOCATED_IN",
+            str(uuid.uuid4()),
+            "support",
+            0,
+            7,
+            "relationship-llm",
+            "v1",
+            0.9,
+        )
+        relationship = map_extracted_relationship(row)
+        assert relationship.predicate.value == "LOCATED_IN"
+        assert relationship.support_text == "support"
+
+    def test_invalid_persisted_predicate_maps_bounded(self) -> None:
+        from darkula.app.persistence import MappingError
+        from darkula.infrastructure.persistence.postgresql.mapping import (
+            map_extracted_relationship,
+        )
+
+        row = (
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            "FRIENDS_WITH",
+            str(uuid.uuid4()),
+            "support",
+            0,
+            7,
+            "relationship-llm",
+            "v1",
+            0.9,
+        )
+        with pytest.raises(MappingError) as info:
+            map_extracted_relationship(row)
+        assert "FRIENDS_WITH" not in str(info.value)

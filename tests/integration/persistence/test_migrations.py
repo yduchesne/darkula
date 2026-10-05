@@ -31,6 +31,8 @@ EXPECTED_TABLES = {
     "extraction_result",
     "extracted_entity",
     "geographic_resolution",
+    "relationship_extraction_result",
+    "extracted_relationship",
 }
 
 EXPECTED_FUNCTIONS = {
@@ -83,6 +85,13 @@ EXPECTED_FUNCTIONS = {
     "geographic_resolution_get_v1",
     "geographic_resolution_get_for_entity_v1",
     "geographic_resolution_list_for_content_v1",
+    "relationship_extraction_result_create_v1",
+    "relationship_extraction_result_get_v1",
+    "relationship_extraction_result_get_by_profile_v1",
+    "extracted_relationship_create_v1",
+    "extracted_relationship_list_for_result_v1",
+    "extracted_relationship_list_for_content_v1",
+    "extracted_relationship_get_v1",
 }
 
 
@@ -123,8 +132,8 @@ class TestMigrations:
                 ledger = [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
-        # The ledger head is the newest shipped artifact (PR 12 added 0006).
-        assert ledger[-1].startswith("0006_semantic_geography.sql")
+        # The ledger head is the newest shipped artifact (PR 13 added 0007).
+        assert ledger[-1].startswith("0007_relationships.sql")
 
     def test_expected_tables_exist(self, database_settings: DatabaseSettings) -> None:
         conn = _raw_connect(database_settings)
@@ -164,6 +173,13 @@ class TestMigrations:
         assert "source_assessment_check" in constraints
         assert "source_endpoint_check" in constraints
         assert "source_check" in constraints
+        assert "relationship_extraction_result_content_id_fkey" in constraints
+        assert "extracted_relationship_source_entity_id_fkey" in constraints
+        assert "extracted_relationship_target_entity_id_fkey" in constraints
+        assert (
+            "extracted_relationship_relationship_extraction_result_id_fkey"
+            in constraints
+        )
 
     def test_host_exposure_is_35432_to_5432(
         self, database_settings: DatabaseSettings

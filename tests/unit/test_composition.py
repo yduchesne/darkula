@@ -249,6 +249,30 @@ class TestLlmComposition:
         runtime = compose(settings=settings)
         assert runtime.semantic_extraction_service is None
 
+    def test_runtime_exposes_relationship_extraction_service(self) -> None:
+        from darkula.app.relationship_extraction import (
+            RelationshipExtractionService,
+        )
+
+        runtime = compose(settings=_shipped())
+        assert isinstance(
+            runtime.relationship_extraction_service, RelationshipExtractionService
+        )
+        assert (
+            runtime.relationship_extraction_service.profile_name
+            == "relationship-assertions"
+        )
+        assert runtime.relationship_extraction_service.profile_version == "v1"
+        # The service reuses the single composed LlmClient, never a new one.
+        assert runtime.relationship_extraction_service._llm is runtime.llm
+
+    def test_relationship_extraction_disabled_is_not_composed(self) -> None:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("DARKULA_RELATIONSHIP_EXTRACTION__ENABLED", "false")
+            settings = load_settings(config_dir=_SHIPPED_CONFIG)
+        runtime = compose(settings=settings)
+        assert runtime.relationship_extraction_service is None
+
     def test_geography_is_disabled_by_default(self) -> None:
         runtime = compose(settings=_shipped())
         assert runtime.geography_service is None

@@ -683,3 +683,61 @@ confidence, unchanged LOCATION occurrence after resolution, bounded resolver
 context, replay without repeat model/resolver calls, no truth leakage, and no
 `SourceAssessment` creation. `tests/integration/persistence/test_migrations.py`
 asserts migration 0006 plus the retained PR 11 v1 stored functions.
+
+## PR 13 testing status — content-derived relationship assertions
+
+- `tests/unit/domain/test_relationship_domain.py` — the RD1-RD14 domain
+  matrix: result/assertion validation, UTC timestamps, manifest uniqueness,
+  support-span/text-length equality, support/confidence bounds, prohibited
+  self-edges, finite predicate round-trip, arbitrary-predicate rejection, and
+  distinct identity classes.
+- `tests/unit/app/test_relationship_extraction.py` — the EC/RP/RG/RS matrices
+  using the in-memory SPI, real `InMemoryObjectStore`, and `FakeLlmClient`:
+  deterministic invocation-local endpoint refs, same-value/different-span and
+  foreign-content exclusion, catalog capacity, strict structured-output bounds
+  (extra fields, unknown predicate, bad refs/confidence/support/list bounds),
+  exact support grounding (unique/absent/contextualized/ambiguous, endpoint
+  containment, unknown refs, dedup, reverse direction, Unicode spans, hostile
+  prose-as-data, exact cap vs over-cap), and the service (replay without
+  ObjectStore/model, missing content/artifact/object, hash/UTF-8 failures,
+  zero/one endpoint durable zero results, partial rejection, all-rejected,
+  provider/invalid-output failures, cancellation, atomic rollback, winner
+  reload, untrusted-data prompt, endpoint catalog vs truth, and preview never
+  as source).
+- `tests/unit/app/test_relationship_security_guards.py` — static guards:
+  provider/network/browser/sandbox/DataStream/recon/Fake-World-truth import
+  guards, no SQL in application/domain, stored-function-only repository, static
+  content-free telemetry names, byte-identical migrations 0001-0006 via pinned
+  SHA-256, and no graph/global-entity/SourceAnalyst classes.
+- `tests/unit/config/test_extraction_settings.py` — the `relationship_extraction`
+  settings defaults and bounds.
+- `tests/integration/extraction/persistence/test_relationship_persistence.py`
+  — the RDB1-RDB20 matrix against real PostgreSQL: result/assertion
+  round-trips, semantic-key conflict, coexisting versions, unknown
+  result/endpoint and wrong-content integrity errors, result/content mismatch,
+  exact-duplicate conflict, distinct support spans, same-semantics/different
+  occurrences, deterministic listing by result/content, rollback, and a real
+  concurrent semantic-key race with exactly one winner.
+- `tests/integration/extraction/slice/test_relationship_slices.py` — real
+  PostgreSQL + ObjectStore slices: exact endpoint-occurrence ids and support
+  spans, unknown refs become a durable zero result, missing object/hash
+  mismatch/provider failure/cancellation persist nothing, concurrent
+  same-profile convergence, and the cross-content provenance proof (same bytes
+  and semantics in two observations keep distinct content/result/assertion/
+  endpoint-occurrence ids).
+- `tests/integration/crawler/test_relationship_vertical_slice.py` — the
+  canonical real-browser slice: real `CrawlerController` -> `PodmanSandbox` ->
+  Chromium/Playwright -> BlackGate HTTP -> production mapping/normalization ->
+  real ObjectStore -> real PostgreSQL `NormalizedContent`/`ContentArtifact` ->
+  real `SemanticExtractionService` -> `FakeLlmClient` -> real persisted
+  `ExtractedEntity` occurrences -> real `RelationshipExtractionService` ->
+  `FakeLlmClient` (bounded endpoint catalog) -> trusted ref/support grounding
+  -> real PostgreSQL `RelationshipExtractionResult`/`ExtractedRelationship`.
+  It asserts the real crawler path, no truth leak, endpoints persisted before
+  relationship extraction, bounded refs-only prompt, exact canonical support,
+  `relationship-assertions/v1` result, persisted confidence, unchanged
+  entities/geography, PR 11/12 coexistence, replay without a second model call,
+  and no `SourceAssessment`/global-graph object.
+
+`tests/integration/persistence/test_migrations.py` asserts migration 0007 plus
+the retained PR 11/12 stored functions and the relationship constraints.

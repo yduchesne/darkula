@@ -268,3 +268,25 @@ Overrides: `DARKULA_GEOGRAPHY__ENABLED`, `DARKULA_GEOGRAPHY__RESOLVER`,
 Deliberately **not** configurable: the semantic entity vocabulary, response
 schema, prompts, grounding rules, resolver identity in code, and the
 `semantic-entities/v1` profile identity.
+
+### Relationship extraction group (PR 13)
+
+Content-derived relationship assertions reuse the composed `LlmClient` and
+already-persisted entity occurrences; only bounds are configurable.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Compose `RelationshipExtractionService` with the existing `LlmClient`. |
+| `max_relationships_per_content` | `500` | Hard cap on accepted assertions for one content/profile; over-cap fails typed. |
+| `max_model_candidates` | `500` | Hard bound on raw model-returned candidates (bounds untrusted output). |
+| `max_support_chars` | `4096` | Hard bound on one stored/copied support text (code points). |
+| `max_context_chars` | `256` | Hard per-candidate bound on disambiguation context (`[0, 4096]`). |
+| `max_input_bytes` | `262144` | Hard bound on canonical text sent to the model. |
+
+Overrides: `DARKULA_RELATIONSHIP_EXTRACTION__ENABLED`,
+`DARKULA_RELATIONSHIP_EXTRACTION__MAX_RELATIONSHIPS_PER_CONTENT`, ...
+
+Deliberately **not** configurable: the `RelationshipPredicate` vocabulary,
+response schema, prompts, endpoint-ref catalog ordering/grounding rules,
+extractor identity in code, and the `relationship-assertions/v1` profile
+identity.

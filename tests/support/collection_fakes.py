@@ -493,6 +493,10 @@ class MemUnitOfWork(UnitOfWork):
     def geography(self) -> Any:
         raise AssertionError("collection fake exposes no geography repository")
 
+    @property
+    def relationships(self) -> Any:
+        raise AssertionError("collection fake exposes no relationship repository")
+
 
 class MemSpi(DarkulaSpi):
     """DarkulaSpi handing out :class:`MemUnitOfWork` instances."""

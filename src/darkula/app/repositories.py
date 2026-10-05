@@ -55,14 +55,20 @@ from darkula.domain.identifiers import (
     ConsumerId,
     ContentArtifactId,
     ExtractedEntityId,
+    ExtractedRelationshipId,
     ExtractionResultId,
     GeographicResolutionId,
     MessageId,
     NormalizedContentId,
+    RelationshipExtractionResultId,
     SourceCandidateId,
     SourceEndpointId,
     SourceId,
     StreamName,
+)
+from darkula.domain.relationships import (
+    ExtractedRelationship,
+    RelationshipExtractionResult,
 )
 from darkula.domain.source import (
     CandidateStatus,
@@ -84,6 +90,7 @@ __all__ = [
     "OutboxRepository",
     "ProcessedMessageRepository",
     "ReclaimOutcome",
+    "RelationshipRepository",
     "ScheduleOutcome",
     "ScheduledOccurrence",
     "SourceCandidateRepository",
@@ -628,3 +635,70 @@ class GeographicResolutionRepository(ABC):
         self, content_id: NormalizedContentId
     ) -> tuple[GeographicResolution, ...]:
         """Return a content's resolutions in deterministic order."""
+
+
+class RelationshipRepository(ABC):
+    """Immutable/versioned relationship-assertion persistence contract (PR 13).
+
+    All methods are transaction-scoped through the owning unit of work.
+    Results and assertions are append-only and immutable. ``create_result`` is
+    idempotent on the semantic key ``(content_id, profile_name,
+    profile_version)``: a concurrent duplicate raises :class:`ConflictError`
+    instead of rewriting history. ``create_relationship`` raises
+    :class:`ConflictError` on an exact duplicate occurrence and
+    :class:`IntegrityError` when endpoint/content provenance is inconsistent.
+    """
+
+    @abstractmethod
+    async def create_result(self, result: RelationshipExtractionResult) -> None:
+        """Persist one immutable relationship-extraction result.
+
+        :raises ConflictError: if ``(content_id, profile_name,
+            profile_version)`` or the result identity already exists (no
+            overwrite).
+        :raises IntegrityError: if the referenced normalized content does not
+            exist.
+        """
+
+    @abstractmethod
+    async def get_result(
+        self, result_id: RelationshipExtractionResultId
+    ) -> RelationshipExtractionResult | None:
+        """Return one result by identity or ``None`` when absent."""
+
+    @abstractmethod
+    async def get_result_by_profile(
+        self,
+        content_id: NormalizedContentId,
+        profile_name: str,
+        profile_version: str,
+    ) -> RelationshipExtractionResult | None:
+        """Return the result for the semantic content/profile key or ``None``."""
+
+    @abstractmethod
+    async def create_relationship(self, relationship: ExtractedRelationship) -> None:
+        """Persist one relationship assertion occurrence.
+
+        :raises ConflictError: if the exact occurrence already exists.
+        :raises IntegrityError: if the result/content/endpoint provenance is
+            unknown or inconsistent, or the assertion is a self-edge.
+        """
+
+    @abstractmethod
+    async def list_for_result(
+        self, result_id: RelationshipExtractionResultId
+    ) -> tuple[ExtractedRelationship, ...]:
+        """Return a result's assertions in deterministic order."""
+
+    @abstractmethod
+    async def list_for_content(
+        self, content_id: NormalizedContentId
+    ) -> tuple[ExtractedRelationship, ...]:
+        """Return a content's assertions across all results, in
+        deterministic order."""
+
+    @abstractmethod
+    async def get_relationship(
+        self, relationship_id: ExtractedRelationshipId
+    ) -> ExtractedRelationship | None:
+        """Return one assertion occurrence by identity or ``None``."""

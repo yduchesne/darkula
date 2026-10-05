@@ -10,6 +10,7 @@ from darkula.config.settings import (
     ExtractionSettings,
     GeographicResolverDriver,
     GeographySettings,
+    RelationshipExtractionSettings,
     SemanticExtractionSettings,
 )
 
@@ -53,6 +54,37 @@ class TestSemanticExtractionSettings:
             SemanticExtractionSettings(max_attempts=0)
         with pytest.raises(ValidationError):
             SemanticExtractionSettings(max_attempts=4)
+
+
+class TestRelationshipExtractionSettings:
+    def test_defaults(self) -> None:
+        settings = RelationshipExtractionSettings()
+        assert settings.enabled is True
+        assert settings.max_relationships_per_content == 500
+        assert settings.max_model_candidates == 500
+        assert settings.max_support_chars == 4096
+        assert settings.max_context_chars == 256
+        assert settings.max_input_bytes == 262144
+
+    def test_positive_bounds_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            RelationshipExtractionSettings(max_relationships_per_content=0)
+        with pytest.raises(ValidationError):
+            RelationshipExtractionSettings(max_model_candidates=0)
+        with pytest.raises(ValidationError):
+            RelationshipExtractionSettings(max_support_chars=0)
+        with pytest.raises(ValidationError):
+            RelationshipExtractionSettings(max_input_bytes=0)
+
+    def test_context_bound(self) -> None:
+        with pytest.raises(ValidationError):
+            RelationshipExtractionSettings(max_context_chars=-1)
+        with pytest.raises(ValidationError):
+            RelationshipExtractionSettings(max_context_chars=4097)
+
+    def test_unknown_field_fails_closed(self) -> None:
+        with pytest.raises(ValidationError):
+            RelationshipExtractionSettings(profile_version="v2")  # type: ignore[call-arg]
 
 
 class TestGeographySettings:

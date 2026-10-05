@@ -26,6 +26,7 @@ from darkula.app.repositories import (
     ContentRepository,
     ExtractionRepository,
     GeographicResolutionRepository,
+    RelationshipRepository,
 )
 from darkula.domain.content import (
     ArtifactCompleteness,
@@ -38,9 +39,15 @@ from darkula.domain.geography import GeographicResolution
 from darkula.domain.identifiers import (
     ContentArtifactId,
     ExtractedEntityId,
+    ExtractedRelationshipId,
     ExtractionResultId,
     GeographicResolutionId,
     NormalizedContentId,
+    RelationshipExtractionResultId,
+)
+from darkula.domain.relationships import (
+    ExtractedRelationship,
+    RelationshipExtractionResult,
 )
 
 
@@ -63,6 +70,15 @@ class MemExtractionState:
     resolution_keys: dict[tuple[str, str, str], GeographicResolutionId] = field(
         default_factory=dict
     )
+    relationship_results: dict[
+        RelationshipExtractionResultId, RelationshipExtractionResult
+    ] = field(default_factory=dict)
+    relationship_result_keys: dict[
+        tuple[str, str, str], RelationshipExtractionResultId
+    ] = field(default_factory=dict)
+    relationships: dict[ExtractedRelationshipId, ExtractedRelationship] = field(
+        default_factory=dict
+    )
 
     def snapshot(self) -> MemExtractionState:
         return MemExtractionState(
@@ -73,6 +89,9 @@ class MemExtractionState:
             entities=dict(self.entities),
             resolutions=dict(self.resolutions),
             resolution_keys=dict(self.resolution_keys),
+            relationship_results=dict(self.relationship_results),
+            relationship_result_keys=dict(self.relationship_result_keys),
+            relationships=dict(self.relationships),
         )
 
     def restore(self, other: MemExtractionState) -> None:
@@ -83,6 +102,9 @@ class MemExtractionState:
         self.entities = other.entities
         self.resolutions = other.resolutions
         self.resolution_keys = other.resolution_keys
+        self.relationship_results = other.relationship_results
+        self.relationship_result_keys = other.relationship_result_keys
+        self.relationships = other.relationships
 
 
 class _MemContentRepository(ContentRepository):
@@ -276,6 +298,120 @@ class _MemGeographicResolutionRepository(GeographicResolutionRepository):
         )
 
 
+class _MemRelationshipRepository(RelationshipRepository):
+    def __init__(
+        self,
+        state: MemExtractionState,
+        *,
+        fail_on_relationship_index: int | None = None,
+    ) -> None:
+        self._state = state
+        self._fail_on_relationship_index = fail_on_relationship_index
+        self._relationship_writes = 0
+
+    async def create_result(self, result: RelationshipExtractionResult) -> None:
+        if result.content_id not in self._state.observations:
+            raise IntegrityError("the referenced normalized content does not exist")
+        key = (str(result.content_id), result.profile_name, result.profile_version)
+        if key in self._state.relationship_result_keys:
+            raise ConflictError("a relationship result already exists")
+        self._state.relationship_results[result.result_id] = result
+        self._state.relationship_result_keys[key] = result.result_id
+
+    async def get_result(
+        self, result_id: RelationshipExtractionResultId
+    ) -> RelationshipExtractionResult | None:
+        return self._state.relationship_results.get(result_id)
+
+    async def get_result_by_profile(
+        self,
+        content_id: NormalizedContentId,
+        profile_name: str,
+        profile_version: str,
+    ) -> RelationshipExtractionResult | None:
+        key = (str(content_id), profile_name, profile_version)
+        result_id = self._state.relationship_result_keys.get(key)
+        return (
+            None
+            if result_id is None
+            else self._state.relationship_results.get(result_id)
+        )
+
+    async def create_relationship(self, relationship: ExtractedRelationship) -> None:
+        self._relationship_writes += 1
+        if self._fail_on_relationship_index == self._relationship_writes:
+            raise IntegrityError("injected relationship persistence failure")
+        result = self._state.relationship_results.get(relationship.extraction_result_id)
+        if result is None:
+            raise IntegrityError("the referenced relationship result does not exist")
+        if result.content_id != relationship.content_id:
+            raise IntegrityError("content does not match result content")
+        for endpoint_id in (
+            relationship.source_entity_id,
+            relationship.target_entity_id,
+        ):
+            entity = self._state.entities.get(endpoint_id)
+            if entity is None:
+                raise IntegrityError("the referenced endpoint does not exist")
+            if entity.content_id != relationship.content_id:
+                raise IntegrityError("an endpoint belongs to a different content")
+        for existing in self._state.relationships.values():
+            if (
+                existing.extraction_result_id == relationship.extraction_result_id
+                and existing.source_entity_id == relationship.source_entity_id
+                and existing.predicate == relationship.predicate
+                and existing.target_entity_id == relationship.target_entity_id
+                and existing.support_span == relationship.support_span
+                and existing.extractor == relationship.extractor
+            ):
+                raise ConflictError("this relationship assertion already exists")
+        self._state.relationships[relationship.relationship_id] = relationship
+
+    def _ordered(
+        self, relationships: list[ExtractedRelationship]
+    ) -> tuple[ExtractedRelationship, ...]:
+        return tuple(
+            sorted(
+                relationships,
+                key=lambda item: (
+                    item.support_span.start,
+                    item.support_span.end,
+                    str(item.source_entity_id),
+                    item.predicate.value,
+                    str(item.target_entity_id),
+                    str(item.relationship_id),
+                ),
+            )
+        )
+
+    async def list_for_result(
+        self, result_id: RelationshipExtractionResultId
+    ) -> tuple[ExtractedRelationship, ...]:
+        return self._ordered(
+            [
+                relationship
+                for relationship in self._state.relationships.values()
+                if relationship.extraction_result_id == result_id
+            ]
+        )
+
+    async def list_for_content(
+        self, content_id: NormalizedContentId
+    ) -> tuple[ExtractedRelationship, ...]:
+        return self._ordered(
+            [
+                relationship
+                for relationship in self._state.relationships.values()
+                if relationship.content_id == content_id
+            ]
+        )
+
+    async def get_relationship(
+        self, relationship_id: ExtractedRelationshipId
+    ) -> ExtractedRelationship | None:
+        return self._state.relationships.get(relationship_id)
+
+
 class MemExtractionUnitOfWork(UnitOfWork):
     """One in-memory transaction with snapshot/commit/rollback semantics."""
 
@@ -284,13 +420,16 @@ class MemExtractionUnitOfWork(UnitOfWork):
         state: MemExtractionState,
         *,
         fail_on_entity_index: int | None = None,
+        fail_on_relationship_index: int | None = None,
     ) -> None:
         self._state = state
         self._fail_on_entity_index = fail_on_entity_index
+        self._fail_on_relationship_index = fail_on_relationship_index
         self._working = state.snapshot()
         self._content: _MemContentRepository | None = None
         self._extraction: _MemExtractionRepository | None = None
         self._geography: _MemGeographicResolutionRepository | None = None
+        self._relationships: _MemRelationshipRepository | None = None
 
     async def __aenter__(self) -> Self:
         self._working = self._state.snapshot()
@@ -351,6 +490,15 @@ class MemExtractionUnitOfWork(UnitOfWork):
             self._geography = _MemGeographicResolutionRepository(self._working)
         return self._geography
 
+    @property
+    def relationships(self) -> RelationshipRepository:
+        if self._relationships is None:
+            self._relationships = _MemRelationshipRepository(
+                self._working,
+                fail_on_relationship_index=self._fail_on_relationship_index,
+            )
+        return self._relationships
+
 
 class MemExtractionSpi(DarkulaSpi):
     """One in-memory SPI producing snapshot-isolated extraction units of work."""
@@ -360,13 +508,17 @@ class MemExtractionSpi(DarkulaSpi):
         state: MemExtractionState | None = None,
         *,
         fail_on_entity_index: int | None = None,
+        fail_on_relationship_index: int | None = None,
     ) -> None:
         self.state = state or MemExtractionState()
         self._fail_on_entity_index = fail_on_entity_index
+        self._fail_on_relationship_index = fail_on_relationship_index
 
     def unit_of_work(self) -> UnitOfWork:
         return MemExtractionUnitOfWork(
-            self.state, fail_on_entity_index=self._fail_on_entity_index
+            self.state,
+            fail_on_entity_index=self._fail_on_entity_index,
+            fail_on_relationship_index=self._fail_on_relationship_index,
         )
 
 

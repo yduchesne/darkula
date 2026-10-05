@@ -142,6 +142,39 @@ separate geographic-resolution lifecycle.
   resolution never mutates the mention's raw/normalized value, span, or
   extraction confidence.
 
+## PR 13 frozen status — content-derived relationship assertions
+
+PR 13 records what **one normalized content observation asserted** between two
+persisted extracted-entity occurrences. A relationship is an assertion about
+content, never global truth.
+
+- `src/darkula/domain/relationships.py` owns the finite
+  `RelationshipPredicate` vocabulary (`AFFILIATED_WITH`, `USES`, `OPERATES`,
+  `TARGETS`, `IMPERSONATES`, `SELLS`, `OFFERS_ACCESS_TO`, `HAS_ACCESS_TO`,
+  `LOCATED_IN`, `AFFECTS`), `RelationshipExtractionResult`, and
+  `ExtractedRelationship`. There is no arbitrary free-text predicate and no
+  ATT&CK/STIX/MISP/OpenCTI semantics.
+- `RelationshipExtractionResult` is immutable/versioned under the fixed
+  `relationship-assertions/v1` profile with the logical
+  `relationship-llm/v1` extractor; the semantic/idempotency key is
+  `(content_id, profile_name, profile_version)` and is UNIQUE. A new profile
+  version coexists rather than rewriting history.
+- Endpoints are `source_entity_id`/`target_entity_id`
+  (`ExtractedEntityId` **occurrences**), never endpoint values, normalized
+  values, global entity ids, or `GeographicResolutionId`s. Both endpoint
+  occurrences must belong to the relationship content; direction is explicit
+  and self-edges are rejected.
+- `support_span` is exact canonical provenance: `text[start:end] ==
+  support_text`, the span length equals the text length, and the span contains
+  both endpoint occurrence spans. The model never chooses offsets; trusted code
+  grounds the model-copied support text.
+- `extraction_confidence` is the confidence that the content asserted the
+  relationship — never objective truth, source credibility, endpoint
+  extraction confidence, geographic resolution confidence, or a threat score.
+- Assertions are append-only/immutable. Identical semantics in two content
+  observations, or at two occurrence spans, remain separate provenance-bearing
+  assertions; there is no global merged relationship entity.
+
 ## Discovery and reconnaissance
 ### SourceCandidate
 A discovered resource not yet accepted as a managed Source. It has identity, discovery provenance, entrypoint, timestamps, and lifecycle status.
@@ -218,10 +251,15 @@ gocoder SDKs, HTTP clients, and provider payloads never cross it.
 ### GeographicResolution
 Resolution of an extracted geographic mention, separate from extraction confidence. It supports RESOLVED, AMBIGUOUS, and UNRESOLVED outcomes plus canonical geography, country/admin/locality information, geometry when available, resolver provenance, and confidence. PostgreSQL/PostGIS geometry is a likely persistence choice but is not fixed by PR 1.
 
-### ExtractedRelationship
-A content-derived assertion linking extracted entities, with relationship type, confidence, source span/reference, and extractor provenance. It is evidence from content, not automatically global truth.
-
-Example: an ORGANIZATION_TYPE "hospital" may have geographic_scope -> Washington State and associated_with -> compromised credentials.
+### ExtractedRelationship (PR 13)
+A content-derived assertion linking two persisted extracted-entity
+occurrences with a finite predicate, direction, bounded extraction
+confidence, exact supporting canonical span/text, and extractor
+provenance. **PR 13 delivered**: the `relationship-assertions/v1` profile
+over already-persisted `deterministic-observables/v1` and
+`semantic-entities/v1` occurrences. It is evidence that one content asserted
+the relationship, not automatically global truth; there is no global graph
+edge or entity-merge behavior.
 
 ## Source intelligence
 ### SourceAssessment
