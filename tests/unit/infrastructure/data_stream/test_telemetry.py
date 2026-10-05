@@ -201,6 +201,10 @@ class _Spi(DarkulaSpi):
             def extraction(self) -> Any:
                 raise AssertionError("telemetry fake exposes no extraction repository")
 
+            @property
+            def geography(self) -> Any:
+                raise AssertionError("telemetry fake exposes no geography repository")
+
             async def append(
                 self, message: StreamMessage, *, stream_name: StreamName
             ) -> None:

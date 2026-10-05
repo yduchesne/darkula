@@ -231,3 +231,41 @@ class TestLlmComposition:
             "deterministic-observables"
         )
         assert runtime.extraction_service._profile.profile_version == "v1"
+
+    def test_runtime_exposes_semantic_extraction_service(self) -> None:
+        from darkula.app.semantic_extraction import SemanticExtractionService
+
+        runtime = compose(settings=_shipped())
+        assert isinstance(
+            runtime.semantic_extraction_service, SemanticExtractionService
+        )
+        assert runtime.semantic_extraction_service.profile_name == "semantic-entities"
+        assert runtime.semantic_extraction_service.profile_version == "v1"
+
+    def test_semantic_extraction_disabled_is_not_composed(self) -> None:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("DARKULA_SEMANTIC_EXTRACTION__ENABLED", "false")
+            settings = load_settings(config_dir=_SHIPPED_CONFIG)
+        runtime = compose(settings=settings)
+        assert runtime.semantic_extraction_service is None
+
+    def test_geography_is_disabled_by_default(self) -> None:
+        runtime = compose(settings=_shipped())
+        assert runtime.geography_service is None
+
+    def test_geography_enabled_without_resolver_fails_fast(self) -> None:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("DARKULA_GEOGRAPHY__ENABLED", "true")
+            settings = load_settings(config_dir=_SHIPPED_CONFIG)
+        with pytest.raises(UnavailableDriverError):
+            compose(settings=settings)
+
+    def test_geography_enabled_with_explicit_fake_composes(self) -> None:
+        from darkula.app.geography import GeographicResolutionService
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("DARKULA_GEOGRAPHY__ENABLED", "true")
+            monkeypatch.setenv("DARKULA_GEOGRAPHY__RESOLVER", "fake")
+            settings = load_settings(config_dir=_SHIPPED_CONFIG)
+        runtime = compose(settings=settings)
+        assert isinstance(runtime.geography_service, GeographicResolutionService)

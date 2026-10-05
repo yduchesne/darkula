@@ -223,6 +223,15 @@ class ExtractedEntityId(_UuidId):
     """
 
 
+class GeographicResolutionId(_UuidId):
+    """Identity of one immutable geographic-resolution observation (PR 12).
+
+    Distinct from the ``ExtractedEntityId`` LOCATION occurrence it interprets,
+    from a resolver identity/version, and from canonical resolved attributes
+    (name/coordinates). A resolution is an interpretation, never global truth.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class _BoundedName:
     """Immutable bounded-name base for logical Darkula names."""
@@ -298,6 +307,7 @@ __all__ = [
     "CorrelationId",
     "ExtractedEntityId",
     "ExtractionResultId",
+    "GeographicResolutionId",
     "MessageId",
     "NormalizedContentId",
     "ObjectKey",

@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "collection_run",
     "extraction_result",
     "extracted_entity",
+    "geographic_resolution",
 }
 
 EXPECTED_FUNCTIONS = {
@@ -74,6 +75,14 @@ EXPECTED_FUNCTIONS = {
     "extracted_entity_create_v1",
     "extracted_entity_list_for_result_v1",
     "extracted_entity_list_for_content_v1",
+    "extracted_entity_create_v2",
+    "extracted_entity_list_for_result_v2",
+    "extracted_entity_list_for_content_v2",
+    "extracted_entity_get_v1",
+    "geographic_resolution_create_v1",
+    "geographic_resolution_get_v1",
+    "geographic_resolution_get_for_entity_v1",
+    "geographic_resolution_list_for_content_v1",
 }
 
 
@@ -114,8 +123,8 @@ class TestMigrations:
                 ledger = [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
-        # The ledger head is the newest shipped artifact (PR 11 added 0005).
-        assert ledger[-1].startswith("0005_extraction.sql")
+        # The ledger head is the newest shipped artifact (PR 12 added 0006).
+        assert ledger[-1].startswith("0006_semantic_geography.sql")
 
     def test_expected_tables_exist(self, database_settings: DatabaseSettings) -> None:
         conn = _raw_connect(database_settings)

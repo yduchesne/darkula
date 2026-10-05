@@ -6,7 +6,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from darkula.config.settings import ExtractionSettings
+from darkula.config.settings import (
+    ExtractionSettings,
+    GeographicResolverDriver,
+    GeographySettings,
+    SemanticExtractionSettings,
+)
 
 
 class TestExtractionSettings:
@@ -29,3 +34,40 @@ class TestExtractionSettings:
     def test_unknown_field_fails_closed(self) -> None:
         with pytest.raises(ValidationError):
             ExtractionSettings(profile_version="v2")  # type: ignore[call-arg]
+
+
+class TestSemanticExtractionSettings:
+    def test_defaults(self) -> None:
+        settings = SemanticExtractionSettings()
+        assert settings.enabled is True
+        assert settings.max_entities_per_content == 500
+        assert settings.max_input_bytes == 262144
+        assert settings.max_attempts == 1
+
+    def test_bounds_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            SemanticExtractionSettings(max_entities_per_content=0)
+        with pytest.raises(ValidationError):
+            SemanticExtractionSettings(max_input_bytes=0)
+        with pytest.raises(ValidationError):
+            SemanticExtractionSettings(max_attempts=0)
+        with pytest.raises(ValidationError):
+            SemanticExtractionSettings(max_attempts=4)
+
+
+class TestGeographySettings:
+    def test_defaults_are_disabled(self) -> None:
+        settings = GeographySettings()
+        assert settings.enabled is False
+        assert settings.resolver is GeographicResolverDriver.NONE
+        assert settings.context_chars == 200
+
+    def test_context_bound(self) -> None:
+        with pytest.raises(ValidationError):
+            GeographySettings(context_chars=-1)
+        with pytest.raises(ValidationError):
+            GeographySettings(context_chars=2001)
+
+    def test_unknown_resolver_fails_closed(self) -> None:
+        with pytest.raises(ValidationError):
+            GeographySettings(resolver="google")  # type: ignore[arg-type]

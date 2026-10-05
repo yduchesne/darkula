@@ -623,3 +623,63 @@ The canonical slice uses an additive PUBLIC Fake World thread
 (`thr-collector-samples`) with fully synthetic, reserved/non-routable
 observables; the extraction service and extractors are real, never faked, and
 no LLM/live network is involved.
+
+## PR 12 testing status — semantic extraction and geographic resolution
+
+- `tests/unit/domain/test_geography_domain.py` — geographic domain matrix:
+  resolver identity/request bounds, RESOLVED/AMBIGUOUS/UNRESOLVED invariants,
+  confidence bounds, coordinate bounds, country-code shape, and
+  provider-neutral result validation.
+- `tests/unit/app/test_semantic_extraction.py` — the SD/GR/SE matrices:
+  strict response-model bounds (SD1-SD13, including no `OTHER`, no
+  relationship field, finite confidence), exact grounding (GR1-GR15: one/zero/
+  ambiguous occurrences, context disambiguation, case/whitespace rejection,
+  Unicode code-point spans, duplicate/spans handling, cap), and the service
+  (SE1-SE22) using the in-memory SPI plus real `InMemoryObjectStore` and
+  `FakeLlmClient`: ObjectStore is the source, missing/oversized/hash/UTF-8
+  failures never call the model, existing-result reuse, model failures,
+  invalid output, cancellation during read and model, rollback, replay,
+  deterministic/semantic coexistence, prompt untrusted-data framing, and
+  Fake World truth absence.
+- `tests/unit/app/test_geography.py` — the GS matrix: bounded resolver
+  context, LOCATION-only enforcement, not-found, span-integrity failure,
+  missing/hash-mismatch canonical bytes, RESOLVED/AMBIGUOUS/UNRESOLVED
+  persistence, resolver reuse and new-version coexistence, resolver failure,
+  cancellation, context-at-boundaries, Unicode context, and wrong-type
+  resolver contract failure.
+- `tests/unit/app/test_extraction_security_guards.py` — TS12 static guards:
+  no provider/geocoder SDK, no ReconAgent/DeepAgent, no crawler/sandbox, no
+  Fake World truth, no SQL, and content-free telemetry names for the semantic
+  and geography modules.
+- `tests/unit/config/test_extraction_settings.py` /
+  `tests/unit/test_composition.py` — semantic/geography settings defaults and
+  bounds, semantic composition with the existing `LlmClient`, geography
+  disabled by default, explicit-fake composition, and fail-fast when geography
+  is enabled with no resolver.
+- `tests/integration/extraction/persistence/test_semantic_geography_persistence.py`
+  — the RP12 matrix against real PostgreSQL: atomic semantic result+entity
+  commit, deterministic/semantic coexistence, semantic-key conflicts and
+  coexisting versions, confidence round-trip, PR 11 NULL confidence, FK
+  errors, rollback, resolved/ambiguous/unresolved round-trips, resolver-version
+  coexistence, and real concurrent semantic/geographic races yielding exactly
+  one durable row.
+- `tests/integration/extraction/slice/test_semantic_geography_slices.py` —
+  real PostgreSQL + ObjectStore slices: missing object/hash mismatch/model
+  failure/resolver failure with no persistence, concurrent semantic extraction
+  and concurrent geographic resolution each yielding one durable row, and the
+  Washington State / Washington, D.C. / deliberately ambiguous `Washington`
+  cases proving the same token is not hard-coded to one canonical place.
+- `tests/integration/crawler/test_semantic_extraction_vertical_slice.py` —
+  the canonical slice: real `CrawlerController` -> real `PodmanSandbox` ->
+  Playwright/Chromium -> BlackGate HTTP -> real `ContentIngestService` ->
+  ObjectStore -> real PostgreSQL -> real `SemanticExtractionService` ->
+  `FakeLlmClient` -> real grounding -> real `ExtractionResult`/`ExtractedEntity`
+  (coexisting with deterministic extraction) -> real
+  `GeographicResolutionService` -> `FakeGeographicResolver` -> real
+  `GeographicResolution`. Only the external world/model/resolver are faked.
+
+The canonical slice proves exact source spans, persisted extraction
+confidence, unchanged LOCATION occurrence after resolution, bounded resolver
+context, replay without repeat model/resolver calls, no truth leakage, and no
+`SourceAssessment` creation. `tests/integration/persistence/test_migrations.py`
+asserts migration 0006 plus the retained PR 11 v1 stored functions.

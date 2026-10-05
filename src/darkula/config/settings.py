@@ -501,6 +501,89 @@ class ExtractionSettings(BaseModel):
         return value
 
 
+class SemanticExtractionSettings(BaseModel):
+    """Model-backed semantic extraction group (PR 12).
+
+    Bounds only; prompt/response contracts and the semantic vocabulary are
+    frozen developer-controlled code, never runtime configuration. The model
+    itself is the existing composed ``LlmClient``.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = True
+    max_entities_per_content: int = 500
+    #: Hard bound on canonical text sent to the model (smaller than the
+    #: normalized-text storage bound to keep prompts model-compatible).
+    max_input_bytes: int = 262144
+    #: Explicit bounded attempts; PR 12 ships a single attempt by default.
+    max_attempts: int = 1
+
+    @field_validator("max_entities_per_content", "max_input_bytes")
+    @classmethod
+    def _validate_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("semantic extraction bounds must be positive")
+        return value
+
+    @field_validator("max_entities_per_content")
+    @classmethod
+    def _validate_entity_bound(cls, value: int) -> int:
+        if value > 100_000:
+            raise ValueError("max_entities_per_content must be <= 100000")
+        return value
+
+    @field_validator("max_attempts")
+    @classmethod
+    def _validate_attempts(cls, value: int) -> int:
+        if value < 1 or value > 3:
+            raise ValueError("semantic max_attempts must be within [1, 3]")
+        return value
+
+
+class GeographicResolverDriver(StrEnum):
+    """Selected geographic-resolver driver (PR 12).
+
+    ``NONE`` leaves geographic resolution disabled unless a test/resolver is
+    injected. ``FAKE`` explicitly selects the deterministic test resolver;
+    production never silently substitutes a fake and there is no live provider
+    adapter in PR 12.
+    """
+
+    NONE = "none"
+    FAKE = "fake"
+
+
+class GeographySettings(BaseModel):
+    """Geographic-resolution group (PR 12).
+
+    Resolution is opt-in and provider-neutral. ``context_chars`` bounds the
+    exact source context passed to the resolver for disambiguation.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = False
+    resolver: GeographicResolverDriver = GeographicResolverDriver.NONE
+    context_chars: int = 200
+    max_candidates: int = 4
+    max_input_bytes: int = 1048576
+
+    @field_validator("context_chars")
+    @classmethod
+    def _validate_context(cls, value: int) -> int:
+        if value < 0 or value > 2000:
+            raise ValueError("geography.context_chars must be within [0, 2000]")
+        return value
+
+    @field_validator("max_candidates", "max_input_bytes")
+    @classmethod
+    def _validate_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("geography bounds must be positive")
+        return value
+
+
 class CollectionSettings(BaseModel):
     """Collection group; behavior fields are owned by PR 9.
 
@@ -653,6 +736,8 @@ class Settings(BaseSettings):
     agent_observability: AgentObservabilitySettings = AgentObservabilitySettings()
     telemetry: TelemetrySettings = TelemetrySettings()
     extraction: ExtractionSettings = ExtractionSettings()
+    semantic_extraction: SemanticExtractionSettings = SemanticExtractionSettings()
+    geography: GeographySettings = GeographySettings()
     collection: CollectionSettings = CollectionSettings()
     recon: ReconSettings = ReconSettings()
 
@@ -668,6 +753,8 @@ __all__ = [
     "DatabaseDriver",
     "DatabaseSettings",
     "ExtractionSettings",
+    "GeographicResolverDriver",
+    "GeographySettings",
     "LlmDriver",
     "LlmProviderSettings",
     "LlmSettings",
@@ -675,6 +762,7 @@ __all__ = [
     "ObjectStoreSettings",
     "ReconSettings",
     "SandboxDriver",
+    "SemanticExtractionSettings",
     "Settings",
     "TelemetrySettings",
 ]

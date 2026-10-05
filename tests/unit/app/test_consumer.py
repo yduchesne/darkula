@@ -135,6 +135,10 @@ class _FakeUoW(UnitOfWork):
     def extraction(self) -> Any:
         raise AssertionError("consumer test exposes no extraction repository")
 
+    @property
+    def geography(self) -> Any:
+        raise AssertionError("consumer test exposes no geography repository")
+
     async def record(
         self,
         *,

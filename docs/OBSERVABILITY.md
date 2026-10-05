@@ -185,3 +185,29 @@ metric labels, URIs, ObjectKeys, content hashes, titles/text, raw or
 normalized entity values, and credentials. No argument or return value is ever
 captured by the decorators; extraction performs no LLM/agent-observability
 call in PR 11.
+
+## PR 12 status — semantic extraction and geographic resolution telemetry
+
+Semantic extraction is instrumented with the existing decorators plus bounded
+counters:
+
+- **Span** — `semantic_extraction.extract`.
+- **Counters** — `darkula.semantic_extraction.executions` (one per call),
+  `darkula.semantic_extraction.entities` (accepted occurrences), and
+  `darkula.semantic_extraction.rejected_candidates` (ungrounded/ambiguous).
+- **Histogram** — `darkula.semantic_extraction.duration` (seconds, outcome
+  dimension only).
+
+Geographic resolution:
+
+- **Span** — `geographic_resolution.resolve`.
+- **Counters** — `darkula.geographic_resolution.executions` and
+  `darkula.geographic_resolution.status` (bounded attribute
+  `RESOLVED`/`AMBIGUOUS`/`UNRESOLVED`).
+- **Histogram** — `darkula.geographic_resolution.duration` (seconds).
+
+Prohibited (mirroring PR 8-11): source text, raw/normalized entity values,
+location mentions, canonical names, coordinates, prompts, model output,
+provider payloads, IDs as metric labels, object keys, hashes, and credentials.
+No argument or return value is captured by the decorators; the only dynamic
+dimension is the bounded resolution status.

@@ -236,3 +236,35 @@ name/version values, the `deterministic-observables/v1` profile name/version,
 the canonical normalized-text byte bound (reused from
 `MAX_NORMALIZED_TEXT_BYTES`), and normalization semantics. Changing any of
 those is a versioned code change, never a runtime knob.
+
+### Semantic extraction group (PR 12)
+
+Model-backed semantic extraction reuses the composed `LlmClient`; only bounds
+are configurable (the vocabulary and prompt are frozen code).
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `enabled` | `true` | Compose `SemanticExtractionService` with the existing `LlmClient`. |
+| `max_entities_per_content` | `500` | Hard cap on accepted semantic occurrences; within `[1, 100000]`. Over-cap fails typed. |
+| `max_input_bytes` | `262144` | Hard bound on canonical text sent to the model. |
+| `max_attempts` | `1` | Explicit bounded attempts; PR 12 ships a single attempt. Within `[1, 3]`. |
+
+Overrides: `DARKULA_SEMANTIC_EXTRACTION__ENABLED`,
+`DARKULA_SEMANTIC_EXTRACTION__MAX_ENTITIES_PER_CONTENT`, ...
+
+### Geography group (PR 12)
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `enabled` | `false` | Opt-in geographic resolution. |
+| `resolver` | `none` | `none` or `fake`. Enabling geography without a resolver fails fast; the fake is never silently substituted in production and no live provider is delivered. |
+| `context_chars` | `200` | Exact code-point context window around a mention (`[0, 2000]`). |
+| `max_candidates` | `4` | Reserved resolver-candidate bound. |
+| `max_input_bytes` | `1048576` | Hard bound on canonical text read for resolution. |
+
+Overrides: `DARKULA_GEOGRAPHY__ENABLED`, `DARKULA_GEOGRAPHY__RESOLVER`,
+`DARKULA_GEOGRAPHY__CONTEXT_CHARS`, ...
+
+Deliberately **not** configurable: the semantic entity vocabulary, response
+schema, prompts, grounding rules, resolver identity in code, and the
+`semantic-entities/v1` profile identity.

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         CollectionRepository,
         ContentRepository,
         ExtractionRepository,
+        GeographicResolutionRepository,
         OutboxRepository,
         ProcessedMessageRepository,
         SourceCandidateRepository,
@@ -150,6 +151,12 @@ class UnitOfWork(ABC):
     def extraction(self) -> ExtractionRepository:
         """Return the deterministic extraction repository bound to this
         transaction (PR 11)."""
+
+    @property
+    @abstractmethod
+    def geography(self) -> GeographicResolutionRepository:
+        """Return the geographic-resolution repository bound to this
+        transaction (PR 12)."""
 
 
 class DarkulaSpi(ABC):
