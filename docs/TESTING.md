@@ -854,36 +854,92 @@ documented; lack of credentials does not block deterministic coverage.
 - SDK/exporter imports stay confined to `darkula/telemetry/`;
 - telemetry settings expose no secret-like fields.
 
-### Real OTLP export integration (`tests/integration/observability/test_otel_export.py`, OI16)
+### Real OTLP export integration (`tests/integration/observability/test_otel_export.py`, OI16/TP16A)
 
 Runs against the real Darkula-owned Collector/Jaeger/Prometheus provisioned by
 `./build.sh --intg`: emits a real span and counter, flushes, then queries
 Jaeger (trace present) and Prometheus (metric present) with bounded polling
 and asserts known sensitive sentinels are absent from the exported data.
 
-### v0.1 full-stack slice (`tests/integration/crawler/test_v01_end_to_end.py`, E2E16)
+The same file also proves **real Redpanda W3C trace propagation** (TP16A): a
+probe message is published under a known upstream span through the real
+`RedpandaDataStream` (which injects `traceparent` into broker transport
+headers), consumed through the real adapter (which extracts the context), and
+the resulting `test.redpanda_trace.root -> datastream.publish ->
+datastream.poll` chain is verified through the Jaeger HTTP API: same trace ID
+and explicit parent/ancestor span IDs, not merely span existence. A
+no-active-context negative control message is published to a distinct stream
+and asserted absent from the root trace, and sensitive sentinels are asserted
+absent from the trace payload. Jaeger queries use bounded polling.
 
-- E2E16-1: real PostgreSQL scheduler + transactional outbox -> real Redpanda ->
-  real `CollectionWorker` -> `CrawlerController`/`PodmanSandbox`/Chromium ->
-  Fake World HTTP -> normalization -> local ObjectStore -> PostgreSQL;
-  asserts completion, persisted content, and no truth/password leaks.
-- E2E16-2: downstream deterministic extraction over persisted content plus
-  model-backed semantic extraction through `FakeLlmClient`, with exact
-  grounding and replay convergence (`created_result is False`, no second model
-  call).
-- E2E16-3: a second logical source (AccessBay virtual host) stays
-  content-local: every persisted URI belongs to that source and no hidden
-  truth leaks.
+### v0.1 canonical full-stack slice (`tests/integration/crawler/test_v01_end_to_end.py`, E2E16A)
+
+One documented canonical path begins with the real asynchronous collection
+path and continues through every delivered downstream stage to a persisted
+`SourceAssessment`:
+
+```text
+CollectionScheduler -> transactional message_outbox -> OutboxPublisher
+-> real Redpanda -> CollectionWorker -> SourceCollectionService
+-> CrawlerController -> PodmanSandbox -> CrawlerRuntime -> Chromium
+-> Fake World HTTP -> ContentIngestService -> local ObjectStore -> PostgreSQL
+-> DeterministicExtractionService
+-> SemanticExtractionService (only FakeLlmClient)
+-> GeographicResolutionService (only FakeGeographicResolver)
+-> RelationshipExtractionService (only FakeLlmClient)
+-> SourceAnalysisContextBuilder -> SourceAnalyst (only FakeLlmClient)
+-> SourceAnalysisService -> persisted SourceAssessment
+```
+
+Only the external world (Fake World) and the non-deterministic model/resolver
+providers are faked; no stage is replaced by a fake service and no downstream
+row is test-seeded. The slice collects the public AccessBay catalogue (a
+cross-source virtual host on the same Fake World container) and asserts:
+
+- deterministic extraction persists exact-grounded occurrences and replays
+  to the same result without duplication;
+- semantic extraction (via the fake LLM) produces the grounded `ORGANIZATION`
+  and `LOCATION` occurrences used downstream, with replay making no second
+  model call;
+- `GeographicResolutionService` resolves the real semantic `LOCATION`
+  occurrence and replays without a second resolver call;
+- `RelationshipExtractionService` persists an exact-grounded assertion whose
+  endpoints are persisted occurrences of the same content, with replay
+  making no second model call;
+- the bounded `SourceAnalysisContextBuilder` exposes all five evidence kinds
+  (`CONTENT_OBSERVATION`, `ENTITY_OCCURRENCE`, `GEOGRAPHIC_RESOLUTION`,
+  `RELATIONSHIP_ASSERTION`, `COLLECTION_RUN`);
+- `SourceAnalysisService` durably persists a grounded `SourceAssessment`, and
+  replay returns the same assessment with `created is False` and no second
+  analyst LLM call;
+- hidden truth/password sentinels are absent from collected content, prompts,
+  and persistence; all evidence belongs to the requested source/window; and
+  analysis never mutates `Source`/endpoint lifecycle.
+
+A second test (NightLeak/BlackGate virtual host) proves cross-source
+content-locality (no hidden truth, no global identity merge).
+
+### Combined failure -> recovery -> convergence (FR16A)
+
+`test_v01_end_to_end.py` also drives one real system-boundary failure and
+recovery: the **first `DataStream.publish` fails before broker acceptance**
+(a transport-boundary test seam that wraps the real `RedpandaDataStream`; no
+production fault switch and no production code change). The transactional
+outbox row stays retryable; the existing `OutboxPublisher` retry path
+republishes after the claim lease expires; the real `CollectionWorker` then
+converges to exactly one `SUCCEEDED` run and one content set, and a duplicate
+delivery is a no-op. This proves at-least-once semantics converge on exactly
+one authoritative final effect under existing production retry rules.
 
 ### Replay/failure/security
 
-Replay/idempotency and failure/recovery are exercised across the existing PR
-5/8/9/11–14 integration slices (outbox publish retry, Redpanda redelivery and
-`processed_message` no-op, content-addressed dedup with provenance, semantic
-key replay without a second model call) and the sandbox security suites
-(`tests/integration/crawler/test_network_isolation.py`,
+Replay/idempotency and failure/recovery are also exercised across the
+existing PR 5/8/9/11–14 integration slices (outbox publish retry, Redpanda
+redelivery and `processed_message` no-op, content-addressed dedup with
+provenance, semantic key replay without a second model call) and the sandbox
+security suites (`tests/integration/crawler/test_network_isolation.py`,
 `tests/unit/app/test_*_security_guards.py`). The pinned migration-hash guard
-now covers `0001`–`0008`.
+covers `0001`–`0008`.
 
 ### Integration lifecycle
 

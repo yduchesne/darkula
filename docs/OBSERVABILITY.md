@@ -347,3 +347,26 @@ Loki/log aggregation was deliberately not added (no second logging
 architecture for a single line in the plan); traces + metrics are the v0.1
 mandatory proof. Alerting/SLOs, telemetry auth/TLS, durable backends, and
 sampling policy remain production gaps (see `docs/PRODUCTION_READINESS.md`).
+
+### Verified W3C context propagation through real Redpanda (PR 16 Amendment #1)
+
+`tests/integration/observability/test_otel_export.py` proves the existing
+Darkula/Redpanda propagation implementation end to end, without changing it:
+
+```text
+upstream active span
+  -> RedpandaDataStream.publish   (injects W3C traceparent/tracestate headers)
+  -> real Redpanda broker
+  -> RedpandaDataStream.poll      (extracts the transport header context)
+  -> datastream.poll span
+  -> OTLP/HTTP -> Collector -> Jaeger
+```
+
+The test queries Jaeger (bounded polling) and asserts the trace **lineage**,
+not merely span existence: the upstream root, `datastream.publish`, and
+`datastream.poll` spans share one trace ID, `datastream.publish` is a child of
+the root, and `datastream.poll` is a child of `datastream.publish`. A negative
+control message published with no active context is asserted absent from the
+root trace, and sensitive sentinels are asserted absent from the exported
+trace payload. Trace headers travel only in broker transport metadata, never
+in the message payload, and no second tracing envelope is introduced.
