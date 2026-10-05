@@ -55,6 +55,11 @@ from darkula.app.recon import ReconCoordinator
 from darkula.app.recon_agent import ReconAgent
 from darkula.app.relationship_extraction import RelationshipExtractionService
 from darkula.app.semantic_extraction import SemanticExtractionService
+from darkula.app.source_analysis import (
+    SourceAnalysisContextBuilder,
+    SourceAnalysisService,
+)
+from darkula.app.source_analyst import SourceAnalyst
 from darkula.config.settings import (
     AgentObservabilityBackend,
     DatabaseDriver,
@@ -107,6 +112,7 @@ class Runtime:
     semantic_extraction_service: SemanticExtractionService | None
     relationship_extraction_service: RelationshipExtractionService | None
     geography_service: GeographicResolutionService | None
+    source_analysis_service: SourceAnalysisService | None
     collection_service: SourceCollectionService
     collection_scheduler: CollectionScheduler
     collection_worker: CollectionWorker
@@ -404,6 +410,31 @@ def _compose_recon(
     return agent, coordinator
 
 
+def _compose_source_analysis(
+    persistence: DarkulaSpi,
+    llm: LlmClient,
+    settings: Settings,
+) -> SourceAnalysisService | None:
+    """Compose PR 14 source analysis with the existing LlmClient.
+
+    The service receives the application ``DarkulaSpi``, the composed
+    ``SourceAnalysisContextBuilder``, and the single composed ``SourceAnalyst``
+    (which wraps the runtime's existing ``LlmClient``). It never receives the
+    Crawler, DataStream, ObjectStore, or agent observability. Disabled -> None.
+    """
+    if not settings.source_analysis.enabled:
+        return None
+    return SourceAnalysisService(
+        spi=persistence,
+        context_builder=SourceAnalysisContextBuilder(
+            spi=persistence,
+            settings=settings.source_analysis,
+        ),
+        analyst=SourceAnalyst(llm=llm),
+        settings=settings.source_analysis,
+    )
+
+
 def compose(*, settings: Settings) -> Runtime:
     """Compose every runtime implementation from resolved settings."""
     object_store = _compose_object_store(settings)
@@ -429,6 +460,7 @@ def compose(*, settings: Settings) -> Runtime:
         persistence, object_store, llm, settings
     )
     geography_service = _compose_geography(persistence, object_store, settings)
+    source_analysis_service = _compose_source_analysis(persistence, llm, settings)
     recon_agent, recon_coordinator = _compose_recon(
         persistence=persistence,
         llm=llm,
@@ -445,6 +477,7 @@ def compose(*, settings: Settings) -> Runtime:
         semantic_extraction_service=semantic_extraction_service,
         relationship_extraction_service=relationship_extraction_service,
         geography_service=geography_service,
+        source_analysis_service=source_analysis_service,
         collection_service=collection_service,
         collection_scheduler=collection_scheduler,
         collection_worker=collection_worker,

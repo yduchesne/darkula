@@ -49,6 +49,9 @@ EXPECTED_FUNCTIONS = {
     "source_endpoint_list_v1",
     "source_assessment_append_v1",
     "source_assessment_list_v1",
+    "source_assessment_append_v2",
+    "source_assessment_get_by_profile_v1",
+    "source_assessment_list_v2",
     "outbox_append_v1",
     "outbox_claim_v1",
     "outbox_mark_published_v1",
@@ -58,6 +61,7 @@ EXPECTED_FUNCTIONS = {
     "content_artifact_find_v1",
     "normalized_content_create_v1",
     "normalized_content_get_v1",
+    "normalized_content_list_for_requests_v1",
     "collection_policy_create_v1",
     "collection_policy_get_v1",
     "collection_policy_update_v1",
@@ -71,6 +75,7 @@ EXPECTED_FUNCTIONS = {
     "collection_run_complete_v1",
     "collection_run_cancel_v1",
     "collection_schedule_due_v1",
+    "collection_run_list_for_source_window_v1",
     "extraction_result_create_v1",
     "extraction_result_get_v1",
     "extraction_result_get_by_profile_v1",
@@ -132,8 +137,8 @@ class TestMigrations:
                 ledger = [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
-        # The ledger head is the newest shipped artifact (PR 13 added 0007).
-        assert ledger[-1].startswith("0007_relationships.sql")
+        # The ledger head is the newest shipped artifact (PR 14 added 0008).
+        assert ledger[-1].startswith("0008_source_analysis.sql")
 
     def test_expected_tables_exist(self, database_settings: DatabaseSettings) -> None:
         conn = _raw_connect(database_settings)

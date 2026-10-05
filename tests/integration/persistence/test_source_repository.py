@@ -56,12 +56,13 @@ def _endpoint(*, n: int = 0, source_id: SourceId | None = None) -> SourceEndpoin
 
 
 def _assessment(*, n: int = 0, source_id: SourceId | None = None) -> SourceAssessment:
+    window_end = _MOMENT + timedelta(days=n)
     return SourceAssessment(
         assessment_id=SourceAssessmentId.generate(),
         source_id=source_id or SourceId.generate(),
         assessed_at=_MOMENT,
-        window_start=_MOMENT - timedelta(days=30),
-        window_end=_MOMENT,
+        window_start=window_end - timedelta(days=30),
+        window_end=window_end,
         confidence=Confidence(0.8),
         relevance=Confidence(0.6),
         activity=None,

@@ -17,6 +17,7 @@ propagates unchanged.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -49,6 +50,9 @@ _CREATE_OBSERVATION_FN = (
     "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 _GET_OBSERVATION_FN = "SELECT * FROM normalized_content_get_v1(%s)"
+_LIST_OBSERVATIONS_FOR_REQUESTS_FN = (
+    "SELECT * FROM normalized_content_list_for_requests_v1(%s, %s, %s, %s)"
+)
 
 
 def _jsonb(value: Any) -> Any:
@@ -208,6 +212,30 @@ class PostgresContentRepository(ContentRepository):
         except Exception as exc:
             raise map_driver_error(exc) from exc
         return None if row is None else map_normalized_content(row)
+
+    async def list_observations_for_requests(
+        self,
+        request_ids: tuple[str, ...],
+        *,
+        window_start: datetime,
+        window_end: datetime,
+        limit: int,
+    ) -> tuple[NormalizedContent, ...]:
+        if not request_ids:
+            return ()
+        conn = self._uow.connection()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    _LIST_OBSERVATIONS_FOR_REQUESTS_FN,
+                    (list(request_ids), window_start, window_end, limit),
+                )
+                rows = await cur.fetchall()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise map_driver_error(exc) from exc
+        return tuple(map_normalized_content(row) for row in rows)
 
 
 def _text_preview(text: str | None) -> str | None:

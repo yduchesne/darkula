@@ -753,6 +753,70 @@ class ReconSettings(BaseModel):
         return self
 
 
+class SourceAnalysisSettings(BaseModel):
+    """Historical source-analysis group (PR 14).
+
+    Bounds only. The analysis profile/prompt/response schema, evidence
+    vocabulary, evidence-ref format, and score semantics are frozen,
+    developer-controlled code and are deliberately **not** runtime
+    configuration. The model itself is the existing composed ``LlmClient``.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = True
+    #: Maximum historical window (days) one analysis request may span.
+    max_window_days: int = 30
+    #: Hard cap on evidence items presented to the model / persisted catalog.
+    max_evidence_items: int = 500
+    #: Hard aggregate bound (code points) on the analysis context text.
+    max_context_chars: int = 30000
+    #: Hard per-evidence bound (code points) on one trusted summary.
+    max_evidence_summary_chars: int = 1000
+    #: Hard cap on model-returned evidence references.
+    max_evidence_refs: int = 100
+
+    @field_validator(
+        "max_window_days",
+        "max_evidence_items",
+        "max_context_chars",
+        "max_evidence_summary_chars",
+        "max_evidence_refs",
+    )
+    @classmethod
+    def _validate_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("source_analysis bounds must be positive")
+        return value
+
+    @field_validator("max_window_days")
+    @classmethod
+    def _validate_window(cls, value: int) -> int:
+        if value > 3650:
+            raise ValueError("max_window_days must be <= 3650")
+        return value
+
+    @field_validator("max_evidence_items")
+    @classmethod
+    def _validate_evidence_items(cls, value: int) -> int:
+        if value > 10000:
+            raise ValueError("max_evidence_items must be <= 10000")
+        return value
+
+    @field_validator("max_evidence_refs")
+    @classmethod
+    def _validate_evidence_refs(cls, value: int) -> int:
+        if value > 1000:
+            raise ValueError("max_evidence_refs must be <= 1000")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_summary_vs_context(self) -> Self:
+        if self.max_evidence_summary_chars > self.max_context_chars:
+            raise ValueError("max_evidence_summary_chars must be <= max_context_chars")
+        return self
+
+
 class Settings(BaseSettings):
     """Root typed settings with the frozen pydantic-settings contract.
 
@@ -787,6 +851,7 @@ class Settings(BaseSettings):
     geography: GeographySettings = GeographySettings()
     collection: CollectionSettings = CollectionSettings()
     recon: ReconSettings = ReconSettings()
+    source_analysis: SourceAnalysisSettings = SourceAnalysisSettings()
 
 
 __all__ = [
@@ -812,5 +877,6 @@ __all__ = [
     "SandboxDriver",
     "SemanticExtractionSettings",
     "Settings",
+    "SourceAnalysisSettings",
     "TelemetrySettings",
 ]

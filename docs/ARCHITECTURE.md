@@ -576,9 +576,9 @@ versioned stored functions. Storage access stays stored-function-only.
 ## Explicit non-goals
 
 No relationships (PR 13), no global entity registry/canonicalization, no
-SourceAnalyst/SourceAssessment (PR 14), no live geocoder, no background
-extraction workers, no chunking, and no Fake World/`"Washington"` special
-cases in production code.
+SourceAssessment (PR 14 is delivered; see below), no live geocoder, no
+background extraction workers, no chunking, and no Fake World/`"Washington"`
+special cases in production code.
 
 # PR 13 update — content-derived relationship assertions
 
@@ -598,7 +598,7 @@ NormalizedContent
   ├─ semantic-entities/v1           (PR 12, LlmClient structured output)
   └─ relationship-assertions/v1     (PR 13, over persisted occurrences)
          -> relationship-extraction-result + extracted-relationship[]
-         -> (PR 14 SourceAnalyst consumes these; still not implemented)
+         -> (PR 14 SourceAnalyst consumes these)
 ```
 
 ## Boundaries (PR 13)
@@ -667,6 +667,75 @@ history is never rewritten. A concurrent loser reloads the durable winner.
 ## Explicit non-goals
 
 No global/canonical entity registry, no cross-document merge/corroboration, no
-graph database/framework, no SourceAnalyst/SourceAssessment, no ATT&CK/STIX/
-MISP/OpenCTI semantics, no background worker/DataStream messages, no reverse/
-transitive inference, and no automatic global relationship truth.
+graph database/framework, no ATT&CK/STIX/MISP/OpenCTI semantics, no background
+worker/DataStream messages, no reverse/transitive inference, and no automatic
+global relationship truth.
+
+# PR 14 update — policy-bounded source analysis
+
+PR 14 adds the source-intelligence capability deliberately absent through
+PR 13: one explicit, bounded historical window for one managed `Source`
+becomes one immutable, historical `SourceAssessment`. It is **reasoning over
+persisted Darkula observations**, never extraction and never a mutation of
+`Source`.
+
+```text
+explicit SourceAnalysisRequest   (source_id, window_start, window_end)
+  -> short read UoW: source + existing semantic assessment -> close
+  -> SourceAnalysisContextBuilder (short DB reads only)
+  -> SourceAnalyst over the existing LlmClient (no UoW open)
+  -> trusted durable evidence grounding (no UoW open)
+  -> short write UoW: append immutable SourceAssessment -> commit
+  -> expected semantic race -> fresh UoW reload the winner
+```
+
+## Ownership: who decides what
+
+- `SourceAnalysisService` decides *what* historical source window may be
+  analyzed and owns durable assessment identity (`SourceAssessmentId`,
+  `assessed_at`, window, profile). It is the only component that reaches
+  persistence.
+- `SourceAnalyst` reasons **only** over a bounded trusted
+  `SourceAnalysisContext`. It receives no crawler, sandbox, ObjectStore,
+  PostgreSQL/UoW, DataStream, provider SDK, or Fake World truth capability.
+  One bounded `LlmClient.generate_structured` call, no tools.
+- Analysis is explicitly caller/policy triggered. There is no automatic
+  per-document analysis, no scheduler, no worker, and no DataStream message.
+
+## Context, evidence, and grounding
+
+`SourceAnalysisContextBuilder` selects evidence only from persisted
+observations proven to belong to the requested `Source`/window. Ownership is
+proven from persisted provenance: a normalized observation is eligible only
+when its `crawl_request_id` is the deterministic request identity derived
+from a persisted `CollectionRun` of that `Source`. **URI string matching is
+never used to infer ownership.**
+
+Evidence is ordered deterministically
+(`observed_at -> content_id -> evidence kind -> durable occurrence identity`)
+and assigned invocation-local refs `A1..An` only after ordering. The model may
+return only supplied refs; unknown refs fail the whole operation, and trusted
+code converts refs into durable references (`content:`, `entity:`,
+`geography:`, `relationship:`, `collection-run:`). The model never constructs
+durable identity. Context is bounded (evidence items, aggregate characters,
+summary length, refs) and exposed `context_truncated=True` when bounded.
+
+## Identity, idempotency, and immutability
+
+The semantic key is
+`(source_id, window_start, window_end, profile_name, profile_version)` and is
+UNIQUE in PostgreSQL (`migrations/0008_source_analysis.sql`). The fixed
+`source-analysis/v1` profile is developer-controlled, never runtime
+configuration. Different windows or profile versions coexist; pre-PR14 rows
+are preserved with the explicit `legacy/v0` profile. Concurrent analysis may
+repeat model work but only one durable assessment wins; the loser reloads the
+winner in a fresh unit of work. No transaction spans LLM or other external
+I/O.
+
+## Explicit non-goals
+
+No automatic per-document analysis, scheduler, worker, or DataStream analysis
+messages; no source lifecycle mutation; no cross-source ranking; no global
+entity/relationship resolution or graph framework; no ATT&CK/STIX/MISP/
+OpenCTI semantics; no report/UI work; no live-model evaluation framework
+(PR 15).

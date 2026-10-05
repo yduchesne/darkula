@@ -180,6 +180,8 @@ def _source_assessment() -> SourceAssessment:
         novelty=Confidence(0.5),
         evidence_references=("analysis-2",),
         characteristics={"focus": "marketplace-focus"},
+        profile_name="source-analysis",
+        profile_version="v1",
     )
 
 
@@ -371,6 +373,8 @@ class TestSourceRepositoryInvocation:
                     0.5,
                     ["a"],
                     None,
+                    "source-analysis",
+                    "v1",
                 )
             ]
         )
@@ -379,6 +383,43 @@ class TestSourceRepositoryInvocation:
         assert len(assessments) == 1
         assert assessments[0].novelty is not None
         assert assessments[0].activity is None
+        assert assessments[0].profile_name == "source-analysis"
+        assert assessments[0].profile_version == "v1"
+
+    @pytest.mark.asyncio
+    async def test_get_source_assessment_by_profile_maps(self) -> None:
+        cursor = _RecordingCursor(
+            rows=[
+                _row(
+                    str(_ASSESSMENT_ID),
+                    str(_SOURCE_ID),
+                    _MOMENT,
+                    _MOMENT,
+                    _MOMENT,
+                    0.8,
+                    0.6,
+                    None,
+                    0.5,
+                    ["a"],
+                    None,
+                    "source-analysis",
+                    "v1",
+                )
+            ]
+        )
+        repo = PostgresSourceRepository(_Scope(cursor))
+        assessment = await repo.get_source_assessment_by_profile(
+            _SOURCE_ID, _MOMENT, _MOMENT, "source-analysis", "v1"
+        )
+        assert assessment is not None
+        assert "source_assessment_get_by_profile_v1" in cursor.executed_sql[0]
+
+    @pytest.mark.asyncio
+    async def test_semantic_duplicate_maps_conflict(self) -> None:
+        cursor = _RecordingCursor(rows=[_row("semantic_duplicate")])
+        repo = PostgresSourceRepository(_Scope(cursor))
+        with pytest.raises(ConflictError):
+            await repo.append_source_assessment(_source_assessment())
 
 
 class TestClosedScope:

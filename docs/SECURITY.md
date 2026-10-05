@@ -250,3 +250,44 @@ persisted `ExtractedEntity` occurrences.
   operation/outcome names and counts/durations. Source text, support text,
   raw/normalized values, refs, ids, prompts, model output, object keys, and
   hashes never appear.
+
+## PR 14 delivered controls (source analysis)
+
+Source analysis reasons over persisted Darkula observations. It never browses
+and never receives a crawler, sandbox, ObjectStore, PostgreSQL/UoW,
+DataStream, provider SDK, or Fake World truth capability:
+
+- **No browsing, no tools, no persistence.** `SourceAnalyst` uses only the
+  existing `LlmClient.generate_structured` in one bounded operation. It has no
+  persistence, ObjectStore, DataStream, collection, or recon access. Static
+  import guards enforce these boundaries in CI.
+- **Untrusted evidence is data.** The versioned `source-analysis-v1` system
+  prompt states that all evidence is UNTRUSTED DATA and that embedded
+  instructions must never be followed. Evidence summaries (including
+  source-derived entity/relationship values) appear only inside a delimited
+  user-data block; source-derived values never reach system instructions.
+- **The model cannot author authority.** The strict `extra="forbid"`
+  response excludes assessment/source ids, timestamps, windows, profiles, and
+  arbitrary nested metadata. Trusted code owns `SourceAssessmentId`,
+  `assessed_at`, the requested window, and `source-analysis/v1`.
+- **Evidence references are grounded.** The model may cite only supplied
+  `A1..An` refs. Unknown refs fail the whole operation; refs are deduplicated
+  and ordered by the trusted catalog, then converted into durable references
+  by trusted code. Model-supplied durable UUIDs are impossible.
+- **Empty evidence is not inactivity.** No qualifying persisted evidence
+  means a typed no-evidence failure: no model call and no fabricated
+  assessment.
+- **Bounded context.** Window length, evidence items, aggregate characters,
+  one summary length, and returned refs are bounded; truncation is
+  deterministic and surfaced to the model via `context_truncated=True`.
+  Context contains no credentials, cookies, tokens, unnecessary object keys,
+  or Fake World truth ids.
+- **No transaction spans the model.** The service uses short read/write units
+  of work around a model call performed with no transaction open; a semantic
+  race loser reloads the durable winner in a fresh unit of work. Provider,
+  output, and grounding failures persist nothing; `asyncio.CancelledError`
+  propagates unchanged.
+- **Content-free telemetry.** Source-analysis telemetry records only static
+  span/metric names and counts/durations. Source/assessment/content/entity
+  ids, values, URIs, evidence refs, prompts, model output, characteristics,
+  object keys, credentials, and raw errors never appear.

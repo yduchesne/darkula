@@ -302,6 +302,23 @@ class SourceRepository(ABC):
     ) -> tuple[SourceAssessment, ...]:
         """Return the source's assessments in deterministic order."""
 
+    @abstractmethod
+    async def get_source_assessment_by_profile(
+        self,
+        source_id: SourceId,
+        window_start: datetime,
+        window_end: datetime,
+        profile_name: str,
+        profile_version: str,
+    ) -> SourceAssessment | None:
+        """Return the assessment for the semantic source/window/profile key.
+
+        The semantic idempotency key for a source assessment is
+        ``(source_id, window_start, window_end, profile_name,
+        profile_version)``; ``None`` is returned when no such assessment
+        exists. Different windows or profile versions coexist immutably.
+        """
+
 
 class ScheduleOutcome(StrEnum):
     """Outcome of one atomic due-occurrence admission (PR 9)."""
@@ -407,6 +424,21 @@ class CollectionRepository(ABC):
     @abstractmethod
     async def get_run(self, run_id: CollectionRunId) -> CollectionRun | None:
         """Return the run with its frozen policy snapshot."""
+
+    @abstractmethod
+    async def list_runs_for_source_window(
+        self,
+        source_id: SourceId,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> tuple[CollectionRun, ...]:
+        """Return a source's runs whose execution may overlap the window.
+
+        Selection is provenance, not content: runs are ordered by
+        ``(created_at, run_id)`` and only runs that could have observed
+        content inside ``[window_start, window_end]`` are returned. The
+        result never crosses source boundaries.
+        """
 
     @abstractmethod
     async def schedule_due(
@@ -530,6 +562,24 @@ class ContentRepository(ABC):
         self, content_id: NormalizedContentId
     ) -> NormalizedContent | None:
         """Return the normalized observation or ``None`` when absent."""
+
+    @abstractmethod
+    async def list_observations_for_requests(
+        self,
+        request_ids: tuple[str, ...],
+        *,
+        window_start: datetime,
+        window_end: datetime,
+        limit: int,
+    ) -> tuple[NormalizedContent, ...]:
+        """Return observations proven to belong to the given crawl requests.
+
+        ``request_ids`` are deterministic crawl-request identities derived
+        from persisted collection runs of one Source; the window is inclusive
+        on ``observed_at``. At most ``limit`` rows are returned in
+        deterministic ``(observed_at, content_id)`` order. An empty
+        ``request_ids`` yields no rows and performs no query.
+        """
 
 
 class ExtractionRepository(ABC):

@@ -741,3 +741,58 @@ asserts migration 0006 plus the retained PR 11 v1 stored functions.
 
 `tests/integration/persistence/test_migrations.py` asserts migration 0007 plus
 the retained PR 11/12 stored functions and the relationship constraints.
+
+## PR 14 testing status — policy-bounded source analysis
+
+- `tests/unit/domain/test_source_assessment_profile.py` — SA matrix: bounded
+  `profile_name`/`profile_version`, immutability, legacy default, confidence
+  bounds/NaN/Inf, secret-like characteristics rejection.
+- `tests/unit/app/test_source_analyst.py` — SP (strict extra-forbid response,
+  model-supplied identity/window rejection, bounded characteristics/refs) and
+  AN matrices (one structured `LlmClient` call, UNTRUSTED DATA prompt,
+  hostile evidence confined to user data, stable operation/prompt version,
+  bounded provider/output errors, cancellation propagation).
+- `tests/unit/app/test_source_analysis.py` — AP (request window validation and
+  max-window), AC (source/window ownership, per-source isolation,
+  deterministic ordering, exact-capacity/overflow truncation, bounded
+  summaries, no implicit extraction, no-evidence), EG (trusted durable ref
+  grounding, unknown-ref failure, dedup/order, occurrence refs), and SS
+  matrices (replay short-circuit, trusted identity/window/profile/time,
+  model/output/grounding failures persist nothing, cancellation, concurrent
+  loser reload, history unchanged, window/profile coexistence).
+- `tests/unit/app/test_source_analysis_security_guards.py` — static guards:
+  no provider/browser/sandbox/DataStream/recon/Fake-World-truth imports; the
+  analyst has no persistence/collection capability; no SQL in application
+  modules; stored-function-only PostgreSQL repositories; migrations 0001-0007
+  byte-identical SHA-256; no global graph/truth classes; no `SourceStatus`
+  mutation; static content-free telemetry names.
+- `tests/unit/config/test_source_analysis_settings.py` — bounded
+  `SourceAnalysisSettings` plus non-empty environment override.
+- `tests/unit/test_composition.py` — the source-analysis service is composed
+  only when enabled and reuses the single composed `LlmClient`.
+- `tests/integration/source_analysis/test_source_analysis_slice.py` — real
+  PostgreSQL slice: real `Source`/`CollectionRun`/`NormalizedContent`/
+  `ExtractedEntity`/`GeographicResolution`/`ExtractedRelationship` -> real
+  `SourceAnalysisContextBuilder` -> real `SourceAnalyst` -> `FakeLlmClient` ->
+  trusted grounding -> real persisted `SourceAssessment`. Asserts source/window
+  filtering, no cross-source leakage, all evidence kinds, durable refs,
+  unknown-ref/provider-failure/cancellation persist nothing, no-evidence fails
+  closed, replay without a second model call, and concurrent same-key
+  convergence on one durable row.
+- `tests/integration/crawler/test_source_analysis_vertical_slice.py` — the
+  canonical real-browser slice: BlackGate Fake World -> real HTTP ->
+  Playwright/Chromium -> disposable `PodmanSandbox`/`CrawlerRuntime` -> real
+  `CrawlerController` -> deterministic normalization -> real ObjectStore ->
+  real PostgreSQL `NormalizedContent` -> managed Source-linked collection
+  history -> real semantic/geography/relationship extraction -> real
+  `SourceAnalysisContextBuilder` -> real `SourceAnalyst` -> `FakeLlmClient` ->
+  trusted grounding -> real persisted `SourceAssessment`. Asserts the crawler
+  path, `truth_leaks(...) == []`, persisted facts feed analysis, bounded
+  evidence catalog, hostile source text absent from the system prompt, correct
+  source/window/profile, durable refs, unchanged `Source`/endpoints, replayed
+  analysis without a second model call, and no fabricated assessment for an
+  evidence-free window.
+
+The unit suite runs the real `SourceAnalyst` with `FakeLlmClient`; the model is
+the only faked nondeterministic boundary. Live-model SourceAnalyst evaluation
+remains PR 15.

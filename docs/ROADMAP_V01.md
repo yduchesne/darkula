@@ -218,11 +218,34 @@ global/canonical entity resolution, cross-document merge, graph framework,
 SourceAnalyst/SourceAssessment (PR 14), ATT&CK/STIX/MISP/OpenCTI semantics,
 background workers, or changes to migrations 0001-0006.
 
-## PR 14 — Source analysis
-Implement SourceAnalyst and immutable/time-windowed SourceAssessment history, triggered by explicit analysis policy rather than necessarily per document.
+## PR 14 — Source analysis (delivered)
+Delivered an explicit, caller/policy-triggered `SourceAnalysisRequest`
+(`source_id`, inclusive `window_start`/`window_end`) rather than automatic
+per-document analysis; a deterministic, bounded
+`SourceAnalysisContextBuilder` whose source-to-content ownership is proven
+from persisted `CollectionRun` request provenance (never URI matching); a
+trusted evidence catalog (`A1..An`) over `CONTENT_OBSERVATION`,
+`ENTITY_OCCURRENCE`, `GEOGRAPHIC_RESOLUTION`, `RELATIONSHIP_ASSERTION`, and
+`COLLECTION_RUN` facts; a strict extra-forbid `SourceAnalyst` structured
+response using the existing `LlmClient` with no browsing/persistence/tools;
+trusted durable evidence grounding (`content:`/`entity:`/`geography:`/
+`relationship:`/`collection-run:`) where unknown refs fail closed; immutable,
+versioned `SourceAssessment` history with bounded `profile_name`/
+`profile_version`; additive stored-function-only persistence
+(`0008_source_analysis.sql`) with semantic uniqueness on
+`(source_id, window_start, window_end, profile_name, profile_version)` and
+preserved pre-PR14 `legacy/v0` rows; race-safe winner convergence without a
+transaction spanning the model; bounded `SourceAnalysisSettings`; content-free
+OTEL; the SA/AP/AC/SP/EG/AN/SS test matrices and static guards; real
+PostgreSQL failure/concurrency slices; and a canonical real-browser slice
+(BlackGate -> crawler/normalize -> Source-linked history -> extraction ->
+SourceAnalyst -> persisted SourceAssessment). No scheduler/worker/DataStream
+analysis messages, source lifecycle mutation, cross-source ranking, global
+entity/relationship resolution, graph framework, ATT&CK/STIX/MISP/OpenCTI
+semantics, report/UI, or changes to migrations 0001-0007.
 
 ## PR 15 — Expanded Fake World and evaluations
-Add marketplace/leak/mirror archetypes, cross-source scenarios, Recon/extraction/SourceAnalyst evals, provider-neutral agent-observability integration, and experiment/result correlation.
+Add marketplace/leak/mirror archetypes, cross-source scenarios, Recon/extraction/SourceAnalyst live-model evals, provider-neutral agent-observability integration, and experiment/result correlation.
 
 ## PR 16 — v0.1 end-to-end hardening
 Exercise PostgreSQL + Redpanda + ObjectStore + sandbox + extraction + agents + OTEL stack end to end; test replay/idempotency/failures/security controls; document production-readiness gaps.
