@@ -125,7 +125,40 @@ path), ReconAgent/DeepAgent (PR 10), extraction/SourceAnalyst (PR 11-14),
 generic workflow engines, and live illicit/Tor collection.
 
 ## PR 10 — Recon workflow
-Implement Coordinator reconnaissance flow and ReconAgent using LlmClient structured outputs, evidence references, FakeLlmClient scenarios, and agent observability.
+
+### Status — delivered
+
+PR 10 was implemented from
+`~/Downloads/DARKULA_PR_10_DETAILED_PLAN.md` (branch `dev/coordinator-recon`, commit baseline
+`e5d03ad`). Delivered: the bounded **Coordinator-owned reconnaissance
+workflow** — `SourceCandidate -> ReconCoordinator -> ReconAgent -> trusted
+inspection authorization -> PR 7 Crawler -> bounded evidence ->
+ReconAssessment -> atomic lifecycle transition`; a discriminated
+`ReconAgentDecision` (INSPECT | COMPLETE) protocol over the existing
+`LlmClient`; `ReconAgent` with versioned untrusted-data prompts, bounded
+evidence context, accounted structured-output repair, and content-free
+`AgentObservability` scopes; `ReconCoordinator` with short start UoW,
+no-UoW-across-external-I/O loop, and one atomic final UoW (assessment +
+transition); same-origin `authorize_recon_inspection` mapping to existing
+`CrawlRequest`s with settings-only budgets and `credentials=None`;
+`ReconSettings` hard budgets; typed `ReconError` taxonomy with recoverable
+`RECONNAISSANCE_PENDING` retry semantics (never analytical REJECT for
+operational/protocol/budget failures) and cancellation propagation; the
+**production/provider `LlmClient` adapter** (`OpenAiLlmClient` over
+`openai==1.109.1`, one attempt = one call, `max_retries=0`, bounded timeout,
+sanitized `LlmError` mapping, Python 3.14 verified); bounded OTEL recon
+spans/counters/histograms; unit matrices RA/EV/IA/RC/RB/AG/LA/TS, the
+real-PostgreSQL RP matrix, and the canonical real slice (real Coordinator ->
+real ReconAgent -> FakeLlmClient -> real CrawlerController -> real
+PodmanSandbox -> Chrome/Chromium -> BlackGate HTTP -> real PostgreSQL) with
+qualify/cross-origin/needs-more/reject/concurrent-start scenarios; static
+import guards. Docs updated (ARCHITECTURE/DOMAIN_MODEL/SECURITY/TESTING/
+OBSERVABILITY/CONFIGURATION). No deterministic extraction (PR 11), no model
+Backed extraction (PR 12), no relationships (PR 13), no SourceAnalyst
+(PR 14), no LangSmith/Langfuse adapters or live-model eval framework
+(PR 15), no automatic promotion/CollectionPolicy creation, no changes to PR
+9 collection or the PR 7 sandbox, and no new migration (recon persistence
+already existed in `0001_initial.sql`).
 
 ## PR 11 — Deterministic content extraction
 Implement ExtractionResult and deterministic observable/entity extractors with provenance/versioning.

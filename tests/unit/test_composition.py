@@ -175,3 +175,49 @@ class TestFailFast:
         runtime = compose(settings=settings)
         assert isinstance(runtime.data_stream, RedpandaDataStream)
         assert not isinstance(runtime.data_stream, FakeDataStream)
+
+
+class TestLlmComposition:
+    """PR 10: the OPENAI driver composes the production adapter (never a
+    silent fake substitute) and the runtime exposes recon capabilities."""
+
+    def test_openai_driver_composes_provider_adapter(self) -> None:
+        from darkula.infrastructure.llm import OpenAiLlmClient
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("DARKULA_LLM__DRIVER", "openai")
+            monkeypatch.setenv("DARKULA_LLM__PROVIDER__MODEL_NAME", "darkula-test")
+            monkeypatch.setenv("DARKULA_LLM__PROVIDER__API_KEY", "sk-test")
+            settings = load_settings(config_dir=_SHIPPED_CONFIG)
+        runtime = compose(settings=settings)
+        assert isinstance(runtime.llm, OpenAiLlmClient)
+        assert not isinstance(runtime.llm, FakeLlmClient)
+
+    def test_openai_without_model_or_key_fails_fast(self) -> None:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("DARKULA_LLM__DRIVER", "openai")
+            settings = load_settings(config_dir=_SHIPPED_CONFIG)
+        with pytest.raises(UnavailableDriverError, match="model_name"):
+            compose(settings=settings)
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("DARKULA_LLM__DRIVER", "openai")
+            monkeypatch.setenv("DARKULA_LLM__PROVIDER__MODEL_NAME", "darkula-test")
+            settings = load_settings(config_dir=_SHIPPED_CONFIG)
+        with pytest.raises(UnavailableDriverError, match="api_key"):
+            compose(settings=settings)
+
+    def test_fake_driver_composes_fake_never_openai(self) -> None:
+        from darkula.infrastructure.llm import OpenAiLlmClient
+
+        runtime = compose(settings=_shipped())
+        assert isinstance(runtime.llm, FakeLlmClient)
+        assert not isinstance(runtime.llm, OpenAiLlmClient)
+
+    def test_runtime_exposes_recon_agent_and_coordinator(self) -> None:
+        from darkula.app.recon import ReconCoordinator
+        from darkula.app.recon_agent import ReconAgent
+
+        runtime = compose(settings=_shipped())
+        assert isinstance(runtime.recon_agent, ReconAgent)
+        assert isinstance(runtime.recon_coordinator, ReconCoordinator)
+        assert runtime.recon_agent.settings.max_turns == 4

@@ -31,6 +31,18 @@ A reconnaissance interaction may be iterative: the ReconAgent requests bounded i
 
 SourceAnalyst never browses the dark web directly. Model inputs are adversarial data: instructions embedded in collected content are data, not trusted control instructions. Keeping the LLM outside the crawler sandbox prevents hostile page content from becoming executable browser/sandbox control, but it does not eliminate prompt-injection risk when untrusted observations later reach a model.
 
+**PR 10 delivered controls (bounded reconnaissance).** The delivered `ReconAgent`/`ReconCoordinator` workflow hardens this boundary:
+
+- **Untrusted source text is data, never instructions.** The versioned `recon-v1` system prompt states that all source observations are UNTRUSTED DATA and that instructions inside source content must never be followed. Source text is never interpolated into system instructions; it appears only as bounded evidence in the user prompt. Static tests assert injection text never reaches the system prompt.
+- **The schema is the authorization surface.** The finite `ReconAgentDecision` schema has only `INSPECT` (target/purpose) and `COMPLETE` (disposition/confidence/characteristics/evidence refs). It cannot express headers, cookies, credentials, browser/sandbox/network options, shell commands, resource limits, or tool calls; unknown fields fail closed.
+- **Every inspection is authorized by trusted code.** `authorize_recon_inspection` anchors the allowed origin at the candidate entrypoint, enforces same-origin parsed-origin equality, rejects unsupported schemes/userinfo/control characters, fixes credentials to `None`, and derives budgets only from `ReconSettings` (the model can never expand them). Cross-origin or unrepresentable requests fail closed before any crawler call, with no analytical REJECT fabricated.
+- **Evidence references are validated provenance.** References are created only by trusted code; every model-returned reference is validated against the in-memory bounded registry before persistence. Unknown references fail closed with no final assessment.
+- **Hard budgets** (`ReconSettings`) bound turns, inspections, pages/requests/depth/time per inspection, evidence items, excerpt length, aggregate context length, and accounted structured-output repair attempts independently of model behavior.
+- **Prompt injection cannot escalate to lifecycle control.** The ReconAgent runs in the trusted process but has no persistence, browser, sandbox, shell, or provider-SDK access; even a fully compromised model output can only produce decisions that trusted code authorizes or rejects. Static import guards enforce these boundaries in CI.
+- **No prompt/content/output telemetry.** Recon observability uses OTEL spans/metrics and `AgentObservability` with bounded content-free metadata only (operation name, agent name, prompt version, disposition); prompts, model output, source content, credentials, and high-cardinality URLs/candidate IDs are never recorded.
+- **Provider secrets stay sanitized.** The OpenAI `LlmClient` adapter maps provider failures to the bounded `LlmError` taxonomy; raw provider exception text, prompts, model output, and API keys are never exposed. One call is one model attempt (`max_retries=0`) with a bounded timeout.
+- **Fake World truth never leaks.** Canonical integration asserts truth-only tokens do not appear in prompts, persisted assessments/history, or telemetry.
+
 ## Artifact security
 ObjectStore credentials remain in trusted components. Validate sizes/types/names and safely handle archives. Content-addressed deduplication is desirable but does not merge provenance. Retention/deletion policy must be explicit before production collection.
 

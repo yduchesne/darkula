@@ -490,3 +490,82 @@ Real infrastructure (`./build.sh --intg`):
   canonical vertical slice: real crawler -> real sandbox -> real browser ->
   Fake World HTTP -> real ingest -> ObjectStore + PostgreSQL -> SUCCEEDED +
   ack, plus post-success redelivery and the next-interval new run.
+
+## PR 10 testing status — bounded reconnaissance
+
+Deterministic unit matrices (runs in `--qa`, offline; only the LLM and
+persistence/crawler boundaries are faked — the ReconAgent, ReconCoordinator,
+and protocol are production code):
+
+- `tests/unit/app/test_recon.py` — the RA/EV/IA/RC/RB/TS matrices over the
+  real Coordinator + ReconAgent with `FakeLlmClient` (scripted FIFO), the
+  in-memory candidate persistence fake, and a scripted crawler stub:
+  - RA (agent protocol): valid INSPECT/COMPLETE, confidence/ref-count/JSON
+    bounds, unknown action/disposition/payload mismatch, extra unknown
+    fields (budgets/credentials/tools) fail closed, prompt-injection source
+    text stays data;
+  - EV (evidence): stable trusted references, deterministic ordering,
+    deterministic truncation at the registry, aggregate context caps,
+    known/unknown reference validation, truth tokens never in system
+    prompts, credential-like content absent from observability metadata;
+  - IA (inspection authorization): entrypoint anchor, same-origin relative/
+    absolute, cross-origin/scheme/port/userinfo/unsupported-scheme
+    rejection before any crawler call, settings-only budgets, deterministic
+    request identity, un-crawlable entrypoints;
+  - RC (Coordinator): startable statuses, already-under-recon/terminal
+    replay no-work, disposition->status/event mapping, final-conflict
+    assessment rollback, not-found, operational LLM/crawl failures never
+    analytical REJECT, cancellation with no fabricated state/event,
+    concurrent start one winner;
+  - RB (budgets): exact max turns/inspections legal, max+1 stopped,
+    evidence/context caps, crawl budgets <= settings;
+  - TS (telemetry): bounded labels (no candidate ID/URL/content/password),
+    workflow/attempt/inspection/invalid-request/failure-category metrics.
+- `tests/unit/app/test_recon_agent.py` — AG1-AG10: one call per decision,
+  INSPECT-then-COMPLETE, typed LLM errors, bounded repair only,
+  repair-exhausted, cancellation unchanged, observability scope per model
+  attempt, stable prompt-version metadata, injection source text confined to
+  the user prompt, unknown/over-cap references fail closed.
+- `tests/unit/app/test_recon_security_guards.py` — TS6/TS7/TS10/TS8 static
+  guards: recon modules never import playwright/podman/PostgreSQL adapters/
+  ObjectStore/DataStream/Fake World/provider SDKs; the OpenAI adapter is the
+  only `openai` importer in `src`; the crawler runtime never imports
+  LLM/agent boundaries.
+- `tests/unit/config/test_recon_settings.py` — ReconSettings bounds/env
+  precedence/fail-closed and LlmProviderSettings secret/no-retry contract.
+- `tests/unit/infrastructure/llm/test_openai_adapter.py` — LA1-LA10 over the
+  real adapter with the external SDK transport stubbed: exact Pydantic
+  model, TIMEOUT/PROVIDER_FAILURE/INVALID_STRUCTURED_OUTPUT/
+  CONFIGURATION_ERROR mapping, cancellation unchanged, secrets absent from
+  public errors, `max_retries=0`, missing config fail-fast, offline
+  construction.
+- `tests/unit/test_composition.py` — OPENAI driver composes the provider
+  adapter; missing model/api-key fails fast; the runtime exposes
+  `recon_agent`/`recon_coordinator`.
+
+Real infrastructure (`./build.sh --intg`):
+
+- `tests/integration/recon/persistence/test_recon_persistence.py` — RP1-RP12
+  over real PostgreSQL: atomic start observed from a second transaction
+  during external work, assessment+transition atomic commit for every
+  disposition, final-conflict rollback (no orphan assessment), append-only
+  multi-attempt history in deterministic order, concurrent start one winner,
+  no production Python SQL in recon modules, migrations 0001-0004
+  byte-identical.
+- `tests/integration/recon/slice/test_recon_vertical_slice.py` — the
+  canonical slice (section 15): real PostgreSQL candidate -> real
+  ReconCoordinator -> real ReconAgent -> FakeLlmClient -> real
+  CrawlerController -> real PodmanSandbox -> disposable CrawlerRuntime ->
+  real Playwright/Chromium -> BlackGate HTTP -> bounded observations -> real
+  PostgreSQL final transition. Slices: qualify with two scripted
+  inspections (exactly one STARTED + one QUALIFIED event, one assessment,
+  evidence refs validated, no truth/password leakage into prompts or
+  persisted rows, no Source/CollectionPolicy created); cross-origin
+  rejection (no crawler execution, no fabricated REJECT); needs-more then a
+  second execution appending an independent assessment; reject with terminal
+  replay performing no LLM/crawl; concurrent start with one winner and no
+  duplicate STARTED.
+
+The FakeLlmClient remains the deterministic automated-test boundary:
+real-workflow behavior (Coordinator/ReconAgent/persistence/crawler/sandbox)
+is never faked, and CI never requires a paid/live model API.

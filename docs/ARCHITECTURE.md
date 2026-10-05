@@ -92,6 +92,22 @@ The expected reconnaissance loop is therefore `ReconAgent -> bounded crawl reque
 
 This agentic reconnaissance path is distinct from recurring collection. Once a candidate has become a managed Source with a CollectionPolicy, `SourceCollectionService` should normally drive deterministic bounded collection rather than require an agent to choose each navigation step.
 
+## PR 10 delivered reconnaissance workflow
+
+PR 10 delivers the first production application-level reasoning workflow as a **finite, Coordinator-owned protocol**: `SourceCandidate -> ReconCoordinator -> ReconAgent -> trusted inspection authorization -> Crawler -> bounded observations -> ReconAssessment -> lifecycle transition`, all over the existing source persistence, PR 7 Crawler, LlmClient, and AgentObservability boundaries.
+
+Delivered structure:
+
+- `ReconCoordinator` (`darkula/app/recon.py`) owns every lifecycle mutation and every work authorization. It runs a short start unit of work (load + expected-state transition to `UNDER_RECONNAISSANCE` + `RECONNAISSANCE_STARTED`), a bounded agent/crawler loop with **no open database transaction**, and one final unit of work that appends the `ReconAssessment` and applies the terminal transition atomically. It never holds a PostgreSQL transaction across an LLM or crawler call.
+- `ReconAgent` (`darkula/app/recon_agent.py`) is trusted-side reasoning over the existing `LlmClient` only (one call = one model attempt; bounded accounted structured-output repair). It returns a discriminated `ReconAgentDecision` (`INSPECT | COMPLETE`) and never persists, mutates lifecycle, or touches a browser/sandbox/provider API. It receives only bounded evidence (trusted stable references, bounded locator/title/excerpt, crawl provenance).
+- **Trusted inspection authorization** converts every model inspection request into an existing PR 7 `CrawlRequest`: the candidate entrypoint anchors the allowed origin, targets must stay same-origin, credentials are always `None` (PR 10 delivers unauthenticated recon), and budgets come only from `ReconSettings` — the model can never expand them.
+- **Hard reasoning budgets** (`ReconSettings`) bound turns, inspections, pages/requests/depth/time per inspection, evidence items, excerpt length, aggregate context length, and structured-output repair attempts.
+- **Evidence** is an in-memory bounded registry for one execution; model-returned evidence references are validated against it before persistence. Unknown references fail closed with no final assessment.
+- **Analytical dispositions are never fabricated**: `QUALIFY -> QUALIFIED`, `NEEDS_MORE_RECON -> RECONNAISSANCE_PENDING`, `REJECT -> REJECTED`. Operational/protocol failures (LLM error, crawl failure, budget/protocol violations) return the candidate to `RECONNAISSANCE_PENDING` with a `NEEDS_MORE_RECON` event and **no** assessment, and raise a typed `ReconError`; they are never `REJECT`. Cancellation propagates unchanged with no event and no assessment.
+- Qualification is **distinct from promotion**: a `QUALIFIED` candidate is not automatically promoted to a `Source` and no `CollectionPolicy` is created.
+
+`ReconAgent` never receives raw browser/Playwright/Podman/sandbox control, arbitrary HTTP clients, or tool execution; the PR 7 crawler and sandbox security boundary is unchanged, and a static import-guard test enforces all boundary restrictions in CI.
+
 ## Crawler and sandbox execution model
 
 The crawler intentionally straddles the trust boundary:

@@ -30,6 +30,7 @@ dependencies = [
   # one adapter. Pure-Python over urllib3; confirmed on Python 3.14. Blocking
   # SDK calls are isolated with asyncio.to_thread at the adapter boundary.
   "boto3>=1.43,<1.44",
+  "openai>=1.109,<1.110",
 ]
 
 [dependency-groups]

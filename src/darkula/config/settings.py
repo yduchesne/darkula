@@ -71,12 +71,15 @@ class AgentObservabilityBackend(StrEnum):
 class LlmDriver(StrEnum):
     """Selected LlmClient implementation driver.
 
-    ``FAKE`` is the only PR 3 implementation: the deterministic, offline
-    :class:`FakeLlmClient`. Production/provider drivers are future work
-    (PR 10); any unavailable selection fails closed at validation/composition.
+    ``FAKE`` is the deterministic, offline :class:`FakeLlmClient` (PR 3).
+    ``OPENAI`` is the PR 10 provider-backed structured-output adapter
+    (``OpenAiLlmClient``); both deliver exactly one model attempt per
+    ``LlmClient`` call with no hidden retries. Production selection never
+    silently substitutes the fake.
     """
 
     FAKE = "fake"
+    OPENAI = "openai"
 
 
 class DatabaseDriver(StrEnum):
@@ -379,18 +382,77 @@ class CrawlerSettings(BaseModel):
         return self
 
 
+class LlmProviderSettings(BaseModel):
+    """Provider-backing settings for the LlmClient (PR 10).
+
+    Only the fields the delivered adapter needs exist here. ``api_key`` is a
+    secret: it is never logged, never echoed, and redacted by diagnostic
+    rendering. There is deliberately **no** retry-count setting: one
+    ``LlmClient`` call is one model attempt with no hidden retries (hard
+    adapter invariant).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    model_name: str | None = None
+    """Configured provider model identifier (required for ``openai``)."""
+
+    base_url: str | None = None
+    """Optional provider/base endpoint override (defaults to the SDK default)."""
+
+    api_key: str | None = None
+    """Provider API credential; never logged/echoed; redacted in diagnostics."""
+
+    @field_validator("model_name", "base_url")
+    @classmethod
+    def _validate_optional_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("llm.provider name must not be blank")
+        if any(ord(ch) < 32 for ch in stripped):
+            raise ValueError("llm.provider name must not contain control characters")
+        return stripped
+
+    @field_validator("api_key")
+    @classmethod
+    def _validate_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("llm.provider.api_key must not be blank when provided")
+        if any(ord(ch) < 32 for ch in value):
+            raise ValueError("llm.provider.api_key must not contain control characters")
+        return value
+
+
 class LlmSettings(BaseModel):
     """LLM invocation group.
 
-    ``driver`` selects the LlmClient implementation centrally; PR 3 ships
-    only :class:`~darkula.testing.fake_llm.FakeLlmClient`. Provider drivers
-    are PR 10 work.
+    ``driver`` selects the LlmClient implementation centrally; ``FAKE`` is
+    the deterministic :class:`~darkula.testing.fake_llm.FakeLlmClient` (PR 3)
+    and ``OPENAI`` is the PR 10 provider-backed structured-output adapter.
+    ``provider`` carries only the fields the delivered adapter needs;
+    non-empty environment variables remain the ultimate override.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     driver: LlmDriver = LlmDriver.FAKE
+    provider: LlmProviderSettings = LlmProviderSettings()
+    #: Bounded per-attempt timeout (seconds); ``None`` falls back to the
+    #: adapter's documented default. Never unbounded.
     timeout_seconds: float | None = None
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _validate_timeout(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if value <= 0 or value > 600:
+            raise ValueError("llm.timeout_seconds must be within (0, 600]")
+        return value
 
 
 class AgentObservabilitySettings(BaseModel):
@@ -464,6 +526,89 @@ class CollectionSettings(BaseModel):
         return value
 
 
+class ReconSettings(BaseModel):
+    """Reconnaissance workflow settings group (PR 10).
+
+    Values here are **trusted-side hard maxima** for the bounded
+    ``Coordinator <-> ReconAgent <-> Crawler`` loop. The model can never
+    increase them: a model-requested budget beyond these bounds fails
+    closed. They are independent of the PR 7 ``CrawlerSettings`` ceilings
+    (the crawler controller remains the final enforcement boundary) and of
+    every other settings group.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    #: Maximum agent decision turns per reconnaissance execution.
+    max_turns: int = 4
+    #: Maximum crawler inspections per reconnaissance execution.
+    max_inspections: int = 3
+    #: Crawler page budget applied to every authorized inspection.
+    max_pages_per_inspection: int = 6
+    #: Crawler request budget applied to every authorized inspection.
+    max_requests_per_inspection: int = 40
+    #: Crawler depth budget applied to every authorized inspection.
+    max_depth_per_inspection: int = 2
+    #: Crawler timeout (seconds) applied to every authorized inspection.
+    inspection_timeout_seconds: float = 90.0
+    #: Maximum evidence items kept in one execution's in-memory registry.
+    max_evidence_items: int = 12
+    #: Deterministic truncation length of one observed excerpt/title.
+    max_excerpt_chars: int = 800
+    #: Deterministic aggregate bound for the evidence context presented to
+    #: the model on every turn.
+    max_context_chars: int = 6000
+    #: Bounded extra model attempts permitted after one
+    #: ``INVALID_STRUCTURED_OUTPUT`` result (accounted, never hidden).
+    structured_output_repair_attempts: int = 1
+
+    @field_validator(
+        "max_turns",
+        "max_inspections",
+        "max_pages_per_inspection",
+        "max_requests_per_inspection",
+        "max_depth_per_inspection",
+        "max_evidence_items",
+        "max_excerpt_chars",
+        "max_context_chars",
+    )
+    @classmethod
+    def _validate_positive_int(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("recon budgets must be positive integers")
+        return value
+
+    @field_validator("inspection_timeout_seconds")
+    @classmethod
+    def _validate_timeout(cls, value: float) -> float:
+        if value <= 0 or value > 600:
+            raise ValueError("recon.inspection_timeout_seconds must be within (0, 600]")
+        return value
+
+    @field_validator("structured_output_repair_attempts")
+    @classmethod
+    def _validate_repair_attempts(cls, value: int) -> int:
+        if value < 0 or value > 3:
+            raise ValueError(
+                "recon.structured_output_repair_attempts must be within [0, 3]"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _validate_budget_order(self) -> Self:
+        if self.max_evidence_items > 32:
+            raise ValueError("recon.max_evidence_items must be <= 32")
+        if self.max_excerpt_chars > self.max_context_chars:
+            raise ValueError("recon.max_excerpt_chars must be <= max_context_chars")
+        if self.max_pages_per_inspection < 1 or self.max_pages_per_inspection > 200:
+            raise ValueError("recon.max_pages_per_inspection must be within [1, 200]")
+        if self.max_requests_per_inspection > 500:
+            raise ValueError("recon.max_requests_per_inspection must be <= 500")
+        if self.max_depth_per_inspection > 10:
+            raise ValueError("recon.max_depth_per_inspection must be <= 10")
+        return self
+
+
 class Settings(BaseSettings):
     """Root typed settings with the frozen pydantic-settings contract.
 
@@ -492,6 +637,7 @@ class Settings(BaseSettings):
     telemetry: TelemetrySettings = TelemetrySettings()
     extraction: ExtractionSettings = ExtractionSettings()
     collection: CollectionSettings = CollectionSettings()
+    recon: ReconSettings = ReconSettings()
 
 
 __all__ = [
@@ -506,9 +652,11 @@ __all__ = [
     "DatabaseSettings",
     "ExtractionSettings",
     "LlmDriver",
+    "LlmProviderSettings",
     "LlmSettings",
     "ObjectStoreDriver",
     "ObjectStoreSettings",
+    "ReconSettings",
     "SandboxDriver",
     "Settings",
     "TelemetrySettings",

@@ -19,6 +19,18 @@ actor while Darkula sees only evidence exposed by sources. Evals compare
 system outputs with truth and required evidence constraints without handing
 hidden truth to the model.
 
+## PR 10 status — no live-model recon evals yet
+
+PR 10 delivers the deterministic bound of recon behavior (FakeLlmClient
+scenarios over the real Coordinator/ReconAgent, available structured
+outputs, evidence-reference validation, real-crawler/Fake World slices) but
+**not** a live-model ReconAgent quality evaluation framework: exact
+metrics/thresholds/datasets and LangSmith/Langfuse adapters remain PR 15.
+Manual live-provider smoke runs are possible through the delivered
+`OpenAiLlmClient` adapter + `DARKULA_LLM__DRIVER=openai` configuration and
+are documented as optional; they are never part of ``./build.sh --qa`` or
+``./build.sh --intg`` and CI never requires a paid/live model API.
+
 ## Reusable Fake World contracts (PR 6)
 PR 6 delivered the reusable scenario/truth inputs that future evals will
 share with deterministic tests (no evaluation framework was added):
