@@ -95,6 +95,9 @@ _FROZEN_MIGRATION_HASHES = {
     "0007_relationships.sql": (
         "75a267313dcc2dc5c92e593502d23c149b6ac96f42cab6464c31b0cb58604dfb"
     ),
+    "0008_source_analysis.sql": (
+        "713feca7262148920e36ecfac46c052994d09b3694d354cc541da5f654b4be65"
+    ),
 }
 
 
@@ -196,7 +199,7 @@ class TestImportGuards:
 
 
 class TestScopeGuards:
-    def test_migrations_0001_to_0007_unchanged(self) -> None:
+    def test_migrations_0001_to_0008_unchanged(self) -> None:
         for filename, expected in _FROZEN_MIGRATION_HASHES.items():
             digest = hashlib.sha256((_MIGRATIONS / filename).read_bytes()).hexdigest()
             assert digest == expected, f"{filename} was modified"

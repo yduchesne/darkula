@@ -840,3 +840,113 @@ imported only inside the infrastructure adapter.
 is never invoked by `--qa`, `--sec`, or `--intg`; ordinary CI never requires
 live-model or SaaS credentials. Live-model acceptance runs are manual and
 documented; lack of credentials does not block deterministic coverage.
+
+## PR 16 testing status — v0.1 full-stack hardening
+
+### Telemetry unit matrix (`tests/unit/telemetry/test_otlp.py`, OT16)
+
+- disabled -> no providers/export/network;
+- local-only -> no exporters/readers;
+- OTLP -> one `BatchSpanProcessor` and one periodic metric reader composed;
+- invalid/missing OTLP endpoint and invalid timeout/interval fail closed;
+- non-empty env overrides win; empty env has no effect;
+- bounded fail-open `force_flush`/`shutdown`, including exporter errors;
+- SDK/exporter imports stay confined to `darkula/telemetry/`;
+- telemetry settings expose no secret-like fields.
+
+### Real OTLP export integration (`tests/integration/observability/test_otel_export.py`, OI16/TP16A)
+
+Runs against the real Darkula-owned Collector/Jaeger/Prometheus provisioned by
+`./build.sh --intg`: emits a real span and counter, flushes, then queries
+Jaeger (trace present) and Prometheus (metric present) with bounded polling
+and asserts known sensitive sentinels are absent from the exported data.
+
+The same file also proves **real Redpanda W3C trace propagation** (TP16A): a
+probe message is published under a known upstream span through the real
+`RedpandaDataStream` (which injects `traceparent` into broker transport
+headers), consumed through the real adapter (which extracts the context), and
+the resulting `test.redpanda_trace.root -> datastream.publish ->
+datastream.poll` chain is verified through the Jaeger HTTP API: same trace ID
+and explicit parent/ancestor span IDs, not merely span existence. A
+no-active-context negative control message is published to a distinct stream
+and asserted absent from the root trace, and sensitive sentinels are asserted
+absent from the trace payload. Jaeger queries use bounded polling.
+
+### v0.1 canonical full-stack slice (`tests/integration/crawler/test_v01_end_to_end.py`, E2E16A)
+
+One documented canonical path begins with the real asynchronous collection
+path and continues through every delivered downstream stage to a persisted
+`SourceAssessment`:
+
+```text
+CollectionScheduler -> transactional message_outbox -> OutboxPublisher
+-> real Redpanda -> CollectionWorker -> SourceCollectionService
+-> CrawlerController -> PodmanSandbox -> CrawlerRuntime -> Chromium
+-> Fake World HTTP -> ContentIngestService -> local ObjectStore -> PostgreSQL
+-> DeterministicExtractionService
+-> SemanticExtractionService (only FakeLlmClient)
+-> GeographicResolutionService (only FakeGeographicResolver)
+-> RelationshipExtractionService (only FakeLlmClient)
+-> SourceAnalysisContextBuilder -> SourceAnalyst (only FakeLlmClient)
+-> SourceAnalysisService -> persisted SourceAssessment
+```
+
+Only the external world (Fake World) and the non-deterministic model/resolver
+providers are faked; no stage is replaced by a fake service and no downstream
+row is test-seeded. The slice collects the public AccessBay catalogue (a
+cross-source virtual host on the same Fake World container) and asserts:
+
+- deterministic extraction persists exact-grounded occurrences and replays
+  to the same result without duplication;
+- semantic extraction (via the fake LLM) produces the grounded `ORGANIZATION`
+  and `LOCATION` occurrences used downstream, with replay making no second
+  model call;
+- `GeographicResolutionService` resolves the real semantic `LOCATION`
+  occurrence and replays without a second resolver call;
+- `RelationshipExtractionService` persists an exact-grounded assertion whose
+  endpoints are persisted occurrences of the same content, with replay
+  making no second model call;
+- the bounded `SourceAnalysisContextBuilder` exposes all five evidence kinds
+  (`CONTENT_OBSERVATION`, `ENTITY_OCCURRENCE`, `GEOGRAPHIC_RESOLUTION`,
+  `RELATIONSHIP_ASSERTION`, `COLLECTION_RUN`);
+- `SourceAnalysisService` durably persists a grounded `SourceAssessment`, and
+  replay returns the same assessment with `created is False` and no second
+  analyst LLM call;
+- hidden truth/password sentinels are absent from collected content, prompts,
+  and persistence; all evidence belongs to the requested source/window; and
+  analysis never mutates `Source`/endpoint lifecycle.
+
+A second test (NightLeak/BlackGate virtual host) proves cross-source
+content-locality (no hidden truth, no global identity merge).
+
+### Combined failure -> recovery -> convergence (FR16A)
+
+`test_v01_end_to_end.py` also drives one real system-boundary failure and
+recovery: the **first `DataStream.publish` fails before broker acceptance**
+(a transport-boundary test seam that wraps the real `RedpandaDataStream`; no
+production fault switch and no production code change). The transactional
+outbox row stays retryable; the existing `OutboxPublisher` retry path
+republishes after the claim lease expires; the real `CollectionWorker` then
+converges to exactly one `SUCCEEDED` run and one content set, and a duplicate
+delivery is a no-op. This proves at-least-once semantics converge on exactly
+one authoritative final effect under existing production retry rules.
+
+### Replay/failure/security
+
+Replay/idempotency and failure/recovery are also exercised across the
+existing PR 5/8/9/11–14 integration slices (outbox publish retry, Redpanda
+redelivery and `processed_message` no-op, content-addressed dedup with
+provenance, semantic key replay without a second model call) and the sandbox
+security suites (`tests/integration/crawler/test_network_isolation.py`,
+`tests/unit/app/test_*_security_guards.py`). The pinned migration-hash guard
+covers `0001`–`0008`.
+
+### Integration lifecycle
+
+`./build.sh --intg` installs a trap **before** the first provisioning step, so
+a partial provision still removes only positively-identified Darkula-owned
+resources and preserves the original non-zero exit status. The observability
+script has deterministic lifecycle tests
+(`tests/unit/scripts/test_darkula_observability_script.py`) covering ownership
+labels, pinned images, explicit ports, foreign-resource refusal, occupied-port
+refusal, and safe/idempotent cleanup.

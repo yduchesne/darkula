@@ -117,6 +117,30 @@ Before changing architecture or domain behavior, read docs/ARCHITECTURE.md, docs
   backend failures never alter application work or swallow cancellation;
   missing backend configuration fails fast (no silent no-op).
 
+## Telemetry export and hardening rules (PR 16, durable)
+- Operational telemetry remains OpenTelemetry behind the existing
+  `configure_telemetry`/`TelemetryRuntime` composition; never add a rival
+  telemetry abstraction, prometheus/jaeger/vendor client in application or
+  domain code, or a second logging architecture.
+- OTLP export is opt-in via typed settings (`telemetry.export`,
+  `telemetry.otlp_endpoint`, bounded `timeout_seconds`/`metric_interval_seconds`);
+  there is no arbitrary header map or secret-bearing endpoint. Missing/invalid
+  OTLP configuration fails fast. Exporter/SDK types stay in `darkula/telemetry/`.
+- Telemetry is fail-open and content-free: exporter/backend failure never
+  changes domain behavior, causes duplicate work, or triggers business retries;
+  prompts, content, credentials, cookies, URIs, object keys, hashes, hidden
+  truth, and high-cardinality labels are never exported. Cancellation semantics
+  are unchanged.
+- The local Collector/Jaeger/Prometheus stack is an integration backend only
+  (Darkula-owned, `darkula.owned=true`, pinned images, explicit prefix-`3` host
+  ports, no prune, fail closed on foreign/occupied resources). It is never a
+  production telemetry deployment.
+- `./build.sh --intg` installs cleanup before provisioning, cleans only
+  positively-verified Darkula-owned resources, and preserves the original
+  non-zero exit status. Migrations `0001`–`0008` remain byte-identical
+  (SHA-256 pinned); no new migration without an approved STOP. Do not add a
+  PR-16-specific pipeline/orchestrator or a production fault-injection switch.
+
 ## Local Podman infrastructure
 - Darkula owns only Podman resources explicitly provisioned for Darkula. Containers, pods, networks, volumes, and other named Podman resources must use an unambiguous `darkula` namespace/prefix. Darkula scripts, tests, cleanup commands, and developer tooling must never discover, stop, remove, recreate, prune, or otherwise control resources belonging to another application.
 - An exact Darkula-looking name does not establish ownership. Every mutable/removable Darkula container or volume must carry a `darkula.owned=true` label, applied at creation and positively verified from exact-resource metadata (never inferred from name, mounts, ports, or timestamps) before reuse, mutation, or deletion. Unlabeled, wrongly labeled, or unverifiable Darkula-named resources are foreign/unknown and must fail closed — never auto-adopted, relabeled, recreated, or deleted.

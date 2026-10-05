@@ -28,10 +28,25 @@ run_sec() {
 }
 
 run_intg() {
+  # Install cleanup before the first provisioning step so an early failure
+  # still removes only positively-verified Darkula-owned resources while
+  # preserving the original (non-zero) exit status. Cleanup failures never
+  # mask the primary status.
+  cleanup_intg() {
+    local primary="$1"
+    ./scripts/darkula_observability.sh clean >/dev/null 2>&1 || true
+    ./scripts/darkula_crawler.sh clean >/dev/null 2>&1 || true
+    ./scripts/darkula_redpanda.sh clean >/dev/null 2>&1 || true
+    ./scripts/darkula_postgres.sh clean >/dev/null 2>&1 || true
+    exit "$primary"
+  }
+  trap 'cleanup_intg $?' EXIT
   echo "==> provisioning Darkula-owned PostgreSQL (35432:5432)"
   ./scripts/darkula_postgres.sh start
   echo "==> provisioning Darkula-owned Redpanda (39092:9092)"
   ./scripts/darkula_redpanda.sh start
+  echo "==> provisioning Darkula-owned observability (OTLP Collector + Jaeger + Prometheus)"
+  ./scripts/darkula_observability.sh start
   echo "==> applying migrations"
   ./scripts/darkula_postgres.sh migrate --apply
   echo "==> provisioning crawler sandbox infrastructure (runtime image, internal network, Fake World HTTP)"
@@ -40,9 +55,6 @@ run_intg() {
   status=0
   uv run pytest tests/integration -m integration --no-cov -q || status=$?
   echo "==> cleaning up verified Darkula-owned resources (preserving exit status $status)"
-  ./scripts/darkula_crawler.sh clean >/dev/null 2>&1 || true
-  ./scripts/darkula_redpanda.sh clean >/dev/null 2>&1 || true
-  ./scripts/darkula_postgres.sh clean >/dev/null 2>&1 || true
   exit "$status"
 }
 

@@ -334,3 +334,40 @@ DataStream, provider SDK, or Fake World truth capability:
 - **No production persistence change.** PR 15 adds no migration; migrations
   0001–0008 and stored-function semantics are unchanged, and evaluation
   results are bounded JSON/JSONL artifacts, not a PostgreSQL schema.
+
+## PR 16 — telemetry egress, local trust, and hardening
+
+- **Telemetry is not a data channel.** OTLP/HTTP export carries only bounded,
+  low-cardinality spans/metrics produced by the Darkula decorators and
+  instrumentation. Source content, prompts/responses, credentials,
+  cookies/sessions, endpoint URIs, object keys, content hashes,
+  high-cardinality IDs as labels, and Fake World hidden truth never cross the
+  exporter boundary. The integration suite asserts known sentinels are absent
+  from exported traces and metrics.
+- **Telemetry failure is fail-open.** Collector/exporter/backend outage cannot
+  partially commit domain state, change a decision, cause duplicate work, or
+  trigger a business-operation retry. `force_flush`/`shutdown` are bounded and
+  never raise into domain behavior, and cancellation semantics are unchanged.
+- **Local observability trust boundary.** The Collector/Jaeger/Prometheus
+  stack is a local, offline integration backend on the Darkula-owned
+  `darkula-observability` network. It is not exposed beyond the host, has no
+  auth/TLS in v0.1, and must never be treated as a production telemetry
+  deployment (see `docs/PRODUCTION_READINESS.md`). Application/domain code
+  gains no Prometheus/Jaeger/vendor client dependency; exporter SDK types stay
+  inside `darkula/telemetry/`.
+- **Sandbox controls are unchanged.** PR 16 adds no sandbox capability;
+  the default-deny network/filesystem/runtime/resource policy and the
+  authorized-origin check remain enforced, and the sandbox still receives no
+  database/Redpanda/ObjectStore/LLM/application credentials.
+- **Migration immutability is pinned through `0008`.**
+  `tests/unit/app/test_source_analysis_security_guards.py` freezes the SHA-256
+  of `0001`–`0008`; no new migration is added by PR 16.
+- **No evaluation/Fake World truth in production.** The static guards that
+  keep `darkula.evaluation` and `FakeWorldTruth` out of production packages
+  remain enforced, and production SQL continues to flow only through
+  fixed, parameterized versioned stored-function calls.
+- **Ownership-safe infrastructure.** Observability lifecycle tooling refuses
+  foreign or unverifiable resources and occupied ports, pins images (never
+  `latest`), never prunes, and removes only `darkula.owned=true`-verified
+  resources. `./build.sh --intg` cleans up on failure without masking the
+  original exit status.

@@ -504,19 +504,93 @@ class AgentObservabilitySettings(BaseModel):
         return value
 
 
-class TelemetrySettings(BaseModel):
-    """Operational OpenTelemetry group.
+class TelemetryExport(StrEnum):
+    """Selected operational-telemetry export mode (PR 16).
 
-    PR 3 wires local tracer/meter providers when ``enabled`` is true. External
-    OTLP export remains future work; ``otlp_endpoint`` is reserved metadata
-    and is never contacted by PR 3.
+    ``NONE`` keeps the PR 3 local-only in-process providers.
+    ``OTLP`` composes a real OTLP/HTTP trace exporter + processor and a
+    periodic OTLP/HTTP metric reader/exporter. There is no vendor-specific
+    exporter selection and no arbitrary header map in v0.1.
+    """
+
+    NONE = "none"
+    OTLP = "otlp"
+
+
+class TelemetrySettings(BaseModel):
+    """Operational OpenTelemetry group (PR 3; OTLP export added by PR 16).
+
+    ``enabled`` composes local in-process providers. ``export`` decides
+    whether those providers are backed by a real OTLP/HTTP exporter
+    (``otlp``) or stay local-only (``none``). Only OTLP export is
+    configurable; there is deliberately no arbitrary header map, no vendor
+    exporter selection, and no secret-bearing endpoint for the v0.1 local
+    stack. ``otlp_endpoint`` is the OTLP/HTTP base URL; the signal paths
+    (``/v1/traces``, ``/v1/metrics``) are appended by composition.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     enabled: bool = True
     service_name: str = "darkula"
+    export: TelemetryExport = TelemetryExport.NONE
     otlp_endpoint: str | None = None
+    #: Bounded per-export request timeout (seconds).
+    timeout_seconds: float = 10.0
+    #: Bounded periodic metric export interval (seconds).
+    metric_interval_seconds: float = 60.0
+
+    @field_validator("service_name")
+    @classmethod
+    def _validate_service_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("telemetry.service_name must not be blank")
+        if any(ord(ch) < 32 for ch in stripped):
+            raise ValueError(
+                "telemetry.service_name must not contain control characters"
+            )
+        return stripped
+
+    @field_validator("otlp_endpoint")
+    @classmethod
+    def _validate_otlp_endpoint(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("telemetry.otlp_endpoint must not be blank")
+        if any(ord(ch) < 32 for ch in stripped):
+            raise ValueError(
+                "telemetry.otlp_endpoint must not contain control characters"
+            )
+        if len(stripped) > 512:
+            raise ValueError("telemetry.otlp_endpoint is too long")
+        if not (stripped.startswith("http://") or stripped.startswith("https://")):
+            raise ValueError("telemetry.otlp_endpoint must be an http(s) URL")
+        return stripped
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _validate_timeout(cls, value: float) -> float:
+        if value <= 0 or value > 60:
+            raise ValueError("telemetry.timeout_seconds must be within (0, 60]")
+        return value
+
+    @field_validator("metric_interval_seconds")
+    @classmethod
+    def _validate_metric_interval(cls, value: float) -> float:
+        if value <= 0 or value > 3600:
+            raise ValueError(
+                "telemetry.metric_interval_seconds must be within (0, 3600]"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _validate_otlp_configuration(self) -> Self:
+        if self.export is TelemetryExport.OTLP and not self.otlp_endpoint:
+            raise ValueError("telemetry OTLP export requires otlp_endpoint")
+        return self
 
 
 class ExtractionSettings(BaseModel):
@@ -965,5 +1039,6 @@ __all__ = [
     "SemanticExtractionSettings",
     "Settings",
     "SourceAnalysisSettings",
+    "TelemetryExport",
     "TelemetrySettings",
 ]
