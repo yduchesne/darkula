@@ -40,10 +40,24 @@ if TYPE_CHECKING:
 TEST_ID_RE = re.compile(r"^[A-Z][A-Z0-9-]{0,31}$")
 
 #: Dynamic route prefixes whose embedded semantic id must resolve.
-_DYNAMIC_ROUTE_PREFIXES = ("/thread/", "/board/", "/post/", "/attachment/")
+_DYNAMIC_ROUTE_PREFIXES = (
+    "/thread/",
+    "/board/",
+    "/post/",
+    "/attachment/",
+    "/listing/",
+    "/seller/",
+    "/leak/",
+)
 
 #: Reference kinds resolved against the rendered forum world.
 _FORUM_REF_KINDS = frozenset({"board", "thread", "post", "attachment", "alias"})
+
+#: Reference kinds resolved against the rendered marketplace world.
+_MARKETPLACE_REF_KINDS = frozenset({"listing", "seller"})
+
+#: Reference kinds resolved against the rendered leak world.
+_LEAK_REF_KINDS = frozenset({"leak"})
 
 #: Reference kinds resolved against the independent truth model.
 _TRUTH_REF_KINDS = frozenset(
@@ -149,6 +163,10 @@ class TraceabilityManifest:
                     self._validate_route_ref(scenario, value)
                 elif kind in _FORUM_REF_KINDS:
                     self._validate_forum_ref(scenario, kind, value)
+                elif kind in _MARKETPLACE_REF_KINDS:
+                    self._validate_marketplace_ref(scenario, kind, value)
+                elif kind in _LEAK_REF_KINDS:
+                    scenario.find_leak_entry(value)
                 elif kind in _TRUTH_REF_KINDS:
                     self._validate_truth_ref(scenario, kind, value)
                 else:
@@ -184,8 +202,14 @@ class TraceabilityManifest:
                     scenario.find_board(board_id_str=value)
                 elif prefix == "/post/":
                     scenario.find_post(post_id_str=value)
-                else:
+                elif prefix == "/attachment/":
                     scenario.find_attachment(attachment_id_str=value)
+                elif prefix == "/listing/":
+                    scenario.find_listing(value)
+                elif prefix == "/seller/":
+                    scenario.find_seller(value)
+                elif prefix == "/leak/":
+                    scenario.find_leak_entry(value)
                 return
         raise FakeWorldValidationError(
             f"route ref {path!r} is not a canonical Fake World route"
@@ -204,6 +228,15 @@ class TraceabilityManifest:
             scenario.find_attachment(attachment_id_str=value)
         elif kind == "alias":
             scenario.find_alias(alias_id_str=value)
+
+    @staticmethod
+    def _validate_marketplace_ref(
+        scenario: FakeWorldScenario, kind: str, value: str
+    ) -> None:
+        if kind == "listing":
+            scenario.find_listing(value)
+        elif kind == "seller":
+            scenario.find_seller(value)
 
     def _validate_truth_ref(
         self, scenario: FakeWorldScenario, kind: str, value: str

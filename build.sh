@@ -7,6 +7,8 @@
 #   ./build.sh --sec    bandit source scan and pip-audit vulnerability audit
 #   ./build.sh --intg   provision Darkula-owned PostgreSQL, apply migrations, run
 #                       the real-PostgreSQL integration suite, then clean up
+#   ./build.sh --eval    explicit opt-in evaluation runner (never part of
+#                       --qa/--sec/--intg or ordinary CI; passes extra args on)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -54,13 +56,18 @@ case "${1:-}" in
   --intg)
     run_intg
     ;;
+  --eval)
+    shift
+    echo "==> explicit opt-in evaluation runner (never ordinary CI)"
+    uv run python -m darkula.evaluation "$@"
+    ;;
   "")
-    echo "usage: $0 [--qa|--sec|--intg]" >&2
+    echo "usage: $0 [--qa|--sec|--intg|--eval]" >&2
     exit 2
     ;;
   *)
     echo "unknown mode: $1" >&2
-    echo "usage: $0 [--qa|--sec|--intg]" >&2
+    echo "usage: $0 [--qa|--sec|--intg|--eval]" >&2
     exit 2
     ;;
 esac

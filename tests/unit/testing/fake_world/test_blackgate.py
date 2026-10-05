@@ -41,7 +41,8 @@ class TestBlackGateStructure:
     """Canonical scenario structure required by PR 6 acceptance criteria."""
 
     def test_two_or_more_boards(self) -> None:
-        boards = canonical_scenario().sources[0].boards
+        source = canonical_scenario().forum_source(SourceId("blackgate"))
+        boards = source.boards
         assert len(boards) >= 2
         assert [b.name for b in boards] == [
             "Announcements",
@@ -62,7 +63,7 @@ class TestBlackGateStructure:
 
     def test_public_preview_and_protected_content_both_exist(self) -> None:
         scenario = canonical_scenario()
-        source = scenario.sources[0]
+        source = scenario.forum_source(SourceId("blackgate"))
         public = [
             t
             for b in source.boards
@@ -110,7 +111,7 @@ class TestBlackGateStructure:
 
     def test_attachments_include_all_required_kinds(self) -> None:
         scenario = canonical_scenario()
-        attachments = scenario.sources[0].attachments
+        attachments = scenario.forum_source(SourceId("blackgate")).attachments
         filenames = {a.filename for a in attachments}
         assert "mason_creek_general_qa.txt" in filenames
         assert "../../secrets/domain_backup_v2.zip" in filenames
@@ -144,13 +145,16 @@ class TestBlackGateStructure:
         assert intros.failure_schedule is not None
         assert intros.failure_schedule.status_code == 503
 
-    def test_exactly_one_registered_scenario_v1(self) -> None:
+    def test_blackgate_core_is_registered_v1(self) -> None:
         from darkula.testing.fake_world.registry import list_scenarios
 
         scenarios = list_scenarios()
-        assert len(scenarios) == 1
-        assert scenarios[0].scenario_id.value == "blackgate-core"
-        assert scenarios[0].scenario_version.value == 1
+        by_id = {scenario.scenario_id.value: scenario for scenario in scenarios}
+        assert "blackgate-core" in by_id
+        assert by_id["blackgate-core"].scenario_version.value == 1
+        # PR 15 additively registers the cross-source scenario/version.
+        assert "darkula-cross-source" in by_id
+        assert by_id["darkula-cross-source"].scenario_version.value == 1
 
 
 class TestCanonicalGoldenPages:

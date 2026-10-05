@@ -142,6 +142,21 @@ class ForumAliasId(SemanticId):
 
 
 @dataclass(frozen=True, slots=True)
+class SellerId(SemanticId):
+    """Stable semantic identity of one marketplace seller."""
+
+
+@dataclass(frozen=True, slots=True)
+class ListingId(SemanticId):
+    """Stable semantic identity of one marketplace listing."""
+
+
+@dataclass(frozen=True, slots=True)
+class LeakEntryId(SemanticId):
+    """Stable semantic identity of one leak-publication entry."""
+
+
+@dataclass(frozen=True, slots=True)
 class ActorId(SemanticId):
     """Stable semantic identity of one fictional world actor (truth)."""
 
@@ -247,12 +262,15 @@ __all__ = [
     "EventId",
     "FakeWorldValidationError",
     "ForumAliasId",
+    "LeakEntryId",
+    "ListingId",
     "LocationId",
     "OrganizationId",
     "PostId",
     "RelationshipId",
     "ScenarioId",
     "ScenarioVersion",
+    "SellerId",
     "SemanticId",
     "SourceId",
     "ThreadId",

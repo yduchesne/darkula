@@ -246,7 +246,7 @@ class TestRendererContract:
         scenario = canonical_scenario()
         with pytest.raises(FrozenInstanceError):
             scenario.sources = ()  # type: ignore[misc]
-        source = scenario.sources[0]
+        source = scenario.forum_source(scenario.sources[0].source_id)
         with pytest.raises(FrozenInstanceError):
             source.boards = ()  # type: ignore[misc]
 

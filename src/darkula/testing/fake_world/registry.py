@@ -18,6 +18,9 @@ from darkula.testing.fake_world.model import FakeWorldScenario
 from darkula.testing.fake_world.scenarios.blackgate_v1 import (
     build_blackgate_core_v1,
 )
+from darkula.testing.fake_world.scenarios.cross_source_v1 import (
+    build_cross_source_v1,
+)
 
 
 class UnknownScenarioError(KeyError):
@@ -31,6 +34,7 @@ class UnknownScenarioError(KeyError):
 #: Explicit canonical registry: (scenario_id, version) -> scenario.
 _REGISTERED: dict[tuple[str, int], FakeWorldScenario] = {}
 _REGISTERED[("blackgate-core", 1)] = build_blackgate_core_v1()
+_REGISTERED[("darkula-cross-source", 1)] = build_cross_source_v1()
 
 
 def get_scenario(

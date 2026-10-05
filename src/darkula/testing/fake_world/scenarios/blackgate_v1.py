@@ -1082,6 +1082,16 @@ def _traceability() -> TraceabilityManifest:
     )
 
 
+def build_blackgate_source_v1() -> ForumSource:
+    """Return the canonical BlackGate forum source (observations only).
+
+    Exposed so the PR 15 cross-source scenario can reuse the canonical forum
+    (including its ``zerofox77``/``debunk_me`` aliases) without duplicating
+    or rewriting PR 6 content.
+    """
+    return _build_source()
+
+
 def build_blackgate_core_v1() -> FakeWorldScenario:
     """Construct (and fully validate) the canonical BlackGate v1 scenario."""
     return FakeWorldScenario(
@@ -1106,4 +1116,5 @@ __all__ = [
     "SCENARIO_VERSION",
     "SOURCE_ID",
     "build_blackgate_core_v1",
+    "build_blackgate_source_v1",
 ]

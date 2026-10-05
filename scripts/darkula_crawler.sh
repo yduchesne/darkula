@@ -151,6 +151,10 @@ provision_fakeworld() {
   $PODMAN run -d \
     --name "$FAKEWORLD_CONTAINER" \
     --network "$NETWORK" \
+    --network-alias blackgate.example.test \
+    --network-alias accessbay.example.test \
+    --network-alias nightleak.example.test \
+    --network-alias shadowtalk.example.test \
     --label darkula.owned=true \
     --label darkula.service=fake-world \
     --read-only \

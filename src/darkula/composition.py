@@ -33,6 +33,7 @@ first use, keeping unit/QA paths infrastructure-free.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from darkula.app.agent_observability import AgentObservability
@@ -79,6 +80,10 @@ from darkula.infrastructure.object_store import (
     S3CompatibleObjectStore,
 )
 from darkula.infrastructure.observability import NoOpAgentObservability
+from darkula.infrastructure.observability.langsmith import (
+    LangSmithAgentObservability,
+    build_langsmith_run_factory,
+)
 from darkula.infrastructure.persistence.postgresql.spi import PostgresDarkulaSpi
 from darkula.infrastructure.sandbox import PodmanSandbox
 from darkula.telemetry.setup import TelemetryRuntime, configure_telemetry
@@ -317,12 +322,30 @@ def _compose_observability(settings: Settings) -> AgentObservability:
     if backend is AgentObservabilityBackend.NONE:
         return NoOpAgentObservability()
     if backend is AgentObservabilityBackend.LANGSMITH:
-        raise UnavailableDriverError(
-            "LangSmith agent observability is not available in PR 3 (PR 15)"
+        config = settings.agent_observability
+        if not config.project:
+            raise UnavailableDriverError(
+                "LangSmith observability requires agent_observability.project"
+            )
+        api_key = (
+            config.api_key
+            or os.environ.get("LANGSMITH_API_KEY")
+            or os.environ.get("LANGCHAIN_API_KEY")
         )
+        if not api_key:
+            raise UnavailableDriverError(
+                "LangSmith observability requires an API key "
+                "(agent_observability.api_key or LANGSMITH_API_KEY)"
+            )
+        factory = build_langsmith_run_factory(
+            project=config.project,
+            api_key=api_key,
+            endpoint_url=config.endpoint_url,
+        )
+        return LangSmithAgentObservability(run_factory=factory)
     if backend is AgentObservabilityBackend.LANGFUSE:
         raise UnavailableDriverError(
-            "Langfuse agent observability is not available in PR 3 (PR 15)"
+            "Langfuse agent observability is not delivered by PR 15"
         )
     raise UnavailableDriverError(
         f"unsupported agent-observability backend: {backend}"

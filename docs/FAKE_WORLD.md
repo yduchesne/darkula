@@ -12,12 +12,14 @@ these deliverables without contacting live criminal services.
 ```text
 src/darkula/testing/fake_world/
     identifiers.py     bounded semantic identity value types + validation
-    model.py           immutable scenario + source-observable forum model
+    model.py           immutable scenario + source-observable model
     truth.py           independent world truth (tests/evals only)
-    rendering.py       transport-light request/response + FakeWorldRenderer
+    rendering.py       transport-light request/response + renderers
     traceability.py    stable behavior IDs + manifest validation
     registry.py        canonical scenario lookup
-    scenarios/blackgate_v1.py   canonical "blackgate-core" v1
+    http_adapter.py    thin real-HTTP adapter over the renderer
+    scenarios/blackgate_v1.py     canonical "blackgate-core" v1
+    scenarios/cross_source_v1.py  canonical "darkula-cross-source" v1
 ```
 
 Allowed dependencies: tests/evals and future crawler integration tests may
@@ -47,6 +49,52 @@ truth.
 Truth holds objective fictional-world facts, not expected Darkula answers.
 Forum posts can be true, false, stale, or conflicting — they are observations,
 not assertions of ground truth.
+
+## Cross-source ecosystem v1 (PR 15)
+PR 15 additively expands Fake World into the interconnected
+`darkula-cross-source` v1 scenario. BlackGate v1 is reused unmodified (its
+scenario/version and `FW-BG-*` behavior IDs are unchanged):
+
+| Source | Archetype | Model |
+|---|---|---|
+| BlackGate | cybercrime forum | `ForumSource` (PR 6) |
+| AccessBay | access/credential marketplace | `MarketplaceSource` |
+| NightLeak | ransomware/data-leak publication site | `LeakSource` |
+| ShadowTalk | secondary forum/corroboration source | `ForumSource` |
+
+The new archetypes are minimum typed models, not a generic website DSL:
+
+- `MarketplaceSource` / `MarketplaceSeller` / `MarketplaceListing` with
+  `ListingCategory` and `ListingState` (`ACTIVE`/`UPDATED`/`STALE`/`SOLD`/
+  `REMOVED`), gated visibility, deterministic duplicate/removed/updated
+  states, bounded price display, cross-references and mirror hosts;
+- `LeakSource` / `LeakEntry` with `LeakPublicationState` (`TEASER`/
+  `PUBLISHED`/`CHANGED`/`REMOVED`), a fictional victim, teaser/claim, bounded
+  sample metadata, operator alias, and mirror hosts. No stolen-data download,
+  no real victim data, no live onion address;
+- ShadowTalk reuses the PR 6 forum model/renderer (one coherent
+  `FakeWorldRenderer` boundary) and adds cross-source quotes, corroboration,
+  rumour/noise, and mirror chatter.
+
+`CrossSourceRenderer` dispatches one request to the renderer matching its
+source archetype while preserving the shared request/response/session
+contracts. `MarketplaceRenderer` and `LeakRenderer` are deterministic,
+offline, and resettable like the forum renderer.
+
+One truth world spans all four sources. At minimum it defines: one actor
+observed under several unrelated handles (`zerofox77`, `zfox`, `zfox_zero`)
+plus a hidden alias; one organization (`Mason Creek General Hospital`)
+appearing in BlackGate, AccessBay, and NightLeak; a canonical location; a
+temporal event sequence; true cross-source relationships; one observable
+false/noisy claim (an unsupported "hospital seized" rumour) with a truth-only
+counter-fact; a hidden private sale never rendered; and a shared mirror fact.
+
+New stable behavior IDs use `FW-AB-*`, `FW-NL-*`, `FW-ST-*`, and `FW-XS-*`;
+existing `FW-BG-*` IDs are never renumbered.
+
+Mirror behavior is reconnaissance-observable only. It does not authorize Tor
+onion rotation, a new production endpoint resolver, or automatic
+`SourceEndpoint` merging; production identity semantics are unchanged.
 
 ## BlackGate core v1
 A fully synthetic cybercrime-forum archetype:
@@ -102,8 +150,10 @@ FakeWorldRenderer().render(scenario, request, session=None) -> RenderResult
 
 ## Behavior traceability
 Every significant canonical behavior carries a stable behavior ID following
-`FW-<SOURCE>-<AREA>-NNN`, for example `FW-BG-AUTH-001`. Each manifest entry
-links:
+`FW-<SOURCE>-<AREA>-NNN`, for example `FW-BG-AUTH-001`. `FW-BG-*` IDs are
+canonical (PR 6); the PR 15 expansion adds `FW-AB-*` (AccessBay), `FW-NL-*`
+(NightLeak), `FW-ST-*` (ShadowTalk), and `FW-XS-*` (cross-source). Each
+manifest entry links:
 
 ```text
 behavior ID -> scenario/version -> archetype/rationale ->

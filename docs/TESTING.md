@@ -277,8 +277,8 @@ diagnostic redaction, and "no capture" telemetry assertions.
 ## Relationship to evaluations
 Integration tests answer whether engineering contracts execute correctly.
 Evals answer whether model-backed reasoning/extraction is good enough. Both
-should reuse the same scenario definitions and Fake World truth where
-possible; do not maintain unrelated test and eval universes.
+reuse the same scenario definitions and Fake World truth; `docs/EVALUATIONS.md`
+owns the evaluation subsystem.
 
 ## Fake World test infrastructure (PR 6)
 The Fake World is an executable testing subsystem, not a fixture directory:
@@ -796,3 +796,47 @@ the retained PR 11/12 stored functions and the relationship constraints.
 The unit suite runs the real `SourceAnalyst` with `FakeLlmClient`; the model is
 the only faked nondeterministic boundary. Live-model SourceAnalyst evaluation
 remains PR 15.
+
+## PR 15 testing status — expanded Fake World and evaluations
+
+Fake World expansion tests (`tests/unit/testing/fake_world/`):
+
+- `test_cross_source.py` covers the `darkula-cross-source` v1 matrix
+  (FW15-1..FW15-18): model construction and typed cross-reference failures,
+  deterministic rendering, gated marketplace listings, updated/sold/removed
+  listing states, leak index/detail and teaser/published/changed/removed
+  state, ShadowTalk forum compatibility, cross-source actor/organization
+  truth, hidden-truth non-rendering, the observable false claim, behavior
+  manifest coverage, fixed UTC timestamps, and mirror references;
+- BlackGate v1 golden pages/behavior IDs remain unchanged (existing tests).
+
+Evaluation tests (`tests/unit/evaluation/`) are fully deterministic and never
+call a live model or the network:
+
+- `test_domain.py` (ED15) — bounded identity/model/result/manifest
+  validation, deterministic serialization, partial-run distinguishability;
+- `test_metrics.py` (EM15) — exact counts, empty-set semantics, duplicates,
+  grounding, rubric coverage, repeat determinism;
+- `test_evaluators.py` (RE15/SE15/GE15/RL15/SA15) — recon, semantic,
+  geography, relationship, and SourceAnalyst scoring including
+  hidden-truth-leakage detection and unsupported-conclusion detection;
+- `test_cases.py` (ED15-8..10) — explicit registry order and typed
+  unknown-case failure;
+- `test_runner.py` (ER15) — deterministic ordering, bounded
+  CASE/MODEL/EVALUATOR/SETUP errors, cancellation with a partial manifest,
+  live-requested-with-fake failure, safe artifacts, explicit gating, and
+  distinct run IDs with stable case IDs;
+- `test_cli.py` — explicit opt-in CLI listing/replay, disabled config
+  failure, live+fake failure, and exit codes.
+
+Observability tests
+(`tests/unit/infrastructure/observability/test_langsmith.py`, AO15) exercise
+the adapter with a fake/stub SDK boundary: safe metadata only, prompt/output
+unrepresentability, fail-open start/end/patch/flush, unchanged application
+exceptions and cancellation, and a static guard that the LangSmith SDK is
+imported only inside the infrastructure adapter.
+
+`./build.sh --eval` is the only entry point that runs the evaluation CLI. It
+is never invoked by `--qa`, `--sec`, or `--intg`; ordinary CI never requires
+live-model or SaaS credentials. Live-model acceptance runs are manual and
+documented; lack of credentials does not block deterministic coverage.
