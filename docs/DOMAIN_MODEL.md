@@ -80,6 +80,10 @@ Candidate lifecycle should preserve history through **SourceCandidateEventHistor
 ### ReconAssessment
 An immutable assessment produced by ReconAgent for a candidate. It captures source type, accessibility, content/navigation characteristics, discovered endpoints, authentication characteristics, proposed collection strategy, relevance, confidence, evidence references, and a disposition such as QUALIFY, NEEDS_MORE_RECON, or REJECT. The Coordinator applies lifecycle decisions.
 
+**PR 10 semantics (delivered).** A `ReconAssessment` is a **recommendation**, never a lifecycle decision: the `ReconCoordinator` owns every candidate status transition and event append. A `QUALIFY` disposition transitions the candidate to `QUALIFIED` (a distinct state from `PROMOTED`; qualification never creates a `Source`, a `SourceEndpoint`, or a `CollectionPolicy`). `NEEDS_MORE_RECON` transitions to `RECONNAISSANCE_PENDING` and `REJECT` to `REJECTED`. Assessments are append-only and multiple assessments per candidate are normal: each reconnaissance execution that reaches an analytical conclusion appends exactly one immutable assessment, and a later execution never rewrites earlier history.
+
+Evidence references inside an assessment are **trusted provenance**: they point to bounded observations actually presented to the model during that execution, and unknown references fail closed (no assessment is persisted). Only structured application-defined outputs are persisted; hidden chain-of-thought is never requested or stored. Operational failures (LLM/crawler/protocol/budget) are **not** analytical dispositions: they never append an assessment and return the candidate to `RECONNAISSANCE_PENDING` with a `NEEDS_MORE_RECON` event so a later execution may retry.
+
 ## Managed sources
 ### Source
 The logical resource being monitored, independent of any one URL/onion address. Source identity survives endpoint/mirror rotation.

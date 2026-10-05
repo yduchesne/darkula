@@ -129,3 +129,35 @@ Prohibited attributes everywhere (mirroring PR 8): run/source/policy IDs,
 endpoint URIs, source names, content hashes, object keys, titles, and
 credentials. Persisted failure summaries are additionally validated
 secret-free by the domain model before finalization.
+
+## PR 10 status — reconnaissance telemetry delivered
+
+PR 10 instruments the bounded recon workflow with direct OTEL
+counters/histograms/spans plus provider-neutral `AgentObservability`
+scopes per model attempt:
+
+- **Spans** — `recon.workflow` (whole execution) and `recon.crawl` (one
+  authorized inspection). Bounded attributes only (`darkula.outcome`,
+  disposition, failure category); never candidate IDs, URLs, prompts, or
+  content.
+- **Counters** —
+  `darkula.recon.workflow.started`, `darkula.recon.workflow.completed`
+  (with `darkula.recon.disposition` in {`QUALIFY`, `NEEDS_MORE_RECON`,
+  `REJECT`}), `darkula.recon.failures` (with
+  `darkula.recon.failure_category` from the bounded typed-error vocabulary),
+  `darkula.recon.inspections`, `darkula.recon.invalid_requests`,
+  `darkula.recon.model.attempts`, `darkula.recon.llm_failures` (with
+  `darkula.recon.llm_error` in the `LlmErrorCode` vocabulary), and
+  `darkula.recon.structured_output_repairs`.
+- **Histogram** — `darkula.recon.workflow.duration` (seconds).
+- **AgentObservability** — one scope per `LlmClient` call with
+  `AgentOperationMetadata(operation_name="recon.assess",
+  agent_name="recon_agent", prompt_version="recon-v1",
+  model_profile="recon")`. Prompts, model output, source content,
+  credentials, and hidden reasoning are never representable in metadata.
+
+Prohibited attributes everywhere (mirroring PR 8/PR 9): candidate/event/
+assessment IDs, candidate entrypoints/URLs, page text, evidence
+references/excerpts, testimony, prompts, model output, and credentials.
+Spans and metric attributes are asserted content-free and
+high-cardinality-free by the unit TS matrix.

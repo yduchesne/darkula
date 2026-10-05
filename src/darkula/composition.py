@@ -46,6 +46,8 @@ from darkula.app.llm import LlmClient
 from darkula.app.normalization import ContentNormalizer, DeterministicContentNormalizer
 from darkula.app.object_store import ObjectStore
 from darkula.app.persistence import DarkulaSpi
+from darkula.app.recon import ReconCoordinator
+from darkula.app.recon_agent import ReconAgent
 from darkula.config.settings import (
     AgentObservabilityBackend,
     DatabaseDriver,
@@ -57,6 +59,7 @@ from darkula.config.settings import (
 )
 from darkula.crawler import Crawler, CrawlerController
 from darkula.infrastructure.data_stream import RedpandaDataStream
+from darkula.infrastructure.llm import OpenAiLlmClient
 from darkula.infrastructure.object_store import (
     InMemoryObjectStore,
     LocalFileObjectStore,
@@ -96,6 +99,8 @@ class Runtime:
     collection_worker: CollectionWorker
     llm: LlmClient
     agent_observability: AgentObservability
+    recon_agent: ReconAgent
+    recon_coordinator: ReconCoordinator
     persistence: DarkulaSpi
     crawler: Crawler
     telemetry: TelemetryRuntime
@@ -169,9 +174,21 @@ def _compose_content_ingest(
 def _compose_llm(settings: Settings) -> LlmClient:
     if settings.llm.driver is LlmDriver.FAKE:
         return FakeLlmClient()
+    if settings.llm.driver is LlmDriver.OPENAI:
+        provider = settings.llm.provider
+        if not provider.model_name or not provider.api_key:
+            raise UnavailableDriverError(
+                "OpenAI LlmClient requires llm.provider.model_name and "
+                "llm.provider.api_key"
+            )
+        return OpenAiLlmClient(
+            model_name=provider.model_name,
+            api_key=provider.api_key,
+            base_url=provider.base_url,
+            timeout_seconds=settings.llm.timeout_seconds or 60.0,
+        )
     raise UnavailableDriverError(
-        f"unsupported LLM driver: {settings.llm.driver} (provider drivers "
-        "are PR 10 work)"
+        f"unsupported LLM driver: {settings.llm.driver}"
     )  # defensive; validation rejects unknowns
 
 
@@ -246,6 +263,33 @@ def _compose_collection(
     return service, scheduler, worker
 
 
+def _compose_recon(
+    persistence: DarkulaSpi,
+    llm: LlmClient,
+    observability: AgentObservability,
+    crawler: Crawler,
+    settings: Settings,
+) -> tuple[ReconAgent, ReconCoordinator]:
+    """Compose the PR 10 reconnaissance capability.
+
+    The ReconAgent shares the single composed LlmClient/AgentObservability
+    and the Coordinator shares the single PR 7 Crawler and the persistence
+    SPI; no rival recon abstractions are created.
+    """
+    agent = ReconAgent(
+        llm=llm,
+        observability=observability,
+        settings=settings.recon,
+    )
+    coordinator = ReconCoordinator(
+        spi=persistence,
+        agent=agent,
+        crawler=crawler,
+        settings=settings.recon,
+    )
+    return agent, coordinator
+
+
 def compose(*, settings: Settings) -> Runtime:
     """Compose every runtime implementation from resolved settings."""
     object_store = _compose_object_store(settings)
@@ -261,6 +305,15 @@ def compose(*, settings: Settings) -> Runtime:
         content_ingest=content_ingest,
         data_stream=data_stream,
     )
+    llm = _compose_llm(settings)
+    observability = _compose_observability(settings)
+    recon_agent, recon_coordinator = _compose_recon(
+        persistence=persistence,
+        llm=llm,
+        observability=observability,
+        crawler=crawler,
+        settings=settings,
+    )
     return Runtime(
         data_stream=data_stream,
         object_store=object_store,
@@ -269,8 +322,10 @@ def compose(*, settings: Settings) -> Runtime:
         collection_service=collection_service,
         collection_scheduler=collection_scheduler,
         collection_worker=collection_worker,
-        llm=_compose_llm(settings),
-        agent_observability=_compose_observability(settings),
+        llm=llm,
+        agent_observability=observability,
+        recon_agent=recon_agent,
+        recon_coordinator=recon_coordinator,
         persistence=persistence,
         crawler=crawler,
         telemetry=configure_telemetry(
