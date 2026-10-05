@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from darkula.app.repositories import (
         CollectionRepository,
         ContentRepository,
+        ExtractionRepository,
         OutboxRepository,
         ProcessedMessageRepository,
         SourceCandidateRepository,
@@ -54,6 +55,9 @@ if TYPE_CHECKING:
     )
     from darkula.infrastructure.persistence.postgresql.content_repository import (
         PostgresContentRepository,
+    )
+    from darkula.infrastructure.persistence.postgresql.extraction_repository import (
+        PostgresExtractionRepository,
     )
     from darkula.infrastructure.persistence.postgresql.outbox_repository import (
         PostgresOutboxRepository,
@@ -92,6 +96,7 @@ class PostgresUnitOfWork(UnitOfWork):
         ) = None
         self._content_repository: PostgresContentRepository | None = None
         self._collection_repository: PostgresCollectionRepository | None = None
+        self._extraction_repository: PostgresExtractionRepository | None = None
 
     async def __aenter__(self) -> Self:
         if self._state is not _State.CREATED:
@@ -262,6 +267,18 @@ class PostgresUnitOfWork(UnitOfWork):
 
             self._collection_repository = PostgresCollectionRepository(self)
         return self._collection_repository
+
+    @property
+    def extraction(self) -> ExtractionRepository:
+        """Return the transaction-bound extraction repository (PR 11)."""
+        self.ensure_open()
+        if self._extraction_repository is None:
+            from darkula.infrastructure.persistence.postgresql.extraction_repository import (  # noqa: E501
+                PostgresExtractionRepository,
+            )
+
+            self._extraction_repository = PostgresExtractionRepository(self)
+        return self._extraction_repository
 
     async def _release_connection(self) -> None:
         """Return the borrowed connection to the pool exactly once."""

@@ -160,8 +160,26 @@ Backed extraction (PR 12), no relationships (PR 13), no SourceAnalyst
 9 collection or the PR 7 sandbox, and no new migration (recon persistence
 already existed in `0001_initial.sql`).
 
-## PR 11 — Deterministic content extraction
-Implement ExtractionResult and deterministic observable/entity extractors with provenance/versioning.
+## PR 11 — Deterministic content extraction (delivered)
+Delivered immutable/versioned `ExtractionResult` and provenance-bearing
+`ExtractedEntity` occurrences with exact `SourceSpan`, extractor name/version,
+and the exact historical extractor manifest; the fixed
+`deterministic-observables/v1` profile with conservative IP/domain/URL/email/
+hash extractors; an explicit `DeterministicExtractionService` that loads the
+canonical normalized-text representation from ObjectStore (never the DB
+preview) with size/hash/UTF-8 verification and no transaction spanning
+ObjectStore I/O; `migrations/0005_extraction.sql` with versioned
+`extraction_result_*_v1` / `extracted_entity_*_v1` stored functions; the
+`ExtractionRepository` through the existing `UnitOfWork`; central composition;
+content-free OTEL; unit DM/IP/URL/EM/DN/HS/AG/ES/TS matrices; a real-
+PostgreSQL RP1-RP12 matrix (atomicity, semantic-key concurrency, coexisting
+profile versions, identical-bytes/distinct-observations provenance); failure
+and concurrency slices; and a canonical real slice (real CrawlerController ->
+real PodmanSandbox -> Chromium -> Fake World -> real `ContentIngestService` ->
+ObjectStore -> real PostgreSQL -> real deterministic extractors -> real
+`ExtractionResult`/`ExtractedEntity`). No LLM, no relationships, no
+`SourceAssessment`, no PR 12 semantic/geographic extraction, and no changes
+to PR 7/PR 8/PR 9/PR 10 or migrations 0001-0004.
 
 ## PR 12 — Semantic and geographic extraction
 Implement model-backed semantic extraction, geographic mention/resolution with separate confidence/provenance, and realistic Fake World ambiguity scenarios.

@@ -28,6 +28,8 @@ EXPECTED_TABLES = {
     "collection_policy",
     "collection_policy_endpoint",
     "collection_run",
+    "extraction_result",
+    "extracted_entity",
 }
 
 EXPECTED_FUNCTIONS = {
@@ -66,6 +68,12 @@ EXPECTED_FUNCTIONS = {
     "collection_run_complete_v1",
     "collection_run_cancel_v1",
     "collection_schedule_due_v1",
+    "extraction_result_create_v1",
+    "extraction_result_get_v1",
+    "extraction_result_get_by_profile_v1",
+    "extracted_entity_create_v1",
+    "extracted_entity_list_for_result_v1",
+    "extracted_entity_list_for_content_v1",
 }
 
 
@@ -106,8 +114,8 @@ class TestMigrations:
                 ledger = [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
-        # The ledger head is the newest shipped artifact (PR 9 added 0004).
-        assert ledger[-1].startswith("0004_collection.sql")
+        # The ledger head is the newest shipped artifact (PR 11 added 0005).
+        assert ledger[-1].startswith("0005_extraction.sql")
 
     def test_expected_tables_exist(self, database_settings: DatabaseSettings) -> None:
         conn = _raw_connect(database_settings)

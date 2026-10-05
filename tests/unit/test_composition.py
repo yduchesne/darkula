@@ -221,3 +221,13 @@ class TestLlmComposition:
         assert isinstance(runtime.recon_agent, ReconAgent)
         assert isinstance(runtime.recon_coordinator, ReconCoordinator)
         assert runtime.recon_agent.settings.max_turns == 4
+
+    def test_runtime_exposes_deterministic_extraction_service(self) -> None:
+        from darkula.app.extraction import DeterministicExtractionService
+
+        runtime = compose(settings=_shipped())
+        assert isinstance(runtime.extraction_service, DeterministicExtractionService)
+        assert runtime.extraction_service._profile.profile_name == (
+            "deterministic-observables"
+        )
+        assert runtime.extraction_service._profile.profile_version == "v1"

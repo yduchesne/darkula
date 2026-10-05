@@ -71,6 +71,43 @@ Frozen semantics in code and persistence:
   (crawl_request_id, observation_index, source_uri) unique key makes retried
   observations idempotent.
 
+## PR 11 frozen status — deterministic extraction
+
+PR 11 gave the deterministic extraction concepts their first executable form
+in `src/darkula/domain/extraction.py` and persisted them through the
+PostgreSQL adapter. Extraction converts one persisted canonical normalized
+representation into bounded, provenance-bearing structured observations; it
+is **not** analysis and performs no LLM/semantic/geographic/relationship
+reasoning.
+
+Identity/version rules frozen in code:
+
+- `ExtractionResultId` — persisted result identity; the semantic/idempotency
+  key is `(content_id, profile_name, profile_version)` and is UNIQUE, never a
+  generated UUID, an `ObjectKey`, a content hash, or a broker position;
+- `ExtractorIdentity` — bounded developer-controlled `name` + `version`
+  (for example `ip/v1`), logical extractor identity, never a value;
+- `ExtractedEntityId` — one extracted **occurrence**; a value at two spans is
+  two occurrence records;
+- `SourceSpan` — half-open `[start, end)` code-point offsets into exact
+  canonical text, with `0 <= start < end` and `text[start:end] == raw_value`;
+- `type + normalized_value` is a semantic value, never occurrence identity.
+
+Semantics frozen in code and persistence:
+
+- `EntityType` is the finite PR 11 vocabulary `IP_ADDRESS`, `DOMAIN`, `URL`,
+  `EMAIL`, `HASH`; PR 12 owns semantic/geographic types. `HashSubtype`
+  (`MD5`/`SHA1`/`SHA256`) is the only current bounded subtype.
+- `ExtractionResult.extractor_manifest` is the exact historical manifest, and
+  `entity_count` equals the number of persisted occurrences.
+- Results/occurrences are append-only/immutable. An incompatible extractor
+  change requires a new profile/extractor version and a new result.
+- The same value in two content observations is two provenance-bearing
+  occurrences; extracted facts are **not** global truth and assert no
+  maliciousness, ownership, victimhood, identity equivalence, or relationship.
+- `SourceSpan` is valid only against the exact persisted canonical text; the
+  DB preview is never an extraction source.
+
 ## Discovery and reconnaissance
 ### SourceCandidate
 A discovered resource not yet accepted as a managed Source. It has identity, discovery provenance, entrypoint, timestamps, and lifecycle status.
@@ -112,10 +149,23 @@ Canonical representation derived from hostile source material, including source/
 
 ## Extraction
 ### ExtractionResult
-Structured facts/annotations associated with NormalizedContent. It records entities, relationships, classifications, extractor/version provenance, and completion metadata.
+Structured facts/annotations associated with NormalizedContent, with
+result/profile identity, the exact historical extractor manifest,
+extraction time, and occurrence count. **PR 11 delivered**: deterministic
+observable extraction under the fixed `deterministic-observables/v1` profile,
+immutable/versioned and idempotent on
+`(content_id, profile_name, profile_version)`. PR 12 may add
+`semantic-geographic/<version>` as a sibling profile.
 
 ### ExtractedEntity
-A content-derived entity with type, raw and normalized values, confidence, source span/reference, and extractor provenance. Initial families include network observables (IP/domain/URL/email/hash/crypto address), organizations/people/online identities/threat actors/malware, locations, industry/organization type, credential type, and access type. The exact ontology is TBD.
+A content-derived entity occurrence with type, raw and normalized values,
+exact source span, and extractor name/version provenance. **PR 11
+delivered**: occurrence-based (never a global IOC table), append-only, with
+no manufactured probabilistic confidence for deterministic recognition.
+Initial families are network observables (IP/domain/URL/email/hash); semantic
+families (organizations/people/online identities/threat actors/malware,
+locations, industry/organization type, credential/access type) remain PR
+12-14 work and the exact ontology stays TBD.
 
 ### GeographicResolution
 Resolution of an extracted geographic mention, separate from extraction confidence. It supports RESOLVED, AMBIGUOUS, and UNRESOLVED outcomes plus canonical geography, country/admin/locality information, geometry when available, resolver provenance, and confidence. PostgreSQL/PostGIS geometry is a likely persistence choice but is not fixed by PR 1.

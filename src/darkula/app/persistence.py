@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from darkula.app.repositories import (
         CollectionRepository,
         ContentRepository,
+        ExtractionRepository,
         OutboxRepository,
         ProcessedMessageRepository,
         SourceCandidateRepository,
@@ -143,6 +144,12 @@ class UnitOfWork(ABC):
     def collection(self) -> CollectionRepository:
         """Return the managed-source collection repository bound to this
         transaction (PR 9)."""
+
+    @property
+    @abstractmethod
+    def extraction(self) -> ExtractionRepository:
+        """Return the deterministic extraction repository bound to this
+        transaction (PR 11)."""
 
 
 class DarkulaSpi(ABC):

@@ -47,11 +47,13 @@ from darkula.domain.content import (
     ContentArtifact,
     NormalizedContent,
 )
+from darkula.domain.extraction import ExtractedEntity, ExtractionResult
 from darkula.domain.identifiers import (
     CollectionPolicyId,
     CollectionRunId,
     ConsumerId,
     ContentArtifactId,
+    ExtractionResultId,
     MessageId,
     NormalizedContentId,
     SourceCandidateId,
@@ -73,6 +75,7 @@ __all__ = [
     "ClaimOutcome",
     "CollectionRepository",
     "ContentRepository",
+    "ExtractionRepository",
     "OutboxRecord",
     "OutboxRepository",
     "ProcessedMessageRepository",
@@ -516,3 +519,63 @@ class ContentRepository(ABC):
         self, content_id: NormalizedContentId
     ) -> NormalizedContent | None:
         """Return the normalized observation or ``None`` when absent."""
+
+
+class ExtractionRepository(ABC):
+    """Deterministic extraction persistence contract (PR 11).
+
+    All methods are transaction-scoped through the owning unit of work.
+    Results and occurrences are append-only/immutable. ``create_result`` is
+    idempotent on the semantic key ``(content_id, profile_name,
+    profile_version)``: a concurrent duplicate raises :class:`ConflictError`
+    instead of rewriting history. ``create_entity`` raises
+    :class:`ConflictError` on an exact duplicate occurrence.
+    """
+
+    @abstractmethod
+    async def create_result(self, result: ExtractionResult) -> None:
+        """Persist one immutable extraction result.
+
+        :raises ConflictError: if ``(content_id, profile_name,
+            profile_version)`` or the result identity already exists (no
+            overwrite).
+        :raises IntegrityError: if the referenced normalized content does
+            not exist.
+        """
+
+    @abstractmethod
+    async def get_result(
+        self, result_id: ExtractionResultId
+    ) -> ExtractionResult | None:
+        """Return one result by identity or ``None`` when absent."""
+
+    @abstractmethod
+    async def get_result_by_profile(
+        self,
+        content_id: NormalizedContentId,
+        profile_name: str,
+        profile_version: str,
+    ) -> ExtractionResult | None:
+        """Return the result for the semantic content/profile key or ``None``."""
+
+    @abstractmethod
+    async def create_entity(self, entity: ExtractedEntity) -> None:
+        """Persist one extracted-entity occurrence.
+
+        :raises ConflictError: if the exact occurrence already exists.
+        :raises IntegrityError: if the result/content provenance is unknown
+            or inconsistent.
+        """
+
+    @abstractmethod
+    async def list_entities_for_result(
+        self, result_id: ExtractionResultId
+    ) -> tuple[ExtractedEntity, ...]:
+        """Return a result's occurrences in deterministic order."""
+
+    @abstractmethod
+    async def list_entities_for_content(
+        self, content_id: NormalizedContentId
+    ) -> tuple[ExtractedEntity, ...]:
+        """Return a content's occurrences across all results, in
+        deterministic order."""

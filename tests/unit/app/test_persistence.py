@@ -13,6 +13,7 @@ from darkula.app.persistence import DarkulaSpi, UnitOfWork
 from darkula.app.repositories import (
     CollectionRepository,
     ContentRepository,
+    ExtractionRepository,
     OutboxRepository,
     ProcessedMessageRepository,
     SourceCandidateRepository,
@@ -61,6 +62,10 @@ class _RecordingUnitOfWork(UnitOfWork):
     @property
     def collection(self) -> CollectionRepository:
         raise AssertionError("recording stub exposes no collection repository")
+
+    @property
+    def extraction(self) -> ExtractionRepository:
+        raise AssertionError("recording stub exposes no extraction repository")
 
 
 class _RecordingSpi(DarkulaSpi):

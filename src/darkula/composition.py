@@ -42,6 +42,10 @@ from darkula.app.collection_scheduler import CollectionScheduler
 from darkula.app.collection_worker import CollectionWorker
 from darkula.app.content import ContentIngestService
 from darkula.app.data_stream import DataStream
+from darkula.app.extraction import (
+    DeterministicExtractionService,
+    deterministic_observables_profile,
+)
 from darkula.app.llm import LlmClient
 from darkula.app.normalization import ContentNormalizer, DeterministicContentNormalizer
 from darkula.app.object_store import ObjectStore
@@ -94,6 +98,7 @@ class Runtime:
     object_store: ObjectStore
     content_normalizer: ContentNormalizer
     content_ingest: ContentIngestService
+    extraction_service: DeterministicExtractionService
     collection_service: SourceCollectionService
     collection_scheduler: CollectionScheduler
     collection_worker: CollectionWorker
@@ -169,6 +174,27 @@ def _compose_content_ingest(
 ) -> ContentIngestService:
     """Compose the content-ingestion orchestration (PR 8)."""
     return ContentIngestService(normalizer=normalizer, spi=persistence)
+
+
+def _compose_extraction(
+    persistence: DarkulaSpi,
+    object_store: ObjectStore,
+    settings: Settings,
+) -> DeterministicExtractionService:
+    """Compose the deterministic extraction capability (PR 11).
+
+    The service depends only on persistence, ObjectStore, and the fixed
+    deterministic-observables/v1 profile; it is never injected with an
+    LlmClient, ReconAgent, Crawler, DataStream, or agent observability.
+    """
+    profile = deterministic_observables_profile(
+        max_entities=settings.extraction.max_entities_per_content
+    )
+    return DeterministicExtractionService(
+        spi=persistence,
+        object_store=object_store,
+        profile=profile,
+    )
 
 
 def _compose_llm(settings: Settings) -> LlmClient:
@@ -296,6 +322,7 @@ def compose(*, settings: Settings) -> Runtime:
     persistence = _compose_persistence(settings)
     content_normalizer = _compose_content_normalizer(object_store)
     content_ingest = _compose_content_ingest(content_normalizer, persistence)
+    extraction_service = _compose_extraction(persistence, object_store, settings)
     data_stream = _compose_data_stream(settings)
     crawler = _compose_crawler(settings)
     collection_service, collection_scheduler, collection_worker = _compose_collection(
@@ -319,6 +346,7 @@ def compose(*, settings: Settings) -> Runtime:
         object_store=object_store,
         content_normalizer=content_normalizer,
         content_ingest=content_ingest,
+        extraction_service=extraction_service,
         collection_service=collection_service,
         collection_scheduler=collection_scheduler,
         collection_worker=collection_worker,

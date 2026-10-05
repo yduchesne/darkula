@@ -69,7 +69,15 @@ A fully synthetic cybercrime-forum archetype:
   Retry-After on the archives board), and an intermittent 503-then-200
   thread sequence;
 - the geographic seed: a fictional Washington State hospital listing and a
-  separate Washington, D.C. reference (ambiguity seed for PR 12).
+  separate Washington, D.C. reference (ambiguity seed for PR 12);
+- an additive public "Collector sample indicators" thread
+  (`thr-collector-samples`) carrying fully synthetic, reserved/non-routable
+  observables (IPv4 `203.0.113.77`, IPv6 `2001:db8::c0de`, a repeated
+  `collector-samples.example.test` host, an HTTP(S) URL, an email, a SHA-256,
+  and inert prompt-injection prose) used by the PR 11 canonical extraction
+  slice. This is a compatible additive fixture: existing canonical pages and
+  behavior IDs are unchanged; only the landing/board-index counts and golden
+  hashes were deliberately updated.
 
 ## Renderer boundary
 The renderer is transport-light and fully deterministic:

@@ -161,3 +161,27 @@ assessment IDs, candidate entrypoints/URLs, page text, evidence
 references/excerpts, testimony, prompts, model output, and credentials.
 Spans and metric attributes are asserted content-free and
 high-cardinality-free by the unit TS matrix.
+
+## PR 11 status — deterministic extraction telemetry delivered
+
+PR 11 instruments the extraction boundary with the existing decorators plus
+one bounded entity counter:
+
+- **Span** — `extraction.extract` (one per extraction execution). No dynamic
+  attributes.
+- **Counters** — `darkula.extraction.executions` (one per call, incremented at
+  entry so success/failure/cancellation each count once) and
+  `darkula.extraction.entities` (number of persisted occurrences).
+- **Histogram** — `darkula.extraction.duration` (seconds, tagged only
+  `darkula.outcome` in {`success`, `error`}).
+
+The fast path that reuses an existing durable result still counts one
+execution but performs no ObjectStore read and no extractor work; extractor
+name/version, profile name/version, and entity-type vocabulary are bounded and
+developer-controlled, so they are the only permitted dimensions.
+
+Prohibited (mirroring PR 8-10): normalized-content/result/entity IDs as
+metric labels, URIs, ObjectKeys, content hashes, titles/text, raw or
+normalized entity values, and credentials. No argument or return value is ever
+captured by the decorators; extraction performs no LLM/agent-observability
+call in PR 11.

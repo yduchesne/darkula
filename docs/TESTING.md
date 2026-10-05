@@ -569,3 +569,57 @@ Real infrastructure (`./build.sh --intg`):
 The FakeLlmClient remains the deterministic automated-test boundary:
 real-workflow behavior (Coordinator/ReconAgent/persistence/crawler/sandbox)
 is never faked, and CI never requires a paid/live model API.
+
+## PR 11 testing status — deterministic extraction
+
+- `tests/unit/domain/test_extraction_domain.py` — domain matrix DM1-DM10:
+  span validation, bounded/control-free extractor identity, result validation,
+  duplicate manifest rejection, invalid entity counts, overlong values, and
+  the finite PR 11 entity/hash-subtype vocabulary.
+- `tests/unit/app/test_extractors.py` — semantic matrices IP1-IP8, URL1-URL10,
+  EM1-EM7, DN1-DN10, HS1-HS7. Every match is asserted to equal the exact
+  canonical-text slice `text[start:end]`; Unicode/IDNA v1 behavior is
+  documented as ASCII-only.
+- `tests/unit/app/test_extraction.py` — aggregation AG1-AG10 (deterministic
+  order, distinct spans preserved, exact-duplicate dedup, contract failure on
+  span/raw mismatch, exact-cap legal vs cap+1 typed failure without
+  truncation, same-input determinism, inert prompt injection, empty text,
+  deterministic manifest) and service/ObjectStore ES1-ES14 using an isolated
+  in-memory SPI (`tests/support/extraction_fakes.py`) plus the real
+  `InMemoryObjectStore`.
+- `tests/unit/app/test_extraction_security_guards.py` — TS6-TS8: static
+  imports never reach LLM/provider/network/browser/sandbox/DataStream/Fake
+  World, no SQL in application/domain extraction, and telemetry carries only
+  static bounded names.
+- `tests/unit/config/test_extraction_settings.py` — the only PR 11 setting
+  (`max_entities_per_content`) defaults/validates; extractor/profile
+  versions are not runtime configuration.
+- `tests/unit/test_composition.py` — central composition exposes exactly one
+  `DeterministicExtractionService` built from persistence + ObjectStore + the
+  fixed profile, with no LLM/crawler/DataStream injection.
+- `tests/integration/extraction/persistence/test_extraction_persistence.py`
+  — real-PostgreSQL RP1-RP12: atomic result+entity commit, semantic-key
+  uniqueness, coexisting new profile versions, identical bytes/distinct
+  observations, exact-occurrence conflict, same value/two spans, rollback on
+  a fault after result creation, bounded FK errors, insert-order-independent
+  listing, and a real concurrent semantic-key race with exactly one winner.
+- `tests/integration/extraction/slice/test_extraction_service_slices.py` —
+  failure/concurrency slices against real PostgreSQL + ObjectStore: missing
+  object and hash mismatch fail typed before extraction with zero
+  persistence; two concurrent same-content extractions resolve to exactly one
+  durable result.
+- `tests/integration/crawler/test_extraction_vertical_slice.py` — the
+  canonical slice: real `CrawlerController` -> real `PodmanSandbox` ->
+  Playwright/Chromium -> BlackGate HTTP -> real PR 8 `ContentIngestService` ->
+  ObjectStore canonical representation -> real PostgreSQL `NormalizedContent`/
+  `ContentArtifact` -> real `DeterministicExtractionService` -> real
+  `ExtractionResult`/`ExtractedEntity`. It asserts ObjectStore (not preview)
+  is the source, every raw value equals its exact slice, v1 normalization,
+  persisted manifest/extractor versions, deterministic ordering, duplicate
+  spans preserved, replay returning the same durable result with no duplicate
+  rows, and no `SourceAssessment`/relationship behavior.
+
+The canonical slice uses an additive PUBLIC Fake World thread
+(`thr-collector-samples`) with fully synthetic, reserved/non-routable
+observables; the extraction service and extractors are real, never faked, and
+no LLM/live network is involved.

@@ -55,6 +55,7 @@ from darkula.app.persistence import UnitOfWork
 from darkula.app.repositories import (
     CollectionRepository,
     ContentRepository,
+    ExtractionRepository,
     OutboxRepository,
     ProcessedMessageRepository,
     SourceCandidateRepository,
@@ -156,6 +157,10 @@ class _SliceUnitOfWork(UnitOfWork):
     @property
     def collection(self) -> CollectionRepository:
         raise AssertionError("slice stub exposes no collection repository")
+
+    @property
+    def extraction(self) -> ExtractionRepository:
+        raise AssertionError("slice stub exposes no extraction repository")
 
 
 def _slice_message() -> StreamMessage:

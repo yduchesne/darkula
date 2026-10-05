@@ -117,3 +117,39 @@ routine collection is never agentic and no LLM/agent decides navigation.
   run/source/policy ID, URI, source name, hash, object key, or credential
   ever appears in labels, and failure summaries are validated secret-free
   before persistence.
+
+## PR 11 delivered controls (deterministic extraction)
+
+Deterministic extraction operates only on already-persisted, already-hostile
+normalized content; it never expands the trust boundary.
+
+- **Hostile text is data, never control.** Extractors are pure string
+  functions; extracted content can never alter extractor configuration,
+  database behavior, ObjectStore keys, telemetry labels, code execution, or
+  network access. Prompt-injection prose is stored as inert data.
+- **No LLM, network, DNS, WHOIS/RDAP, or geocoding.** PR 11 imports no LLM
+  provider, HTTP client, browser, sandbox, or DataStream boundary; static
+  import guards enforce this in CI. There is no live enrichment.
+- **Canonical representation, never the DB preview.** PostgreSQL stores only
+  a bounded preview; extraction loads the canonical normalized-text
+  representation from ObjectStore. There is no preview fallback.
+- **Integrity before extraction.** ObjectStore reads are streamed with an
+  explicit byte cap and fail closed on missing objects, size mismatch, hash
+  mismatch, non-UTF-8 bytes, or non-text artifact kinds/mediatypes. S3/R2
+  ETag is never treated as the Darkula SHA-256 representation hash.
+- **Bounded output.** Input bytes, raw/normalized value length, extractor/
+  profile names/versions, manifest count, span shape, and total entity count
+  are bounded; exceeding the entity cap fails typed and never silently
+  truncates facts.
+- **Safe URL handling.** URLs containing userinfo/credentials are rejected and
+  never persisted verbatim; no network fetch occurs.
+- **Provenance, not a global graph.** Results/occurrences are append-only and
+  content-scoped; the same value across observations or spans is retained as
+  distinct occurrences. Extracted facts are not reputation or global truth.
+- **Telemetry is content-free.** Only operation/profile/extractor/entity-type
+  names, bounded outcome/failure categories, and counts/durations are
+  recorded. URI, ObjectKey, content hash, IDs as metric labels, raw/
+  normalized values, title/text, and credentials never appear.
+- **Cancellation stays clean.** `asyncio.CancelledError` propagates; a
+  cancellation before the write commits nothing, and one during the write
+  rolls back so no partial result/occurrence set is ever durable.

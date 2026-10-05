@@ -218,3 +218,21 @@ increase them:
 Environment overrides follow the standard rules
 (`DARKULA_RECON__MAX_TURNS`, ...) with unset/empty no-ops; invalid values
 fail closed at validation.
+
+### Extraction group (PR 11)
+
+PR 11 adds exactly one extraction setting; everything else about
+deterministic extraction is a frozen, developer-controlled contract.
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `max_entities_per_content` | `5000` | Hard cap on persisted occurrences for one content/profile extraction. Must be within `[1, 1000000]`. Exceeding it fails typed; facts are never silently truncated. |
+
+Overrides follow the standard rules
+(`DARKULA_EXTRACTION__MAX_ENTITIES_PER_CONTENT`), with unset/empty no-ops.
+
+Deliberately **not** configurable: extractor regexes/lists, extractor
+name/version values, the `deterministic-observables/v1` profile name/version,
+the canonical normalized-text byte bound (reused from
+`MAX_NORMALIZED_TEXT_BYTES`), and normalization semantics. Changing any of
+those is a versioned code change, never a runtime knob.
