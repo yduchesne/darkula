@@ -1,6 +1,6 @@
 # Darkula Configuration
 
-> **v0.2 planning note:** [ROADMAP_V02.md](ROADMAP_V02.md) proposes separate configuration for discovery providers/polling budgets, approved real HTTPS/Tor transport, MonitoringProfiles/matching, and source-specific authentication. These settings are **not yet implemented**. Until their dedicated PRs deliver validated config and composition, do not assume configuration flags can authorize live network access. Keep existing Fake World sandbox isolation and fail-closed driver selection intact.
+> **v0.2 planning note:** [ROADMAP_V02.md](ROADMAP_V02.md) proposes separate configuration for discovery providers/polling budgets, approved real HTTPS/Tor transport, MonitoringProfiles/matching, and source-specific authentication/access readiness. External-source accounts are provisioned **manually**, and a persistent, independent access state (`UNKNOWN`, `PUBLIC`, `CREDENTIALS_PENDING`, `READY`, `AUTH_FAILED`, `ACCESS_REVOKED`) controls authenticated collection alongside existing policy. Secret references must be scoped to approved Sources/endpoints; configured references alone never imply `READY`. These settings are **not yet implemented**. Until their dedicated PRs deliver validated config and composition, do not assume configuration flags can authorize live network access. Keep existing Fake World sandbox isolation and fail-closed driver selection intact.
 
 ## PR 4 status — layered resolution + PostgreSQL fields
 
