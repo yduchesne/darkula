@@ -73,7 +73,6 @@ CollectionPolicy references credentials; it does not embed them. A secret resolv
 ## Production readiness
 Real illicit-source crawling is outside the initial Fake World development loop. Before enabling it, require reviewed sandboxing, egress policy, artifact controls, secret handling, resource limits, auditability, and applicable legal/operational review.
 
-## PR 9 delivered controls (managed-source collection)
 ## v0.2 planned security requirements (not delivered in v0.1)
 
 See [v0.2 Roadmap](ROADMAP_V02.md). These are **design constraints and future acceptance tests**, not assertions of implemented protections.
@@ -86,10 +85,14 @@ See [v0.2 Roadmap](ROADMAP_V02.md). These are **design constraints and future ac
 
 **Source authentication (separate later PR).** Only explicitly provisioned authorized access: resolve a source-scoped secret reference on the trusted side, provide narrowly scoped material for the one sandbox execution, and never expose credentials in persistence, logs, telemetry, source content, agents, or another Source's session. Do not automate account creation or bypass of access controls.
 
+**Credential state and manual provisioning.** No registration or access acquisition by Darkula: accounts are created and authorized externally by an operator. Source access readiness is independent from candidate/source lifecycle: `CREDENTIALS_PENDING` must preserve useful candidates and block protected collection, not become an analytical rejection; `READY` requires successful trusted authentication validation, not a mere configured secret reference. `AUTH_FAILED` suspends collection with finite attempts, and `ACCESS_REVOKED` cannot auto-resume. A Source/endpoint-scoped secret reference is not a MonitoringProfile credential. Validate separation between candidates, Sources, endpoints and sessions; prohibit credential reuse across unrelated access scopes. Human intervention is required for source approval, CAPTCHA/MFA and revoked access. Operator-facing status may disclose only sanitized errors/provenance, never secret material.
+
 **Shared source corpus and profile outputs.** Preserve v0.1 content-addressed ObjectStore artifacts with source-level provenance; profile results reference these artifacts rather than duplicating them. Only profile-specific derived/export artifacts acquire profile UUID path prefixes. Profile IDs are correlation/lookup identifiers, not access-control subjects. Network-exposed management APIs require deployment-perimeter protection; no built-in user/account system is part of v0.2.
 
 **Required tests.** Include forbidden egress and DNS/redirect negatives, policy cancellation, failed Tor transport, malicious discovery payloads, duplicate/racing feed records, mirror-claim spoofing, prompt injection, bounded artifact and resource limits, credential isolation, telemetry redaction, and source/provenance preservation. CI runs deterministic Fake World/controlled fixtures; live destination checks are explicit operator-approved opt-ins, not CI dependencies.
 
+
+## PR 9 delivered controls (managed-source collection)
 
 Collection is deterministic, policy-authorized work over managed Sources;
 routine collection is never agentic and no LLM/agent decides navigation.
