@@ -32,13 +32,14 @@ The [v0.1 roadmap](ROADMAP_V01.md) records PRs 1–16 as delivered. Existing com
 8. **Safe, bounded execution.** Explicit per-provider rate/cost budgets, per-source egress policies, artifact limits, retries, cancellation, retention settings, and content-free telemetry. Never accept arbitrary URLs as immediate crawler instructions.
 9. **Synthetic and opt-in integration testing.** CI never needs criminal-source credentials, real onion services, or untrusted data dumps. Live external-network tests use explicit operator opt-in and permitted destinations.
 10. **Explicit, operator-provisioned access.** Darkula never registers source accounts, acquires invitations, or circumvents access controls. A source's authentication readiness is separate from candidate/source lifecycle; unavailable credentials never imply analytical rejection. Credential references belong to an approved Source/endpoint, not a MonitoringProfile.
-11. **No silent architecture replacement.** Preserve existing candidate lifecycle, `ReconCoordinator`, collection scheduling, ObjectStore content-addressing, Fake World, and evaluation boundaries. Amend the roadmap if necessary rather than redesigning implicitly.
+11. **Policy-routed qualification.** A preapproved, well-formed registry observation can be qualified deterministically without an LLM, provided all provider/record/identity-evidence gates pass; otherwise route to the existing ReconCoordinator or retain the candidate pending. Always persist qualification method, trusted policy/version, supporting evidence and outcome. A `ReconAssessment` is only produced by actual agent reconnaissance, never fabricated for registry decisions.
+12. **No silent architecture replacement.** Preserve existing candidate lifecycle, `ReconCoordinator`, collection scheduling, ObjectStore content-addressing, Fake World, and evaluation boundaries. Amend the roadmap if necessary rather than redesigning implicitly.
 
 ## Planned capability flow
 
 1. Structured registries (starting with RansomLook) and, later, collected-content discovery emit normalized **DiscoveryObservations** with locator, method, provider/source reference, timestamps, and evidence.
 2. **SourceDiscoveryService** validates and deduplicates observations, reconciles known candidates/endpoints, and persists new `SourceCandidate` records. An unresolved source name without a concrete locator remains an unresolved reference, not an authorized crawl candidate.
-3. The **existing ReconCoordinator** inspects admitted candidates through its bounded crawler and records `ReconAssessment`. Qualification is not automatic promotion.
+3. A trusted **CandidateQualificationPolicy** routes admitted candidates: `REGISTRY_POLICY` can deterministically qualify eligible structured records with complete evidence; insufficient, ambiguous or contradictory records use `AGENT_RECON` via the existing ReconCoordinator, or remain pending. Both paths create a durable qualification decision; only actual agent reconnaissance creates a `ReconAssessment`. Neither path automatically promotes a candidate.
 4. Reconnaissance preserves a separate, persistent access-readiness assessment. Sources requiring login without an authorized provisioned credential move to `CREDENTIALS_PENDING` instead of being rejected for lack of access. An operator provisions external-source accounts and credentials manually; the candidate may be qualified using available evidence or remain pending further reconnaissance.
 5. Explicit promotion/approval creates a managed `Source`, `SourceEndpoint`, and `CollectionPolicy` as separately authorized steps.
 6. **Existing SourceCollectionService** performs deterministic, policy-bounded collection using HTTPS/Tor transport capability added to the sandbox.
@@ -47,10 +48,17 @@ The [v0.1 roadmap](ROADMAP_V01.md) records PRs 1–16 as delivered. Existing com
 
 ```text
 Structured feeds ----+                               Existing source lifecycle
-                     +--> DiscoveryObservation --> SourceCandidate --> ReconCoordinator
+                     +--> DiscoveryObservation --> SourceCandidate --> QualificationPolicy
 Collected references-+                                       |
-                                                             v
-                                              Qualified -> explicit promotion
+                                          +------------------+----------------+
+                                          |                                   |
+                                   REGISTRY_POLICY                        AGENT_RECON
+                                   (no LLM)                           (ReconCoordinator)
+                                          +------------------+----------------+
+                                                             |
+                                                   QUALIFIED or pending
+                                                             |
+                                              explicit promotion
                                                              |
                                                              v
                                       Source + Endpoint + CollectionPolicy
@@ -61,6 +69,25 @@ Collected references-+                                       |
                                                              |
                                       MonitoringProfile matching and result API
 ```
+
+## Qualification routing — cross-PR v0.2 decision
+
+**Principle:** registry provenance and structured metadata can be adequate to **qualify a candidate**, but must not be conflated with endpoint authenticity, reachability, authorization, or permission to collect. Do not require a model merely to repeat a well-established, policy-accepted classification.
+
+A versioned, operator-controlled `CandidateQualificationPolicy` runs in trusted deterministic application code **after** discovery validation/reconciliation. It chooses exactly one path according to this decision matrix:
+
+| Condition | Action | Decision provenance |
+| --- | --- | --- |
+| Provider on explicit trusted-adapter allowlist; feed acquired/parsed through approved adapter; locator normalized and permitted scheme; required source classification and identifiers present; record has durable provenance; no material source-identity contradiction; policy explicitly authorizes this record class | **Deterministic `REGISTRY_POLICY` qualification**; no LLM or required crawler reconnaissance | Provider identity, upstream record key/version, observed evidence references, normalized locator, trusted policy ID/version, rule IDs, evaluation time |
+| Known provider but incomplete class/locator, ambiguous identity, disputed mirror claim, conflicting feeds, weak provenance, or record outside deterministic acceptance policy | **`AGENT_RECON`** via existing ReconCoordinator **when safe and authorized**, otherwise `RECONNAISSANCE_PENDING` | Decision to route/pending with reason and retained discovery observations; agent path uses its actual `ReconAssessment` |
+| Invalid/unparseable/disallowed locator, unsupported scheme, or source with no resolvable endpoint | Reject invalid ingestion or retain unresolved reference as appropriate; **do not crawl or fabricate a qualified candidate** | Validation outcome/evidence; no invented endpoint |
+| Known candidate/endpoint already reconciled | Reuse existing identity; update discovery/qualification evidence only as policy permits | Existing candidate/Source identity plus new evidence; no automatic duplication or promotion |
+
+**Qualification record:** introduce an immutable, durable `QualificationDecision` (or an equivalent explicitly typed append-only record specified by PR 17) with method `REGISTRY_POLICY` or `AGENT_RECON`, candidate identity, outcome, evaluated timestamp, evidence references, applicable policy/provider ID and version, and optional actual `ReconAssessment` reference **only for** `AGENT_RECON`. A registry-path `QUALIFIED` candidate never acquires a fabricated `ReconAssessment`. If existing code assumes every `QUALIFIED` candidate has a `ReconAssessment`, extend the application/read models in PR 19 instead of emitting fake LLM outcomes. Persist the decision and the existing expected-state candidate transition/event atomically through versioned stored functions/UnitOfWork, with replay/race convergence.
+
+**Boundaries:** deterministic qualification is **not** automatic Source promotion, endpoint approval, successful reachability validation, collection policy creation, or authenticated access. Public-source reachability can be checked separately in a permitted, sandboxed probe if required by downstream policy; it is not an LLM classification step and cannot widen crawl authority. A registry `requires_auth` claim may set evidence-backed `CREDENTIALS_PENDING` through trusted access policy and does not make credentials usable. Operators control which adapters/record classes are trusted and can revoke/disable deterministic qualification without rewriting immutable history. Agents cannot edit allowlists, policies or qualification records directly.
+
+**Implementation ownership:** PR 17 defines the minimal qualification-decision domain and durable provenance contract; PR 18 supplies registry evidence but does not silently grant global trust; PR 19 implements policy routing, atomic qualification decisions, legacy reconnaissance integration, and fallback; PR 27 exercises both qualification paths, including no-agent assertions and negative/trust-revocation cases. No source discovery provider is implicitly authoritative solely because it is well known.
 
 ## Authenticated-source access readiness — cross-PR v0.2 decision
 
@@ -93,8 +120,9 @@ Collected references-+                                       |
 - Add durable provenance/observation persistence through existing UnitOfWork and *additive* versioned PostgreSQL migration/functions; do not edit migrations `0001`–`0008`.
 - Define `SourceDiscoveryService` interface and provider adapter boundary. Avoid a generic workflow engine or a second candidate/recon model.
 - Enforce URI normalization/validation, bounded field lengths, source type validation, canonical time handling, deterministic replay/idempotency, and safe storage of provider metadata.
+- Define a separate immutable `QualificationDecision` contract with `REGISTRY_POLICY` / `AGENT_RECON` method, outcome, candidate ID, evidence references, policy/provider ID and version, and optional **actual** `ReconAssessment` linkage (agent path only). Design additive stored-function persistence to support an atomic qualification decision plus candidate event/status transition; do not create a second `ReconAssessment` type.
 
-**Acceptance:** duplicate observations replay without duplicate canonical candidate effects; recorded authentication requirements can persist as `CREDENTIALS_PENDING` independently of candidate status; distinct provider evidence remains retained; a name-only reference cannot trigger crawling; malformed/malicious URLs and source records fail safely; PostgreSQL and in-memory tests agree on identity/provenance semantics.
+**Acceptance:** immutable qualification decisions preserve method/evidence/policy versions without fabricated agent assessments; duplicate observations replay without duplicate canonical candidate effects; recorded authentication requirements can persist as `CREDENTIALS_PENDING` independently of candidate status; distinct provider evidence remains retained; a name-only reference cannot trigger crawling; malformed/malicious URLs and source records fail safely; PostgreSQL and in-memory tests agree on identity/provenance semantics.
 
 **Out of scope:** external feed network access, candidate promotion policy, crawling, MonitoringProfiles.
 
@@ -118,10 +146,13 @@ Collected references-+                                       |
 - Define canonical locator normalization and candidate semantic keys without assuming one URL equals one Source.
 - Reconcile new observations against candidate entrypoints and managed SourceEndpoints; record possible aliases/mirrors as **evidence-backed suggestions**.
 - Repeated/multiple feed observations can enrich history; they must not silently promote a candidate, merge Sources, or rewrite Source identities.
-- Define explicit admission criteria/queueing to the existing `ReconCoordinator`, with limits and failure/retry behavior; keep final authorization with trusted application logic.
+- Implement a deterministic, versioned `CandidateQualificationPolicy` and routing decision matrix: accept only explicitly allowed registry adapters/record classes with complete metadata, normalized locator and durable evidence, with no conflicting identity claims; otherwise route to existing `ReconCoordinator` under authorization or remain pending. Do not invoke an LLM in the `REGISTRY_POLICY` success path.
+- Preserve the existing `ReconCoordinator` for agent-assisted cases and persist `AGENT_RECON` decisions with references to genuine `ReconAssessment` records. The `REGISTRY_POLICY` path persists its own decision and the existing `QUALIFIED` candidate transition/event without inventing `ReconAssessment` rows.
+- Commit qualification decision plus expected-state event/status transition atomically and idempotently via existing UnitOfWork and additive stored-function contracts. Reconcile consumers that assume all qualified candidates have agent assessments.
+- Define explicit admission criteria/queueing to either qualification path, with limits and failure/retry behavior; keep final authorization with trusted application logic.
 - When structured or recon evidence indicates a login gate, persist `CREDENTIALS_PENDING` while retaining candidate lifecycle status; qualify based on sufficient public evidence or remain `RECONNAISSANCE_PENDING` for further authorized inspection. Never reject solely because credentials are absent.
 
-**Acceptance:** replay/races converge, distinct claimed mirrors stay unmerged unless approved, known endpoints do not spawn duplicate source collection, and rejected/inaccessible candidates retain auditable history; an authentication-gated candidate is retained in `CREDENTIALS_PENDING` without an automatic `REJECT`.
+**Acceptance:** deterministic acceptance of a trusted, complete registry record performs zero agent/LLM calls, persists a `REGISTRY_POLICY` decision and `QUALIFIED` event without a fake `ReconAssessment`; ambiguous/conflicting/unknown records route to authorized agent reconnaissance or remain pending; provider disablement/revocation prevents new policy qualification; decision/transition replay/races converge, distinct claimed mirrors stay unmerged unless approved, known endpoints do not spawn duplicate source collection, rejected/inaccessible candidates retain auditable history, and an authentication-gated candidate is retained in `CREDENTIALS_PENDING` without an automatic `REJECT`.
 
 ## PR 20 — Controlled real-world HTTPS crawling (P0)
 
@@ -204,7 +235,7 @@ Collected references-+                                       |
 
 **Depends on:** all v0.2 work selected for release; PR 23/26 are planned P1 inclusions and may be explicitly deferred only by a documented roadmap amendment. **Dominant concern:** prove the integrated release behavior.
 
-- Full-stack fixture-based workflow: structured feed -> persistent discovery/provenance -> reconciliation -> bounded ReconCoordinator -> explicit promotion -> HTTPS/Tor-controlled collection -> extraction/SourceAnalyst -> two MonitoringProfiles -> programmatic results.
+- Full-stack fixture-based workflows: trusted complete structured feed -> persistent discovery/provenance -> `REGISTRY_POLICY` qualification **without** ReconAgent -> explicit promotion -> HTTPS/Tor-controlled collection -> extraction/SourceAnalyst -> two MonitoringProfiles -> programmatic results; separately, ambiguous/untrusted feed -> authorized ReconCoordinator and actual ReconAssessment, or pending if not inspectable.
 - Verify outbox/replay/concurrency, source/endpoint identity, cross-source dedup, cancellation, transport failure recovery, profile uniqueness, authentication-required pending state, credential provisioning/validation (if PR 26 is included), revocation, and security invariants.
 - Define measured discovery precision, useful candidate yield, new-source rate, latency, duplicate/mirror rate, and collection cost; do not invent a universal benchmark threshold before a baseline exists.
 - Update README, configuration/security/deployment/testing/evaluation docs and [Production Readiness](PRODUCTION_READINESS.md) with verified v0.2 behavior and remaining gaps. Run `./build.sh --qa`, `./build.sh --sec`, and `./build.sh --intg` on the capable host; external smoke tests remain separate, operator-approved and opt-in.
@@ -228,7 +259,7 @@ Collected references-+                                       |
 
 1. From an allow-listed, machine-readable source registry, Darkula imports a new source locator with provider provenance and stable import identity.
 2. Duplicate feed polls converge to the same candidate while preserving independent evidence observations.
-3. ReconCoordinator inspects only the authorized candidate origin and creates an evidence-backed qualification; an explicit policy admits/promotes it.
+3. An explicit qualification policy classifies a fully supported trusted registry record using `REGISTRY_POLICY` without agent/LLM access; an ambiguous or insufficiently supported record uses authorized ReconCoordinator/`AGENT_RECON` or remains pending. Both outcomes have durable method/evidence provenance; only agent inspection produces `ReconAssessment`. Explicit Source promotion remains separate.
 4. A managed Source is collected through approved HTTPS or Tor transport with sandbox egress independently enforced.
 5. Normalization, source-owned ObjectStore artifacts, extraction, relationship/geography resolution when available, and SourceAnalyst produce persistent evidence and assessment history.
 6. An authenticated candidate discovered without credentials remains tracked as `CREDENTIALS_PENDING` and is never analytically rejected for that reason. When PR 26 is included, a controlled fixture proves operator-provisioned credentials, `READY` validation, failure/revocation suspension and authorized resume.
