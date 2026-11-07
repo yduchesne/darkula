@@ -1,6 +1,5 @@
 # Darkula Testing Strategy
 
-## Commands
 ## v0.2 planned acceptance and test boundaries
 
 The completed v0.1 integration suite uses controlled Fake World sources. The requirements below are **planned** for [v0.2](ROADMAP_V02.md); no new tests are claimed by this documentation-only PR.
@@ -9,12 +8,16 @@ The completed v0.1 integration suite uses controlled Fake World sources. The req
 - **Source reconciliation:** duplicates from separate feeds, changed provider records, aliases/mirrors, malicious claims, rejected candidates, and failed imports. No automatic source merge or promotion.
 - **HTTPS/Tor sandbox:** transport-specific network allowlists, DNS rebinding, private/link-local/metadata denial, redirect and cross-origin rejection, Tor proxy failure/no clearnet fallback, bounded requests/pages/time/output, clean cancellation, no privileged fallback.
 - **Recursive/semantic discovery:** external links captured as data rather than navigated; exact source evidence; name-only references remain unresolved; adverse prompt injection cannot authorize browsing.
+- **Source access readiness:** `UNKNOWN` / `PUBLIC` / `CREDENTIALS_PENDING` / `READY` / `AUTH_FAILED` / `ACCESS_REVOKED` persisted separately from existing candidate/source status; source discovered behind login is retained (not REJECT); public-scope qualification can succeed pending protected content; correct reason/provenance and candidate-to-Source transfer; no authenticated work scheduled/claimed while blocked.
+- **Manual operator provisioning and authentication (PR 26):** synthetic login with operator-provisioned credential references; merely setting a reference remains pending until positive validation; expired/invalid credentials persist `AUTH_FAILED` without infinite retries; `ACCESS_REVOKED` cannot reauthorize itself; re-provision/revalidation resumes only permitted collection; credentials not leaked to another Source/endpoint, artifacts, models, or telemetry; human verification/approval is never automated.
 - **MonitoringProfiles:** UUID and globally unique caller correlation IDs, generated correlation defaults, concurrent duplicate-create handling, versioned match provenance, two profiles matching one collected source without duplicated collection, UUID-only profile-scoped API semantics and explicit correlation lookup.
 - **Full stack:** registry fixture -> SourceCandidate -> ReconCoordinator -> explicit Source promotion -> approved HTTPS/Tor collection -> existing extraction/SourceAnalyst -> profile result query; replay and outages retain one authoritative effect.
 - **Execution rule:** local test servers, Fake World and synthetic intelligence remain mandatory CI substrates. Live public/hidden service smoke tests require separate explicit permission and opt-in and must not be essential to ordinary `./build.sh --qa`, `./build.sh --sec`, or `./build.sh --intg`.
 
 Measure discovery yield/precision, novelty, duplicate candidate rate, mean qualifying latency and cost; establish baselines before specifying release-wide numeric gates. Keep v0.1's static security guards, immutable-migration guard, and single-transaction semantics unchanged.
 
+
+## Commands
 
 The deterministic local quality gate:
 
