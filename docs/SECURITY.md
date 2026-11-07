@@ -74,6 +74,22 @@ CollectionPolicy references credentials; it does not embed them. A secret resolv
 Real illicit-source crawling is outside the initial Fake World development loop. Before enabling it, require reviewed sandboxing, egress policy, artifact controls, secret handling, resource limits, auditability, and applicable legal/operational review.
 
 ## PR 9 delivered controls (managed-source collection)
+## v0.2 planned security requirements (not delivered in v0.1)
+
+See [v0.2 Roadmap](ROADMAP_V02.md). These are **design constraints and future acceptance tests**, not assertions of implemented protections.
+
+**Discovery is tainted data, not authority.** Third-party registry records, extracted hyperlinks, semantic source names, advertised mirrors, and LLM-produced classifications must be treated as untrusted claims. Normalize/validate locators, preserve provenance, reject unsupported schemes and unsafe URL forms, and separate candidate admission from bounded reconnaissance and explicit promotion. No discovered URL may be immediately followed just because a registry or scraped page supplies it. A name-only reference remains unresolved. Provider licenses, terms and rate limits must be reviewed before ingestion.
+
+**Controlled HTTPS egress.** Any Internet-capable sandbox configuration must be a separately authorized workload capability. Verify destination authorization across DNS resolution/re-resolution, redirect hops, address-family differences, private/link-local/loopback/metadata and other disallowed networks, and proxy routing. Never replace the Fake World network isolation with a broadly permissive Podman network. Trusted controller origin/path budgets and sandbox transport enforcement are independent controls.
+
+**Tor transport.** Only a controlled, explicitly allowed Tor egress mechanism may be reachable from an onion-crawl sandbox; fail closed on proxy failure. No DNS leakage or direct-Internet fallback, and no bypass from discovered links/redirects. Tor service identity/endpoint claims remain untrusted pending reconnaissance.
+
+**Source authentication (separate later PR).** Only explicitly provisioned authorized access: resolve a source-scoped secret reference on the trusted side, provide narrowly scoped material for the one sandbox execution, and never expose credentials in persistence, logs, telemetry, source content, agents, or another Source's session. Do not automate account creation or bypass of access controls.
+
+**Shared source corpus and profile outputs.** Preserve v0.1 content-addressed ObjectStore artifacts with source-level provenance; profile results reference these artifacts rather than duplicating them. Only profile-specific derived/export artifacts acquire profile UUID path prefixes. Profile IDs are correlation/lookup identifiers, not access-control subjects. Network-exposed management APIs require deployment-perimeter protection; no built-in user/account system is part of v0.2.
+
+**Required tests.** Include forbidden egress and DNS/redirect negatives, policy cancellation, failed Tor transport, malicious discovery payloads, duplicate/racing feed records, mirror-claim spoofing, prompt injection, bounded artifact and resource limits, credential isolation, telemetry redaction, and source/provenance preservation. CI runs deterministic Fake World/controlled fixtures; live destination checks are explicit operator-approved opt-ins, not CI dependencies.
+
 
 Collection is deterministic, policy-authorized work over managed Sources;
 routine collection is never agentic and no LLM/agent decides navigation.
