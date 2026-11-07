@@ -43,6 +43,25 @@ The existing `SourceCandidate` identity and lifecycle remain authoritative. `Rec
 
 Do not equate URI equality with logical Source identity. Repeated observations of one locator can converge while preserving every provider/evidence record. A claimed alias or mirror is only a proposed relationship pending verification/approval; source merging cannot be inferred solely from text, redirects, or provider claims. A `WebSearchProvider` may later contribute observations, but the initial v0.2 adapter is structured registry ingestion, not unrestricted agent search.
 
+### Authenticated-source access readiness — separate from lifecycle
+
+v0.2 tracks authentication requirements and credential readiness on a **separate persistent access-state dimension**, rather than adding `CREDENTIALS_PENDING` to the existing `CandidateStatus` or `SourceStatus` enums. Proposed `AccessStatus` values:
+
+| Access status | Meaning | Action |
+| --- | --- | --- |
+| `UNKNOWN` | Authentication requirements unverified | Bound public-only reconnaissance |
+| `PUBLIC` | Verified unauthenticated access possible | Normal unauthenticated collection subject to policy |
+| `CREDENTIALS_PENDING` | Authentication required; usable credentials unavailable | Keep candidate/source; block authenticated collection; ask operator to provision |
+| `READY` | Operator-provisioned credentials **successfully validated** | Permit authorized authenticated collection |
+| `AUTH_FAILED` | Credentials/session expired or rejected | Suspend authenticated collection; bounded failure handling |
+| `ACCESS_REVOKED` | Operator withdrew authorization | Block collection until explicit reauthorization and revalidation |
+
+A discovered candidate may be analytically useful and `QUALIFIED` on public evidence even when `CREDENTIALS_PENDING`; if sufficient reconnaissance needs login, it remains `RECONNAISSANCE_PENDING`, **not** rejected for missing credentials. Keep the authentication status and sanitized, evidence-backed rationale across candidate promotion to Source. Per-endpoint requirements may differ; source-wide summaries cannot silently authorize an endpoint whose access has not been validated.
+
+**External account creation and access acquisition are manual operator tasks.** Darkula will not register accounts, solve CAPTCHAs/MFA automatically, purchase access, or bypass authorization. Operators provision secrets through an appropriate secret manager; a CollectionPolicy stores only a Source/endpoint-specific *reference*. The trusted controller resolves it only for one authorized sandbox execution. Providing a reference does not confer `READY`: a verified successful login is required. Failed/revoked states block scheduling/execution of protected collection until validated resumption; bounded public reconnaissance may continue under its independent policy.
+
+PR 17 establishes domain and durable access metadata; PR 19 connects discovery/reconciliation and reconnaissance to pending state; PR 26 supplies credential resolution, validation/session management, failure transitions and operator resumptions. PR 27 validates end-to-end behavior. This is **planned**, not v0.1 delivered functionality.
+
 ### Real-source crawling
 
 v0.1's default-deny Fake World sandbox configuration stays intact. v0.2 adds separately configured, explicitly approved HTTPS and Tor transport policies **without** a general Internet-access toggle. The trusted `CrawlerController` still validates `CrawlRequest` (source endpoint, origin/path, budgets), and the sandbox independently enforces egress restrictions. Handling of DNS, redirects, proxy/Tor transport, private-network/metadata ranges and TLS must be tested fail-closed. The crawler never follows arbitrary out-of-origin URLs; these can only become normalized **discovery observations** after crossing the bounded data/evidence boundary.
