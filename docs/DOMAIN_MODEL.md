@@ -289,7 +289,6 @@ semantic idempotency key is
 Assessments never mutate `Source` or extraction history, and the absence of
 collected evidence is never inferred to mean inactivity.
 
-## Semantic rules
 ## v0.2 proposed concepts — not yet implemented
 
 The following are **planned**, not executable v0.1 types or migration schemas. Keep the existing SourceCandidate, Source/SourceEndpoint, ReconAssessment, CollectionPolicy, content-artifact, and SourceAssessment semantics unchanged. See [v0.2 Roadmap](ROADMAP_V02.md).
