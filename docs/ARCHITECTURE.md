@@ -39,9 +39,36 @@ Content references (v0.2 recursive/semantic discovery) ---+
 
 A DiscoveryObservation is an untrusted claim and may refer to a URL, a named but unresolved source, a suspected mirror, or a provider-defined record. Preserve provider/source reference, detection method, time, original context/evidence, normalized locator where available, and relation assertions. The provider's classification or `available` flag must not become authorization or established truth. Names without validated locators cannot be scheduled for crawl.
 
-The existing `SourceCandidate` identity and lifecycle remain authoritative. `ReconCoordinator` continues to inspect candidates only under trusted authorization; its `ReconAgent` does not gain network tooling or persistence access. `QUALIFIED` remains distinct from `PROMOTED`. The discovery service may enqueue eligible candidates for bounded reconnaissance but cannot silently promote them or manufacture a `CollectionPolicy`.
+The existing `SourceCandidate` identity and lifecycle remain authoritative. **v0.2 adds policy-routed qualification:** a trusted, versioned `CandidateQualificationPolicy` can qualify a complete, non-conflicting record from an explicitly approved registry adapter *without* ReconAgent or an LLM; incomplete/ambiguous records go through the existing `ReconCoordinator` (when authorized) or remain pending. The `ReconAgent` does not gain network tooling or persistence access. `QUALIFIED` remains distinct from `PROMOTED`. Discovery cannot silently promote Sources or manufacture CollectionPolicies.
 
 Do not equate URI equality with logical Source identity. Repeated observations of one locator can converge while preserving every provider/evidence record. A claimed alias or mirror is only a proposed relationship pending verification/approval; source merging cannot be inferred solely from text, redirects, or provider claims. A `WebSearchProvider` may later contribute observations, but the initial v0.2 adapter is structured registry ingestion, not unrestricted agent search.
+
+### Deterministic registry qualification versus ReconAgent
+
+**Planned v0.2 change, not v0.1 behavior.** Discovery validation/reconciliation produces observations and candidates, then a trusted `CandidateQualificationPolicy` selects `REGISTRY_POLICY`, `AGENT_RECON` or pending. The policy's trusted-adapter allowlist is **operator-configured**, scoped to explicit record classes, versioned and fail-closed. A provider's reputation alone does not make each record authoritative.
+
+```text
+DiscoveryObservation(s) -> SourceCandidate -> CandidateQualificationPolicy
+                                               |                     |
+                                       REGISTRY_POLICY           AGENT_RECON
+                                    (no LLM; complete,         (existing
+                                     trusted registry)         ReconCoordinator)
+                                               |                     |
+                                      QualificationDecision    ReconAssessment
+                                               |                     |
+                                               +--- QualificationDecision
+                                                         |
+                                               candidate QUALIFIED
+                                                   (or pending)
+                                                         |
+                                           separately authorized promotion
+```
+
+Deterministic eligibility requires an allowlisted feed adapter with verified acquisition/parsed schema, supported normalized locator, a sufficiently complete source type and provider record identity, durable source evidence, and **no material conflicts** over source classification/identity or unverified mirror association. Where policy/evidence is insufficient, route to the existing agent only when authorized, otherwise leave pending. A sandboxed availability check may separately test an approved endpoint, but must not be construed as identity verification or browsing authorization.
+
+An immutable **`QualificationDecision`** (or equivalent contract designed in PR 17) persists the candidate, qualification method `REGISTRY_POLICY | AGENT_RECON`, result, evidence references, policy/provider ID/version and evaluated timestamp. Only an actual agent run links to the existing `ReconAssessment`; **do not synthesize ReconAssessment** for a registry decision. PR 19 must adapt any existing downstream assumption that `QUALIFIED` requires a ReconAssessment. Status `QUALIFIED` and its corresponding historical event retain the v0.1 meaning and transition semantics; the decision, event and expected-state update commit atomically via versioned PostgreSQL stored functions and UnitOfWork. Replays and competing attempts must converge without duplicate authoritative decisions.
+
+This qualification step does **not** approve a Source endpoint, configure egress, create a CollectionPolicy, grant credentials, or trigger collection. A registry assertion of a login gate can independently inform `CREDENTIALS_PENDING`. Trust policy changes affect future decisions, not previously recorded evidence/assessment history. The existing v0.1 ReconCoordinator path remains unchanged for agent decisions.
 
 ### Authenticated-source access readiness — separate from lifecycle
 
