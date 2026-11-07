@@ -3,7 +3,6 @@
 ## Purpose and scope
 Darkula v0.1 is a generic secure framework for discovering sources, qualifying them, collecting them repeatedly, normalizing hostile content, extracting structured facts, and assessing source value. Multi-tenancy and product-specific commercial features are intentionally deferred.
 
-## Primary flow
 ## v0.2 planned extension — source discovery, real-world transport and MonitoringProfiles
 
 > **Planning only.** The v0.1 architecture and PR 1–16 delivered sections below remain the implementation baseline. The capabilities in this section are **not implemented** by that baseline. The authoritative sequencing is in [v0.2 Roadmap](ROADMAP_V02.md).
@@ -74,6 +73,8 @@ The previous proposal to include a monitoring-profile ID in ObjectStore paths is
 v0.2 adds a minimal profile API and operator-facing management interfaces while maintaining **no user accounts or multitenancy**. Deployment policy must protect any externally exposed HTTP API at the perimeter; absence of user accounts does not imply Internet-public unrestricted administration. All source and profile effects remain governed by explicit policies, short UnitOfWork transactions, stored-function-only production SQL, the outbox where asynchronous, bounded concurrency, idempotency, and content-free OTEL.
 
 See [Domain Model](DOMAIN_MODEL.md), [Security](SECURITY.md), [Testing](TESTING.md), and the [v0.2 Roadmap](ROADMAP_V02.md) for planned contracts and release gates.
+
+## Primary flow (v0.1 delivered baseline)
 
 ```text
 SourceCandidate -> Coordinator -> ReconAgent -> ReconAssessment
