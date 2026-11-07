@@ -311,6 +311,25 @@ Multiple observations can refer to the same candidate or endpoint without collap
 
 Trusted deterministic producer/reconciler of `SourceCandidate` records from DiscoveryObservations. It does not browse, qualify, promote, or mutate existing Source identity on model authority. It invokes existing candidate repositories/lifecycle rather than introducing competing candidate aggregates. Provider adapters are replaceable and rate-bounded.
 
+### Source access-readiness state (v0.2, planned)
+
+`AccessStatus` is a **distinct persistent dimension** from `CandidateStatus` and `SourceStatus`. It captures requirements/access readiness for a discovered candidate and, after promotion, a managed Source or endpoint-specific access configuration. The detailed mapping between candidate, managed Source and endpoints belongs to PR 17's executable plan, preserving v0.1 models and future access transitions.
+
+| Value | Semantics |
+| --- | --- |
+| `UNKNOWN` | No verified knowledge of access requirements |
+| `PUBLIC` | No source login needed for the approved public scope |
+| `CREDENTIALS_PENDING` | Login required but operator-provisioned credentials missing or not yet verified |
+| `READY` | Source-scoped credentials provisioned **and login validation succeeded** |
+| `AUTH_FAILED` | Previously usable authentication is no longer working |
+| `ACCESS_REVOKED` | Operator has explicitly disabled/withdrawn source access |
+
+State carries reason, observed/updated timestamps and sanitized evidence/provenance, not username/password/cookies. The status does not equal candidate qualification: `CREDENTIALS_PENDING` can coexist with `QUALIFIED` when public evidence is sufficient, or with `RECONNAISSANCE_PENDING` when further authorized inspection is needed. Missing credentials are never grounds for analytical `REJECT`.
+
+Transitions are trusted: public/required access is observed and verified; `CREDENTIALS_PENDING -> READY` requires successful login validation after **manual external account provisioning**; `READY -> AUTH_FAILED` when login fails or expires; `AUTH_FAILED -> READY` after corrected credentials and validation; `ACCESS_REVOKED` requires explicit operator reauthorization before validation can restore access. Enforce endpoint-specific credential isolation if a managed Source exposes distinct login boundaries. `AccessStatus` is independent of `CollectionPolicy` authorization; both must allow a protected collection run.
+
+No Darkula user, tenant or account is introduced: the credentials are for *external* sources, manually obtained and kept in a secrets manager. `CollectionPolicy.authentication_reference` remains a secret-free reference. PR 26 adds resolution and session handling; earlier PRs must not treat stored references as active usable credentials.
+
 ### MonitoringProfile
 
 Caller-defined monitoring interest, **not** a tenant or account:
@@ -328,6 +347,7 @@ The existing SourceAssessment `profile_name` and `profile_version` are **analysi
 
 Existing raw/normalized content has source provenance and shared, SHA-256-derived ObjectStore keys; it remains collected once independent of profiles. New profile-specific derived/export artifact paths must include `monitoring_profile_id` and link to shared source-owned content. Do not move or duplicate v0.1 shared artifacts under profile UUID prefixes.
 
+## Semantic rules (v0.1 baseline)
 1. Extraction produces facts/annotations; analysis produces assessments.
 2. Preserve observed claims separately from resolved/canonical interpretations.
 3. Preserve provenance at every stage.
