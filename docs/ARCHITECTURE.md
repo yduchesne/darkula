@@ -4,6 +4,77 @@
 Darkula v0.1 is a generic secure framework for discovering sources, qualifying them, collecting them repeatedly, normalizing hostile content, extracting structured facts, and assessing source value. Multi-tenancy and product-specific commercial features are intentionally deferred.
 
 ## Primary flow
+## v0.2 planned extension — source discovery, real-world transport and MonitoringProfiles
+
+> **Planning only.** The v0.1 architecture and PR 1–16 delivered sections below remain the implementation baseline. The capabilities in this section are **not implemented** by that baseline. The authoritative sequencing is in [v0.2 Roadmap](ROADMAP_V02.md).
+
+### Upstream discovery and admission
+
+v0.1 begins with an externally supplied `SourceCandidate` and offers bounded, same-origin reconnaissance and collection. v0.2 introduces an upstream `SourceDiscoveryService` that creates candidates from multiple providers without acquiring crawl authority. It is a deterministic application service, **not another agent**.
+
+```text
+Machine-readable registries (RansomLook first) -----------+
+                                                           |
+Content references (v0.2 recursive/semantic discovery) ---+
+                                                           v
+                                            DiscoveryObservation
+                                    (locator + provenance + evidence)
+                                                           |
+                                                           v
+                                         SourceDiscoveryService
+                                validate -> reconcile -> persist -> admit
+                                                           |
+                                                           v
+                                         existing SourceCandidate
+                                                           |
+                                                      ReconCoordinator
+                                                           |
+                                      qualified -> explicit Source promotion
+                                                           |
+                                                   CollectionPolicy
+                                                           |
+                                    sandboxed collection -> shared corpus
+                                                           |
+                                             MonitoringProfile matching
+```
+
+A DiscoveryObservation is an untrusted claim and may refer to a URL, a named but unresolved source, a suspected mirror, or a provider-defined record. Preserve provider/source reference, detection method, time, original context/evidence, normalized locator where available, and relation assertions. The provider's classification or `available` flag must not become authorization or established truth. Names without validated locators cannot be scheduled for crawl.
+
+The existing `SourceCandidate` identity and lifecycle remain authoritative. `ReconCoordinator` continues to inspect candidates only under trusted authorization; its `ReconAgent` does not gain network tooling or persistence access. `QUALIFIED` remains distinct from `PROMOTED`. The discovery service may enqueue eligible candidates for bounded reconnaissance but cannot silently promote them or manufacture a `CollectionPolicy`.
+
+Do not equate URI equality with logical Source identity. Repeated observations of one locator can converge while preserving every provider/evidence record. A claimed alias or mirror is only a proposed relationship pending verification/approval; source merging cannot be inferred solely from text, redirects, or provider claims. A `WebSearchProvider` may later contribute observations, but the initial v0.2 adapter is structured registry ingestion, not unrestricted agent search.
+
+### Real-source crawling
+
+v0.1's default-deny Fake World sandbox configuration stays intact. v0.2 adds separately configured, explicitly approved HTTPS and Tor transport policies **without** a general Internet-access toggle. The trusted `CrawlerController` still validates `CrawlRequest` (source endpoint, origin/path, budgets), and the sandbox independently enforces egress restrictions. Handling of DNS, redirects, proxy/Tor transport, private-network/metadata ranges and TLS must be tested fail-closed. The crawler never follows arbitrary out-of-origin URLs; these can only become normalized **discovery observations** after crossing the bounded data/evidence boundary.
+
+Real-source tests are explicitly opt-in and use permissible endpoints. CI remains reproducible with Fake World and controlled proxy/server fixtures. The first real-source stage is HTTPS, followed by isolated Tor transport; source-specific credential resolution is a later, separate security workstream.
+
+### MonitoringProfile — caller interest, not source ownership
+
+A `MonitoringProfile` is an application-level monitoring specification with:
+
+- `monitoring_profile_id`: Darkula-assigned UUID, canonical identifier for profile-scoped calls;
+- `name`: human-readable name;
+- `correlation_id`: optional arbitrary caller-supplied string unique **across the Darkula instance**, generated as a UUID string if absent;
+- an optional bounded set of entity-match criteria.
+
+A dedicated resolution endpoint maps `correlation_id` to `monitoring_profile_id`. Profile-scoped API operations use the UUID; this resolution operation is the explicit exception. This is **not** an account, tenant, authorization principal, or namespace. Source discovery and collection are global to one framework instance; profile matching is a downstream, reusable projection over already persisted evidence.
+
+The existing `SourceAssessment.profile_name`/`profile_version` denotes a **SourceAnalyst evaluation profile** and must not be renamed or interpreted as a MonitoringProfile.
+
+### ObjectStore and shared collection reconciliation
+
+v0.1 uses content-addressed keys `sha256/<2>/<hash>` for raw/normalized source artifacts, with provenance in PostgreSQL. Preserve this immutable, deduplicated shared corpus. Putting the profile UUID on every raw artifact key would duplicate content when a source matches multiple profiles and violate v0.1's content-addressing contract.
+
+The previous proposal to include a monitoring-profile ID in ObjectStore paths is therefore narrowed for v0.2: **profile-specific derived/export artifacts** use a prefix containing the profile UUID; **source-owned raw/normalized artifacts remain shared and content-addressed**. Each profile result carries durable evidence references into shared source history. Any further change to this contract requires an explicit design amendment before implementation.
+
+### Programmatic surface and governance
+
+v0.2 adds a minimal profile API and operator-facing management interfaces while maintaining **no user accounts or multitenancy**. Deployment policy must protect any externally exposed HTTP API at the perimeter; absence of user accounts does not imply Internet-public unrestricted administration. All source and profile effects remain governed by explicit policies, short UnitOfWork transactions, stored-function-only production SQL, the outbox where asynchronous, bounded concurrency, idempotency, and content-free OTEL.
+
+See [Domain Model](DOMAIN_MODEL.md), [Security](SECURITY.md), [Testing](TESTING.md), and the [v0.2 Roadmap](ROADMAP_V02.md) for planned contracts and release gates.
+
 ```text
 SourceCandidate -> Coordinator -> ReconAgent -> ReconAssessment
                                       |
