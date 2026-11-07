@@ -43,6 +43,8 @@ Source assessment
 
 The agents do not autonomously roam the Dark Web. Collection is bounded by explicit policies and budgets, and the coordinator—not an agent—owns the final decisions about what work is authorized.
 
+For v0.2, sufficiently complete, non-conflicting candidate records from explicitly approved structured registries may be **qualified deterministically**, without invoking ReconAgent. Ambiguous or untrusted records instead require authorized agent reconnaissance or remain pending. Both routes retain evidence and decision provenance, and neither authorizes collection or promotes a source automatically.
+
 For authenticated external sources in the planned v0.2 release, an operator must **create/obtain accounts and provision credentials manually**. Darkula will track authentication readiness separately from source qualification: sources requiring credentials remain visible as `CREDENTIALS_PENDING` rather than being rejected, and protected collection requires independently validated access before it can resume. Darkula itself has no user accounts or multitenancy. See [v0.2 Roadmap](docs/ROADMAP_V02.md).
 
 ## Security model
