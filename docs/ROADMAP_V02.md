@@ -31,17 +31,19 @@ The [v0.1 roadmap](ROADMAP_V01.md) records PRs 1–16 as delivered. Existing com
 7. **Reuse v0.1 infrastructure.** PostgreSQL remains authoritative. Production persistence continues through versioned stored functions and repositories/UnitOfWork, never application SQL. DataStream + outbox remain at-least-once/idempotent; no DB transaction spans network, LLM, sandbox, or ObjectStore I/O.
 8. **Safe, bounded execution.** Explicit per-provider rate/cost budgets, per-source egress policies, artifact limits, retries, cancellation, retention settings, and content-free telemetry. Never accept arbitrary URLs as immediate crawler instructions.
 9. **Synthetic and opt-in integration testing.** CI never needs criminal-source credentials, real onion services, or untrusted data dumps. Live external-network tests use explicit operator opt-in and permitted destinations.
-10. **No silent architecture replacement.** Preserve existing candidate lifecycle, `ReconCoordinator`, collection scheduling, ObjectStore content-addressing, Fake World, and evaluation boundaries. Amend the roadmap if necessary rather than redesigning implicitly.
+10. **Explicit, operator-provisioned access.** Darkula never registers source accounts, acquires invitations, or circumvents access controls. A source's authentication readiness is separate from candidate/source lifecycle; unavailable credentials never imply analytical rejection. Credential references belong to an approved Source/endpoint, not a MonitoringProfile.
+11. **No silent architecture replacement.** Preserve existing candidate lifecycle, `ReconCoordinator`, collection scheduling, ObjectStore content-addressing, Fake World, and evaluation boundaries. Amend the roadmap if necessary rather than redesigning implicitly.
 
 ## Planned capability flow
 
 1. Structured registries (starting with RansomLook) and, later, collected-content discovery emit normalized **DiscoveryObservations** with locator, method, provider/source reference, timestamps, and evidence.
 2. **SourceDiscoveryService** validates and deduplicates observations, reconciles known candidates/endpoints, and persists new `SourceCandidate` records. An unresolved source name without a concrete locator remains an unresolved reference, not an authorized crawl candidate.
 3. The **existing ReconCoordinator** inspects admitted candidates through its bounded crawler and records `ReconAssessment`. Qualification is not automatic promotion.
-4. Explicit promotion/approval creates a managed `Source`, `SourceEndpoint`, and `CollectionPolicy` as separately authorized steps.
-5. **Existing SourceCollectionService** performs deterministic, policy-bounded collection using HTTPS/Tor transport capability added to the sandbox.
-6. Ingestion/normalization/extraction/SourceAnalyst persist source-owned history; an independent **profile-matching** path evaluates evidence against MonitoringProfiles.
-7. Profile-scoped programmatic operations address profiles by `monitoring_profile_id`. A dedicated correlation lookup resolves globally unique `correlation_id` to that UUID.
+4. Reconnaissance preserves a separate, persistent access-readiness assessment. Sources requiring login without an authorized provisioned credential move to `CREDENTIALS_PENDING` instead of being rejected for lack of access. An operator provisions external-source accounts and credentials manually; the candidate may be qualified using available evidence or remain pending further reconnaissance.
+5. Explicit promotion/approval creates a managed `Source`, `SourceEndpoint`, and `CollectionPolicy` as separately authorized steps.
+6. **Existing SourceCollectionService** performs deterministic, policy-bounded collection using HTTPS/Tor transport capability added to the sandbox.
+7. Ingestion/normalization/extraction/SourceAnalyst persist source-owned history; an independent **profile-matching** path evaluates evidence against MonitoringProfiles.
+8. Profile-scoped programmatic operations address profiles by `monitoring_profile_id`. A dedicated correlation lookup resolves globally unique `correlation_id` to that UUID.
 
 ```text
 Structured feeds ----+                               Existing source lifecycle
@@ -60,17 +62,39 @@ Collected references-+                                       |
                                       MonitoringProfile matching and result API
 ```
 
+## Authenticated-source access readiness — cross-PR v0.2 decision
+
+**Scope:** source/candidate authentication readiness is a separate orthogonal state, **not** another `CandidateStatus` or `SourceStatus`, and not part of MonitoringProfile identity. The precise persistence mapping (candidate versus managed Source, endpoint-specific overrides when different endpoints require different access) is finalized in PR 17's detailed design, without changing the v0.1 candidate lifecycle. Authentication requirements discovered during reconnaissance must be persisted, survive candidate promotion and retries, and be exposed for operator action.
+
+| `AccessStatus` | Meaning | Collection eligibility |
+| --- | --- | --- |
+| `UNKNOWN` | Authentication needs have not been established | No authenticated collection authorization; public-only inspection can proceed under existing policy |
+| `PUBLIC` | Approved endpoint is accessible without authentication | Eligible for unauthenticated collection when other policy gates pass |
+| `CREDENTIALS_PENDING` | Authentication required; authorized credentials not yet provisioned and validated | Authenticated collection blocked; operator action required |
+| `READY` | Source-scoped credentials are provisioned **and authentication was successfully validated** | Eligible for authenticated collection under explicit policy |
+| `AUTH_FAILED` | Provided access no longer authenticates (expired/rejected/session invalid) | Authenticated collection suspended; bounded retries only, operator action required |
+| `ACCESS_REVOKED` | Source access was deliberately disabled or authorization withdrawn | Collection forbidden until explicit operator reauthorization and validation |
+
+- **Account creation is manual and external to Darkula.** Operators obtain access and provision secret references; Darkula does not create accounts, solve CAPTCHA/MFA automatically, procure access, or bypass restrictions. An account is an *external source credential*, not a Darkula user/account.
+- **Discovery/recon:** structured registries and public inspection can indicate `requires_auth`, but a reported requirement is evidence to verify, not permission to log in. A useful candidate is not rejected merely for requiring credentials. Qualification using only public evidence is possible if sufficient; otherwise keep the existing retryable `RECONNAISSANCE_PENDING` lifecycle and independently mark `CREDENTIALS_PENDING`.
+- **Access state and lifecycle are orthogonal.** Candidate eligibility, Source ACTIVE/INACTIVE, endpoint ACTIVE/INACTIVE, and CollectionPolicy authorization remain independent constraints. No new `CandidateStatus.CREDENTIALS_PENDING` or `SourceStatus.CREDENTIALS_PENDING`.
+- **Credential ownership:** a Source/approved endpoint references an operator-provisioned secret; credentials do not belong to MonitoringProfiles. Different endpoint login requirements must not result in credential leakage across endpoints. `READY` requires a trusted successful authentication check; merely saving a reference leaves `CREDENTIALS_PENDING`.
+- **Transitions:** `UNKNOWN` -> `PUBLIC` or `CREDENTIALS_PENDING` on verified evidence; `CREDENTIALS_PENDING` -> `READY` only after provisioning and validation; `READY` -> `AUTH_FAILED` on validated authentication failure; `AUTH_FAILED` -> `READY` after corrected access and successful validation; any active/pending state -> `ACCESS_REVOKED` by explicit operator revocation. Leaving `ACCESS_REVOKED` requires explicit operator reauthorization and revalidation. Public/protected reclassification must be backed by new observations and a trusted state transition.
+- **Operator workflow:** persist state, reason, timestamps, and sanitized evidence; expose credentials-pending/failed/revoked views through operator API/CLI. Reconciliation and worker replays are idempotent, no endless authentication retries, and no automatic collection while blocked.
+- **PR ownership:** PR 17 defines the access-state semantics and durable foundation; PR 19 integrates recognition, reconciliation, and pending-state transitions with candidate reconnaissance/admission; PR 26 implements the operator provisioning references, credential validation, session handling, failure/revocation handling and resumption gates. PR 27 tests the full lifecycle. Earlier PRs must never claim credentials are usable before PR 26.
+
 ## PR 17 — Discovery domain and provenance persistence (P0)
 
 **Depends on:** completed v0.1. **Dominant concern:** normalize and persist discovery without attempting to browse.
 
 - Introduce a minimal versioned, provider-neutral discovery observation contract: asserted locator, normalized locator, source kind hint, observed/discovered timestamps, origin reference, provider identity, provenance/evidence, and confidence/validation status where meaningful.
 - Distinguish a source-locator observation from a source-name-only reference. Preserve unverified classifications as claims.
+- Define independent `AccessStatus` semantics and persist source/candidate access requirements/readiness and their provenance, without overloading v0.1 candidate/source statuses. Plan the candidate-to-managed-Source handoff and endpoint-specific access differences; credential secret resolution is not part of PR 17.
 - Add durable provenance/observation persistence through existing UnitOfWork and *additive* versioned PostgreSQL migration/functions; do not edit migrations `0001`–`0008`.
 - Define `SourceDiscoveryService` interface and provider adapter boundary. Avoid a generic workflow engine or a second candidate/recon model.
 - Enforce URI normalization/validation, bounded field lengths, source type validation, canonical time handling, deterministic replay/idempotency, and safe storage of provider metadata.
 
-**Acceptance:** duplicate observations replay without duplicate canonical candidate effects; distinct provider evidence remains retained; a name-only reference cannot trigger crawling; malformed/malicious URLs and source records fail safely; PostgreSQL and in-memory tests agree on identity/provenance semantics.
+**Acceptance:** duplicate observations replay without duplicate canonical candidate effects; recorded authentication requirements can persist as `CREDENTIALS_PENDING` independently of candidate status; distinct provider evidence remains retained; a name-only reference cannot trigger crawling; malformed/malicious URLs and source records fail safely; PostgreSQL and in-memory tests agree on identity/provenance semantics.
 
 **Out of scope:** external feed network access, candidate promotion policy, crawling, MonitoringProfiles.
 
@@ -95,8 +119,9 @@ Collected references-+                                       |
 - Reconcile new observations against candidate entrypoints and managed SourceEndpoints; record possible aliases/mirrors as **evidence-backed suggestions**.
 - Repeated/multiple feed observations can enrich history; they must not silently promote a candidate, merge Sources, or rewrite Source identities.
 - Define explicit admission criteria/queueing to the existing `ReconCoordinator`, with limits and failure/retry behavior; keep final authorization with trusted application logic.
+- When structured or recon evidence indicates a login gate, persist `CREDENTIALS_PENDING` while retaining candidate lifecycle status; qualify based on sufficient public evidence or remain `RECONNAISSANCE_PENDING` for further authorized inspection. Never reject solely because credentials are absent.
 
-**Acceptance:** replay/races converge, distinct claimed mirrors stay unmerged unless approved, known endpoints do not spawn duplicate source collection, and rejected/inaccessible candidates retain auditable history.
+**Acceptance:** replay/races converge, distinct claimed mirrors stay unmerged unless approved, known endpoints do not spawn duplicate source collection, and rejected/inaccessible candidates retain auditable history; an authentication-gated candidate is retained in `CREDENTIALS_PENDING` without an automatic `REJECT`.
 
 ## PR 20 — Controlled real-world HTTPS crawling (P0)
 
@@ -169,18 +194,18 @@ Collected references-+                                       |
 
 **Depends on:** PRs 20–21. **Dominant concern:** securely pass a source-specific, authorized session/credential into a single sandbox execution.
 
-- Add trusted secret-reference resolution and least-privilege, source-specific credential injection; no credential values in database policy, event streams, telemetry, or model context.
-- Support bounded login/session behavior through approved adapters; avoid autonomous account registration, purchasing access, or bypass of access restrictions.
-- Fail closed on missing/expired credentials and permission changes; include credential redaction and isolation tests.
+- Implement operator-managed credential provisioning references and trusted secret resolution, using the independently persisted `AccessStatus` defined in PR 17/19. Secrets are scoped to approved Source/endpoint and one sandbox execution; no credential values in database policy, event streams, telemetry, or model context.
+- Support bounded login, session expiration and reauthentication through approved adapters, with **manual account creation and operator-managed CAPTCHA/MFA/approval**. Provisioning a reference alone does not make `READY`: require trusted successful validation before enabling authenticated collection. No autonomous account registration, purchases, or access-control bypass.
+- Transition `CREDENTIALS_PENDING -> READY` only after successful validation; `READY -> AUTH_FAILED` on authentication rejection/expiry; resume `AUTH_FAILED -> READY` only on corrected access plus revalidation. Explicit `ACCESS_REVOKED` blocks further access until operator reauthorization. Failed/missing credentials suppress scheduled authenticated work without unbounded retries. Expose state and sanitized failure reason via operator API/CLI; include redaction and credential isolation tests.
 
-**Acceptance:** controlled synthetic authenticated source succeeds; credentials cannot leak across Sources or runs and do not appear in artifacts/telemetry; unauthorized requests cannot access credentials.
+**Acceptance:** controlled synthetic authenticated source succeeds after manual credential provisioning and validation; credentials-pending and failed sources are not collected, `AUTH_FAILED` cannot loop indefinitely, `ACCESS_REVOKED` cannot self-reactivate, re-provisioning and validation can resume collection, and no secret crosses Source/endpoint boundaries or enters artifacts/telemetry.
 
 ## PR 27 — v0.2 end-to-end hardening and release qualification (P0)
 
 **Depends on:** all v0.2 work selected for release; PR 23/26 are planned P1 inclusions and may be explicitly deferred only by a documented roadmap amendment. **Dominant concern:** prove the integrated release behavior.
 
 - Full-stack fixture-based workflow: structured feed -> persistent discovery/provenance -> reconciliation -> bounded ReconCoordinator -> explicit promotion -> HTTPS/Tor-controlled collection -> extraction/SourceAnalyst -> two MonitoringProfiles -> programmatic results.
-- Verify outbox/replay/concurrency, source/endpoint identity, cross-source dedup, cancellation, transport failure recovery, profile uniqueness, and security invariants.
+- Verify outbox/replay/concurrency, source/endpoint identity, cross-source dedup, cancellation, transport failure recovery, profile uniqueness, authentication-required pending state, credential provisioning/validation (if PR 26 is included), revocation, and security invariants.
 - Define measured discovery precision, useful candidate yield, new-source rate, latency, duplicate/mirror rate, and collection cost; do not invent a universal benchmark threshold before a baseline exists.
 - Update README, configuration/security/deployment/testing/evaluation docs and [Production Readiness](PRODUCTION_READINESS.md) with verified v0.2 behavior and remaining gaps. Run `./build.sh --qa`, `./build.sh --sec`, and `./build.sh --intg` on the capable host; external smoke tests remain separate, operator-approved and opt-in.
 
@@ -206,9 +231,10 @@ Collected references-+                                       |
 3. ReconCoordinator inspects only the authorized candidate origin and creates an evidence-backed qualification; an explicit policy admits/promotes it.
 4. A managed Source is collected through approved HTTPS or Tor transport with sandbox egress independently enforced.
 5. Normalization, source-owned ObjectStore artifacts, extraction, relationship/geography resolution when available, and SourceAnalyst produce persistent evidence and assessment history.
-6. Two MonitoringProfiles independently match relevant observations, and results are retrieved by profile UUID while raw source content is collected once.
-7. Replays, retries, source outages, rejected mirror assertions, policy changes, and aborted containers cannot create duplicate authoritative effects or expand permitted access.
-8. The system produces useful, versioned telemetry and a documented report of evidence, safety tests, metrics and remaining deployment limitations.
+6. An authenticated candidate discovered without credentials remains tracked as `CREDENTIALS_PENDING` and is never analytically rejected for that reason. When PR 26 is included, a controlled fixture proves operator-provisioned credentials, `READY` validation, failure/revocation suspension and authorized resume.
+7. Two MonitoringProfiles independently match relevant observations, and results are retrieved by profile UUID while raw source content is collected once.
+8. Replays, retries, source outages, rejected mirror assertions, policy changes, and aborted containers cannot create duplicate authoritative effects or expand permitted access.
+9. The system produces useful, versioned telemetry and a documented report of evidence, safety tests, metrics and remaining deployment limitations.
 
 ## Explicit non-goals
 
