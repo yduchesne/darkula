@@ -1,5 +1,7 @@
 # Darkula Configuration
 
+> **v0.2 planning note:** [ROADMAP_V02.md](ROADMAP_V02.md) proposes separate configuration for discovery providers/polling budgets, approved real HTTPS/Tor transport, MonitoringProfiles/matching, and source-specific authentication. These settings are **not yet implemented**. Until their dedicated PRs deliver validated config and composition, do not assume configuration flags can authorize live network access. Keep existing Fake World sandbox isolation and fail-closed driver selection intact.
+
 ## PR 4 status — layered resolution + PostgreSQL fields
 
 PR 3 implemented the full layered Pydantic Settings resolution in
