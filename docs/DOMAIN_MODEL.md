@@ -311,6 +311,19 @@ Multiple observations can refer to the same candidate or endpoint without collap
 
 Trusted deterministic producer/reconciler of `SourceCandidate` records from DiscoveryObservations. It does not browse, qualify, promote, or mutate existing Source identity on model authority. It invokes existing candidate repositories/lifecycle rather than introducing competing candidate aggregates. Provider adapters are replaceable and rate-bounded.
 
+### QualificationDecision and routing (v0.2, planned)
+
+Distinct from `ReconAssessment` (which only records actual ReconAgent reasoning), an immutable, durable `QualificationDecision` records **how and why** a `SourceCandidate` was qualified or left pending:
+
+- candidate ID, outcome and timestamp;
+- `method`: `REGISTRY_POLICY` (deterministic, no model) or `AGENT_RECON` (real bounded ReconCoordinator call);
+- policy ID/version, registry adapter/provider ID and source record reference (when applicable), exact durable discovery-evidence references, and deterministic acceptance/rejection/route reason codes;
+- an optional reference to an **actual** `ReconAssessment` only for `AGENT_RECON`. A registry decision must never invent an assessment, model score, or agent evidence reference.
+
+`QualificationDecision` identity (append-only historical record) differs from candidate identity, provider record identity and the candidate lifecycle's `QUALIFIED` event. The decision and event/expected-state transition must be committed atomically and be replay/race-safe. Existing v0.1 candidate status/event values remain authoritative. If existing consumers assume every `QUALIFIED` candidate has a `ReconAssessment`, adjust their reads in PR 19; do not write fake records. Exact schema/idempotency keys, plus compatibility with historical v0.1 assessments, must be frozen in PR 17's detailed implementation plan.
+
+`REGISTRY_POLICY` eligibility requires an explicit versioned operator allowlist for the provider and permitted record class, structurally complete metadata and valid locator, durable evidence and absence of material contradictory identity/mirror claims. Unknown, incomplete or conflicting records take the existing agent route when authorized, or remain pending. Registry qualification does not prove endpoint reachability, authorize collection, merge Sources, approve credentials, or promote to managed Source.
+
 ### Source access-readiness state (v0.2, planned)
 
 `AccessStatus` is a **distinct persistent dimension** from `CandidateStatus` and `SourceStatus`. It captures requirements/access readiness for a discovered candidate and, after promotion, a managed Source or endpoint-specific access configuration. The detailed mapping between candidate, managed Source and endpoints belongs to PR 17's executable plan, preserving v0.1 models and future access transitions.
