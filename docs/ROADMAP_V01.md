@@ -1,5 +1,7 @@
 # Darkula v0.1 Roadmap
 
+> **Status: complete.** PRs 1–16 are recorded as delivered against the v0.1 scope and synthetic Fake World integration. v0.1 completion does **not** mean production readiness or live Tor collection. For the successor planning proposal, see [Darkula v0.2 Roadmap](ROADMAP_V02.md).
+
 This roadmap sequences the architecture established by PR 1. PR boundaries after PR 1 are planning targets and may be refined by detailed plans and fresh-main review.
 
 ## PR 1 — Architecture and engineering foundation
