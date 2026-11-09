@@ -8,22 +8,22 @@ Darkula is an agentic Dark Web monitoring platform. It uses specialized AI agent
 
 See [Architecture](docs/ARCHITECTURE.md) for the authoritative architecture description.
 
-> **Status:** Darkula is in development. The current foundation provides the Python project and quality gates, layered configuration, provider-neutral application contracts, deterministic test implementations, local/in-memory artifact storage, OpenTelemetry instrumentation, and centralized composition. Source persistence, production infrastructure, crawling, reconnaissance, extraction, source analysis, and end-to-end Fake World workflows are being added incrementally.
+> **Status (November 2026):** The **v0.1 roadmap (PRs 1–16) is complete**, with verified local integration of source persistence, secure sandboxed crawling, reconnaissance, collection scheduling, normalization, extraction, source analysis, evaluation, Redpanda messaging, and OTEL against the **synthetic Fake World**. This is **not yet a live Tor/Internet collector or a production-ready deployment**. [v0.2 planning](docs/ROADMAP_V02.md) covers structured and recursive source discovery, controlled real-world HTTPS/Tor collection, MonitoringProfiles, and programmatic access.
 
 ## How Darkula works
 
-Darkula separates reasoning from collection. A **ReconAgent** examines newly discovered source candidates and recommends whether they appear useful and collectible. A coordinator retains control of lifecycle and collection decisions. Approved sources are collected according to explicit policies by deterministic services, while crawler execution is isolated behind a sandbox boundary. Collected material is normalized and passed through extraction components that identify useful facts and relationships. A **SourceAnalyst** then reasons over those facts, collection history, and earlier observations to assess how a source is changing and how useful it may be.
+Darkula separates reasoning from collection. In **v0.1, source candidates are supplied externally**; autonomous discovery is planned for v0.2. A **ReconAgent** examines candidate sources and recommends whether they appear useful and collectible. A coordinator retains control of lifecycle and collection decisions. Approved sources are collected according to explicit policies by deterministic services, while crawler execution is isolated behind a sandbox boundary. Collected material is normalized and passed through extraction components that identify useful facts and relationships. A **SourceAnalyst** then reasons over those facts, collection history, and earlier observations to assess how a source is changing and how useful it may be.
 
 In simplified form:
 
 ```text
-Source discovery
+Externally supplied SourceCandidate (v0.1)
       |
       v
-  ReconAgent
+  ReconCoordinator + ReconAgent
       |
       v
-Source qualification
+Source qualification -> explicit promotion
       |
       v
 Secure, sandboxed collection
@@ -42,6 +42,10 @@ Source assessment
 ```
 
 The agents do not autonomously roam the Dark Web. Collection is bounded by explicit policies and budgets, and the coordinator—not an agent—owns the final decisions about what work is authorized.
+
+For v0.2, sufficiently complete, non-conflicting candidate records from explicitly approved structured registries may be **qualified deterministically**, without invoking ReconAgent. Ambiguous or untrusted records instead require authorized agent reconnaissance or remain pending. Both routes retain evidence and decision provenance, and neither authorizes collection or promotes a source automatically.
+
+For authenticated external sources in the planned v0.2 release, an operator must **create/obtain accounts and provision credentials manually**. Darkula will track authentication readiness separately from source qualification: sources requiring credentials remain visible as `CREDENTIALS_PENDING` rather than being rejected, and protected collection requires independently validated access before it can resume. Darkula itself has no user accounts or multitenancy. See [v0.2 Roadmap](docs/ROADMAP_V02.md).
 
 ## Security model
 
@@ -79,14 +83,14 @@ Pre-commit provides fast local feedback:
 uv run pre-commit run --all-files
 ```
 
-Infrastructure integration testing is intentionally not part of the current foundation; it will be added as real infrastructure adapters arrive.
+Real local integration testing is provided via `./build.sh --intg` on a provisioned Podman-capable host. The canonical end-to-end integration uses the synthetic Fake World rather than live Internet or Tor endpoints. Model-backed evaluations are opt-in via `./build.sh --eval`.
 
 ## Architecture at a glance
 
 Darkula uses explicit boundaries between its application logic and infrastructure:
 
-- **PostgreSQL** is intended to hold authoritative structured domain state.
-- **DataStream** carries asynchronous commands and events through a Darkula-owned abstraction; Redpanda/Kafka is the intended initial production implementation.
+- **PostgreSQL** holds authoritative structured domain state through versioned stored functions and repository/UnitOfWork contracts.
+- **DataStream** carries asynchronous commands and events through a Darkula-owned abstraction, with the Redpanda adapter and transactional outbox implemented.
 - **ObjectStore** holds large or raw artifacts such as pages, screenshots, PDFs, images, and attachments.
 - **LlmClient** isolates agents and semantic extraction from specific model frameworks/providers.
 - **OpenTelemetry** provides operational tracing and metrics.
@@ -104,7 +108,9 @@ These boundaries allow deterministic test implementations to exercise applicatio
 - [Fake World](docs/FAKE_WORLD.md): Describes Darkula's synthetic-data ("Fake World") approach used for testing and experimentation.
 - [Security](docs/SECURITY.md): Describes the threat model and security boundaries.
 - [Evaluations](docs/EVALUATIONS.md): Describes evaluation strategy for model-backed behavior.
-- [v0.1 Roadmap](docs/ROADMAP_V01.md): Tracks the incremental implementation plan.
+- [v0.1 Roadmap](docs/ROADMAP_V01.md): Records the completed PR 1–16 scope.
+- [v0.2 Roadmap](docs/ROADMAP_V02.md): Proposed source discovery, real-world collection, and MonitoringProfile work (not yet delivered).
+- [Production Readiness](docs/PRODUCTION_READINESS.md): Verified local capabilities and gaps before production deployment.
 
 ## License
 

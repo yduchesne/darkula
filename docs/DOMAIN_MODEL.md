@@ -289,7 +289,77 @@ semantic idempotency key is
 Assessments never mutate `Source` or extraction history, and the absence of
 collected evidence is never inferred to mean inactivity.
 
-## Semantic rules
+## v0.2 proposed concepts — not yet implemented
+
+The following are **planned**, not executable v0.1 types or migration schemas. Keep the existing SourceCandidate, Source/SourceEndpoint, ReconAssessment, CollectionPolicy, content-artifact, and SourceAssessment semantics unchanged. See [v0.2 Roadmap](ROADMAP_V02.md).
+
+### DiscoveryObservation
+
+A durable, provenance-bearing observation from a structured registry, collected link, or semantic reference. Distinct concepts:
+
+- **Observation identity** — one durable, idempotently replayable feed/document assertion.
+- **Provider identity and source record ID** — upstream record identity, never Darkula `SourceId`.
+- **Observed locator** — raw claimed URL/address/channel locator, untrusted.
+- **Normalized locator** — validated/canonicalized matching key when technically representable; not itself a Source ID.
+- **Source claim** — classification, name, endpoint/mirror assertion, or unresolved reference. Preserve evidence and confidence separately from authoritative state.
+- **Provenance** — provider or originating content/Source, record or document reference, collection/observation timestamp, extraction mechanism, supporting evidence reference, and import/transform version.
+
+Multiple observations can refer to the same candidate or endpoint without collapsing distinct evidence. A name-only mention cannot become a crawlable candidate without a concrete validated locator. A mirrored/rotated endpoint claim does not establish logical Source equivalence without explicit trusted reconciliation/approval. Persistence is additive and retains history.
+
+### SourceDiscoveryService
+
+Trusted deterministic producer/reconciler of `SourceCandidate` records from DiscoveryObservations. It does not browse, qualify, promote, or mutate existing Source identity on model authority. It invokes existing candidate repositories/lifecycle rather than introducing competing candidate aggregates. Provider adapters are replaceable and rate-bounded.
+
+### QualificationDecision and routing (v0.2, planned)
+
+Distinct from `ReconAssessment` (which only records actual ReconAgent reasoning), an immutable, durable `QualificationDecision` records **how and why** a `SourceCandidate` was qualified or left pending:
+
+- candidate ID, outcome and timestamp;
+- `method`: `REGISTRY_POLICY` (deterministic, no model) or `AGENT_RECON` (real bounded ReconCoordinator call);
+- policy ID/version, registry adapter/provider ID and source record reference (when applicable), exact durable discovery-evidence references, and deterministic acceptance/rejection/route reason codes;
+- an optional reference to an **actual** `ReconAssessment` only for `AGENT_RECON`. A registry decision must never invent an assessment, model score, or agent evidence reference.
+
+`QualificationDecision` identity (append-only historical record) differs from candidate identity, provider record identity and the candidate lifecycle's `QUALIFIED` event. The decision and event/expected-state transition must be committed atomically and be replay/race-safe. Existing v0.1 candidate status/event values remain authoritative. If existing consumers assume every `QUALIFIED` candidate has a `ReconAssessment`, adjust their reads in PR 19; do not write fake records. Exact schema/idempotency keys, plus compatibility with historical v0.1 assessments, must be frozen in PR 17's detailed implementation plan.
+
+`REGISTRY_POLICY` eligibility requires an explicit versioned operator allowlist for the provider and permitted record class, structurally complete metadata and valid locator, durable evidence and absence of material contradictory identity/mirror claims. Unknown, incomplete or conflicting records take the existing agent route when authorized, or remain pending. Registry qualification does not prove endpoint reachability, authorize collection, merge Sources, approve credentials, or promote to managed Source.
+
+### Source access-readiness state (v0.2, planned)
+
+`AccessStatus` is a **distinct persistent dimension** from `CandidateStatus` and `SourceStatus`. It captures requirements/access readiness for a discovered candidate and, after promotion, a managed Source or endpoint-specific access configuration. The detailed mapping between candidate, managed Source and endpoints belongs to PR 17's executable plan, preserving v0.1 models and future access transitions.
+
+| Value | Semantics |
+| --- | --- |
+| `UNKNOWN` | No verified knowledge of access requirements |
+| `PUBLIC` | No source login needed for the approved public scope |
+| `CREDENTIALS_PENDING` | Login required but operator-provisioned credentials missing or not yet verified |
+| `READY` | Source-scoped credentials provisioned **and login validation succeeded** |
+| `AUTH_FAILED` | Previously usable authentication is no longer working |
+| `ACCESS_REVOKED` | Operator has explicitly disabled/withdrawn source access |
+
+State carries reason, observed/updated timestamps and sanitized evidence/provenance, not username/password/cookies. The status does not equal candidate qualification: `CREDENTIALS_PENDING` can coexist with `QUALIFIED` when public evidence is sufficient, or with `RECONNAISSANCE_PENDING` when further authorized inspection is needed. Missing credentials are never grounds for analytical `REJECT`.
+
+Transitions are trusted: public/required access is observed and verified; `CREDENTIALS_PENDING -> READY` requires successful login validation after **manual external account provisioning**; `READY -> AUTH_FAILED` when login fails or expires; `AUTH_FAILED -> READY` after corrected credentials and validation; `ACCESS_REVOKED` requires explicit operator reauthorization before validation can restore access. Enforce endpoint-specific credential isolation if a managed Source exposes distinct login boundaries. `AccessStatus` is independent of `CollectionPolicy` authorization; both must allow a protected collection run.
+
+No Darkula user, tenant or account is introduced: the credentials are for *external* sources, manually obtained and kept in a secrets manager. `CollectionPolicy.authentication_reference` remains a secret-free reference. PR 26 adds resolution and session handling; earlier PRs must not treat stored references as active usable credentials.
+
+### MonitoringProfile
+
+Caller-defined monitoring interest, **not** a tenant or account:
+
+- `monitoring_profile_id` — generated UUID, canonical ID for profile-scoped operations;
+- `name` — descriptive label;
+- `correlation_id` — arbitrary caller-supplied string unique in the whole Darkula instance, or a generated UUID string when omitted;
+- optional, bounded entity-match definitions.
+
+`correlation_id` resolves to the UUID through a dedicated API; it is not accepted as the identity for ordinary profile-scoped API calls. A shared Source and source-owned content can contribute evidence to many MonitoringProfiles without repeated crawling. Profile-specific matching outputs carry profile UUID, policy/version and durable links to source/content/evidence provenance.
+
+The existing SourceAssessment `profile_name` and `profile_version` are **analysis profile** metadata, unrelated to MonitoringProfile identity. Do not rework or migrate that field as a profile foreign key.
+
+### Artifact ownership
+
+Existing raw/normalized content has source provenance and shared, SHA-256-derived ObjectStore keys; it remains collected once independent of profiles. New profile-specific derived/export artifact paths must include `monitoring_profile_id` and link to shared source-owned content. Do not move or duplicate v0.1 shared artifacts under profile UUID prefixes.
+
+## Semantic rules (v0.1 baseline)
 1. Extraction produces facts/annotations; analysis produces assessments.
 2. Preserve observed claims separately from resolved/canonical interpretations.
 3. Preserve provenance at every stage.

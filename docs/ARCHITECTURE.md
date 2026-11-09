@@ -3,7 +3,125 @@
 ## Purpose and scope
 Darkula v0.1 is a generic secure framework for discovering sources, qualifying them, collecting them repeatedly, normalizing hostile content, extracting structured facts, and assessing source value. Multi-tenancy and product-specific commercial features are intentionally deferred.
 
-## Primary flow
+## v0.2 planned extension — source discovery, real-world transport and MonitoringProfiles
+
+> **Planning only.** The v0.1 architecture and PR 1–16 delivered sections below remain the implementation baseline. The capabilities in this section are **not implemented** by that baseline. The authoritative sequencing is in [v0.2 Roadmap](ROADMAP_V02.md).
+
+### Upstream discovery and admission
+
+v0.1 begins with an externally supplied `SourceCandidate` and offers bounded, same-origin reconnaissance and collection. v0.2 introduces an upstream `SourceDiscoveryService` that creates candidates from multiple providers without acquiring crawl authority. It is a deterministic application service, **not another agent**.
+
+```text
+Machine-readable registries (RansomLook first) -----------+
+                                                           |
+Content references (v0.2 recursive/semantic discovery) ---+
+                                                           v
+                                            DiscoveryObservation
+                                    (locator + provenance + evidence)
+                                                           |
+                                                           v
+                                         SourceDiscoveryService
+                                validate -> reconcile -> persist -> admit
+                                                           |
+                                                           v
+                                         existing SourceCandidate
+                                                           |
+                                                      ReconCoordinator
+                                                           |
+                                      qualified -> explicit Source promotion
+                                                           |
+                                                   CollectionPolicy
+                                                           |
+                                    sandboxed collection -> shared corpus
+                                                           |
+                                             MonitoringProfile matching
+```
+
+A DiscoveryObservation is an untrusted claim and may refer to a URL, a named but unresolved source, a suspected mirror, or a provider-defined record. Preserve provider/source reference, detection method, time, original context/evidence, normalized locator where available, and relation assertions. The provider's classification or `available` flag must not become authorization or established truth. Names without validated locators cannot be scheduled for crawl.
+
+The existing `SourceCandidate` identity and lifecycle remain authoritative. **v0.2 adds policy-routed qualification:** a trusted, versioned `CandidateQualificationPolicy` can qualify a complete, non-conflicting record from an explicitly approved registry adapter *without* ReconAgent or an LLM; incomplete/ambiguous records go through the existing `ReconCoordinator` (when authorized) or remain pending. The `ReconAgent` does not gain network tooling or persistence access. `QUALIFIED` remains distinct from `PROMOTED`. Discovery cannot silently promote Sources or manufacture CollectionPolicies.
+
+Do not equate URI equality with logical Source identity. Repeated observations of one locator can converge while preserving every provider/evidence record. A claimed alias or mirror is only a proposed relationship pending verification/approval; source merging cannot be inferred solely from text, redirects, or provider claims. A `WebSearchProvider` may later contribute observations, but the initial v0.2 adapter is structured registry ingestion, not unrestricted agent search.
+
+### Deterministic registry qualification versus ReconAgent
+
+**Planned v0.2 change, not v0.1 behavior.** Discovery validation/reconciliation produces observations and candidates, then a trusted `CandidateQualificationPolicy` selects `REGISTRY_POLICY`, `AGENT_RECON` or pending. The policy's trusted-adapter allowlist is **operator-configured**, scoped to explicit record classes, versioned and fail-closed. A provider's reputation alone does not make each record authoritative.
+
+```text
+DiscoveryObservation(s) -> SourceCandidate -> CandidateQualificationPolicy
+                                               |                     |
+                                       REGISTRY_POLICY           AGENT_RECON
+                                    (no LLM; complete,         (existing
+                                     trusted registry)         ReconCoordinator)
+                                               |                     |
+                                      QualificationDecision    ReconAssessment
+                                               |                     |
+                                               +--- QualificationDecision
+                                                         |
+                                               candidate QUALIFIED
+                                                   (or pending)
+                                                         |
+                                           separately authorized promotion
+```
+
+Deterministic eligibility requires an allowlisted feed adapter with verified acquisition/parsed schema, supported normalized locator, a sufficiently complete source type and provider record identity, durable source evidence, and **no material conflicts** over source classification/identity or unverified mirror association. Where policy/evidence is insufficient, route to the existing agent only when authorized, otherwise leave pending. A sandboxed availability check may separately test an approved endpoint, but must not be construed as identity verification or browsing authorization.
+
+An immutable **`QualificationDecision`** (or equivalent contract designed in PR 17) persists the candidate, qualification method `REGISTRY_POLICY | AGENT_RECON`, result, evidence references, policy/provider ID/version and evaluated timestamp. Only an actual agent run links to the existing `ReconAssessment`; **do not synthesize ReconAssessment** for a registry decision. PR 19 must adapt any existing downstream assumption that `QUALIFIED` requires a ReconAssessment. Status `QUALIFIED` and its corresponding historical event retain the v0.1 meaning and transition semantics; the decision, event and expected-state update commit atomically via versioned PostgreSQL stored functions and UnitOfWork. Replays and competing attempts must converge without duplicate authoritative decisions.
+
+This qualification step does **not** approve a Source endpoint, configure egress, create a CollectionPolicy, grant credentials, or trigger collection. A registry assertion of a login gate can independently inform `CREDENTIALS_PENDING`. Trust policy changes affect future decisions, not previously recorded evidence/assessment history. The existing v0.1 ReconCoordinator path remains unchanged for agent decisions.
+
+### Authenticated-source access readiness — separate from lifecycle
+
+v0.2 tracks authentication requirements and credential readiness on a **separate persistent access-state dimension**, rather than adding `CREDENTIALS_PENDING` to the existing `CandidateStatus` or `SourceStatus` enums. Proposed `AccessStatus` values:
+
+| Access status | Meaning | Action |
+| --- | --- | --- |
+| `UNKNOWN` | Authentication requirements unverified | Bound public-only reconnaissance |
+| `PUBLIC` | Verified unauthenticated access possible | Normal unauthenticated collection subject to policy |
+| `CREDENTIALS_PENDING` | Authentication required; usable credentials unavailable | Keep candidate/source; block authenticated collection; ask operator to provision |
+| `READY` | Operator-provisioned credentials **successfully validated** | Permit authorized authenticated collection |
+| `AUTH_FAILED` | Credentials/session expired or rejected | Suspend authenticated collection; bounded failure handling |
+| `ACCESS_REVOKED` | Operator withdrew authorization | Block collection until explicit reauthorization and revalidation |
+
+A discovered candidate may be analytically useful and `QUALIFIED` on public evidence even when `CREDENTIALS_PENDING`; if sufficient reconnaissance needs login, it remains `RECONNAISSANCE_PENDING`, **not** rejected for missing credentials. Keep the authentication status and sanitized, evidence-backed rationale across candidate promotion to Source. Per-endpoint requirements may differ; source-wide summaries cannot silently authorize an endpoint whose access has not been validated.
+
+**External account creation and access acquisition are manual operator tasks.** Darkula will not register accounts, solve CAPTCHAs/MFA automatically, purchase access, or bypass authorization. Operators provision secrets through an appropriate secret manager; a CollectionPolicy stores only a Source/endpoint-specific *reference*. The trusted controller resolves it only for one authorized sandbox execution. Providing a reference does not confer `READY`: a verified successful login is required. Failed/revoked states block scheduling/execution of protected collection until validated resumption; bounded public reconnaissance may continue under its independent policy.
+
+PR 17 establishes domain and durable access metadata; PR 19 connects discovery/reconciliation and reconnaissance to pending state; PR 26 supplies credential resolution, validation/session management, failure transitions and operator resumptions. PR 27 validates end-to-end behavior. This is **planned**, not v0.1 delivered functionality.
+
+### Real-source crawling
+
+v0.1's default-deny Fake World sandbox configuration stays intact. v0.2 adds separately configured, explicitly approved HTTPS and Tor transport policies **without** a general Internet-access toggle. The trusted `CrawlerController` still validates `CrawlRequest` (source endpoint, origin/path, budgets), and the sandbox independently enforces egress restrictions. Handling of DNS, redirects, proxy/Tor transport, private-network/metadata ranges and TLS must be tested fail-closed. The crawler never follows arbitrary out-of-origin URLs; these can only become normalized **discovery observations** after crossing the bounded data/evidence boundary.
+
+Real-source tests are explicitly opt-in and use permissible endpoints. CI remains reproducible with Fake World and controlled proxy/server fixtures. The first real-source stage is HTTPS, followed by isolated Tor transport; source-specific credential resolution is a later, separate security workstream.
+
+### MonitoringProfile — caller interest, not source ownership
+
+A `MonitoringProfile` is an application-level monitoring specification with:
+
+- `monitoring_profile_id`: Darkula-assigned UUID, canonical identifier for profile-scoped calls;
+- `name`: human-readable name;
+- `correlation_id`: optional arbitrary caller-supplied string unique **across the Darkula instance**, generated as a UUID string if absent;
+- an optional bounded set of entity-match criteria.
+
+A dedicated resolution endpoint maps `correlation_id` to `monitoring_profile_id`. Profile-scoped API operations use the UUID; this resolution operation is the explicit exception. This is **not** an account, tenant, authorization principal, or namespace. Source discovery and collection are global to one framework instance; profile matching is a downstream, reusable projection over already persisted evidence.
+
+The existing `SourceAssessment.profile_name`/`profile_version` denotes a **SourceAnalyst evaluation profile** and must not be renamed or interpreted as a MonitoringProfile.
+
+### ObjectStore and shared collection reconciliation
+
+v0.1 uses content-addressed keys `sha256/<2>/<hash>` for raw/normalized source artifacts, with provenance in PostgreSQL. Preserve this immutable, deduplicated shared corpus. Putting the profile UUID on every raw artifact key would duplicate content when a source matches multiple profiles and violate v0.1's content-addressing contract.
+
+The previous proposal to include a monitoring-profile ID in ObjectStore paths is therefore narrowed for v0.2: **profile-specific derived/export artifacts** use a prefix containing the profile UUID; **source-owned raw/normalized artifacts remain shared and content-addressed**. Each profile result carries durable evidence references into shared source history. Any further change to this contract requires an explicit design amendment before implementation.
+
+### Programmatic surface and governance
+
+v0.2 adds a minimal profile API and operator-facing management interfaces while maintaining **no user accounts or multitenancy**. Deployment policy must protect any externally exposed HTTP API at the perimeter; absence of user accounts does not imply Internet-public unrestricted administration. All source and profile effects remain governed by explicit policies, short UnitOfWork transactions, stored-function-only production SQL, the outbox where asynchronous, bounded concurrency, idempotency, and content-free OTEL.
+
+See [Domain Model](DOMAIN_MODEL.md), [Security](SECURITY.md), [Testing](TESTING.md), and the [v0.2 Roadmap](ROADMAP_V02.md) for planned contracts and release gates.
+
+## Primary flow (v0.1 delivered baseline)
+
 ```text
 SourceCandidate -> Coordinator -> ReconAgent -> ReconAssessment
                                       |

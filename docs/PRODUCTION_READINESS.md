@@ -1,5 +1,7 @@
 # Darkula v0.1 Production-Readiness Register
 
+> **Scope:** This is the completed v0.1 **local** readiness register, not an assertion that Darkula is deployable against live Internet/Tor targets. The [v0.2 roadmap](ROADMAP_V02.md) proposes discovery, controlled HTTPS/Tor collection, MonitoringProfiles, and further qualification; those capabilities remain **planned** until separately implemented and verified. This register must be updated at the v0.2 release gate, not preemptively marked green.
+
 This document distinguishes what PR 16 **verified on a local, single-node
 system** from acceptable v0.1 limitations and the work that must happen before
 any production deployment. It is a gap register, not a production-readiness

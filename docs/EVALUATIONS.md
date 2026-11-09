@@ -1,6 +1,21 @@
 # Darkula Evaluations
 
+## v0.2 planned evaluation additions
+
+The completed v0.1 Fake World evaluation foundation remains the baseline. [v0.2](ROADMAP_V02.md) plans source-discovery and profile-matching evaluations; none are implemented by the roadmap documentation PR.
+
+- Structured registry quality: valid locator rate, distinct source yield, changed-record recovery, provider provenance, and duplicate observations.
+- Reconciliation: accepted known endpoints, rejected false aliases/mirrors, false-positive candidate rates, and auditability of candidate status transitions.
+- Registry qualification routing: completeness/contradiction decision accuracy, deterministic-accept precision, false automatic qualification, correct agent fallback/pending behavior, zero agent/LLM calls on deterministic path, true ReconAssessment provenance only on agent path, and auditable policy-version changes. Compare LLM cost and latency by route; do not infer registry claims establish authenticity or reachability.
+- Free-form source recognition: exact-span support for claims and references, no invented locator from unlinked source names, multilingual/noisy references, and injection resistance.
+- Authenticated source recognition and access-state precision: public login gate versus authenticated requirement, no erroneous source rejection for missing credentials, false `READY` prevention, bounded failure/revocation transitions, operator-only provisioning, and no credential leakage.
+- MonitoringProfile matching: evidence-supported precision/recall against Fake World truth, match versions, and one-source/multiple-profile independence.
+- Safety/cost: permitted-vs-forbidden network requests, crawler budget use, provider import retries, and latency/cost per useful candidate.
+
+Record versioned datasets and thresholds after baseline measurements. Real live dark-web material is not permitted in deterministic CI/evaluation truth fixtures.
+
 ## Purpose
+
 Evaluations measure intelligent behavior against realistic, known Fake World
 truth. They are distinct from deterministic integration tests and may invoke
 real models through `LlmClient`. Evaluation is explicit and opt-in: ordinary
