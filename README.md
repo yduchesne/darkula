@@ -58,17 +58,21 @@ See [Security](docs/SECURITY.md) for the detailed threat model and security arch
 ## Requirements
 
 - Python 3.14;
-- [`uv`](https://docs.astral.sh/uv/) for Python package and environment management.
+- [`uv`](https://docs.astral.sh/uv/) for Python package and environment management;
+- [Podman](https://podman.io/) for the local integration stack (`./build.sh --intg`);
+  the full Podman-backed toolchain is normally provisioned by the installer.
 
 Additional infrastructure requirements will be documented as production adapters and integration environments are introduced.
 
 ## Installation
 
 ```bash
-./install.sh
+./install.sh                     # uv + Podman + locked environment + hooks
+./install.sh --mock              # print the plan; execute nothing
+./install.sh --no-podman         # Python toolchain only
 ```
 
-The installer verifies the required Python version, installs `uv` when necessary, synchronizes the locked environment, and installs the repository pre-commit hooks.
+The installer is idempotent: it ensures `uv` is available (installing it without sudo when missing), ensures `podman` is available (installing it through the platform package manager, which requires root or sudo), verifies the minimum `podman` version, synchronizes the locked environment, and installs the repository pre-commit hooks. `--mock` mandates dry-run behavior: every mutating command is printed rather than executed, while read-only version/command probes still run. `--no-podman` keeps the setup Python-only on hosts that provide Podman differently or only run the unit/QA gates.
 
 ## Validation
 
