@@ -373,3 +373,98 @@ class TestDeadlineAndCancellation:
             with pytest.raises(asyncio.CancelledError):
                 await task
             await asyncio.wait_for(server.closed.wait(), timeout=1.5)
+
+
+class _TrackingStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes], error: Exception | None = None) -> None:
+        self._chunks = chunks
+        self._error = error
+        self.closed = False
+        self.iterated = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        self.iterated = True
+        for chunk in self._chunks:
+            yield chunk
+        if self._error is not None:
+            raise self._error
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class TestContentLengthParsing:
+    """F2-U12..F2-U15: decimal width is bounded before integer conversion."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "9" * 5000,
+            "0" * 17,
+            "\u00b2",
+            "-1",
+            "",
+            " ",
+            "1 0",
+        ],
+    )
+    def test_malformed_lengths_are_sanitized_schema_errors(self, value: str) -> None:
+        with pytest.raises(RegistrySchemaError) as error:
+            http_module._declared_length(value, max_response_bytes=16)
+        assert str(error.value) == "registry response declared an invalid length"
+
+    def test_sixteen_zeroes_is_allowed_but_numeric_overage_is_not(self) -> None:
+        http_module._declared_length("0" * 16, max_response_bytes=16)
+        with pytest.raises(RegistrySchemaError) as error:
+            http_module._declared_length("17", max_response_bytes=16)
+        assert str(error.value) == "registry response exceeds the bounded size"
+
+
+class TestStreamingFailureClassification:
+    """F2-U16/F2-U17: pre-read validation and mid-stream failures."""
+
+    @pytest.mark.asyncio
+    async def test_oversize_length_is_rejected_without_reading(self) -> None:
+        stream = _TrackingStream([b"should-not-be-read"])
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            del request
+            return httpx.Response(
+                200,
+                headers={"Content-Length": "9" * 5000},
+                stream=stream,
+            )
+
+        with pytest.raises(RegistrySchemaError) as error:
+            await _async_get_url(
+                RANSOMLOOK_ORIGIN + "/api/groups",
+                timeout_seconds=2.0,
+                max_response_bytes=16,
+                transport=_mock_transport(handler),
+            )
+        assert str(error.value) == "registry response declared an invalid length"
+        assert stream.iterated is False
+        assert stream.closed is True
+
+    @pytest.mark.asyncio
+    async def test_midstream_read_error_is_classified_and_closed(self) -> None:
+        stream = _TrackingStream(
+            [b"abc"], error=httpx.ReadError("synthetic midstream failure")
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            del request
+            return httpx.Response(200, stream=stream)
+
+        with pytest.raises(RegistryTransportError) as error:
+            await _async_get_url(
+                RANSOMLOOK_ORIGIN + "/api/groups",
+                timeout_seconds=2.0,
+                max_response_bytes=1024,
+                transport=_mock_transport(handler),
+            )
+        assert str(error.value) == "registry request failed"
+        assert "synthetic midstream failure" not in str(error.value)
+        assert "abc" not in str(error.value)
+        assert stream.iterated is True
+        assert stream.closed is True

@@ -189,10 +189,18 @@ def _safe_reference(value: Any) -> str | None:
         return None
     if any(character in _CONTROL_CHARS for character in value):
         return None
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return None
     return value
 
 
 def _detail_name_is_safe(name: str) -> bool:
+    try:
+        validate_registry_cursor(name)
+    except ValueError:
+        return False
     if not name or len(name) > 200:
         return False
     if name in (".", ".."):

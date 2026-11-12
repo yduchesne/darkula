@@ -706,3 +706,81 @@ class TestProviderSafetyRegressions:
             checkpoint = await uow.discovery.get_registry_checkpoint("ransomlook")
         assert checkpoint.cursor == "blackgate"
         assert _count(database_settings, "source_candidate") == 0
+
+
+class TestUnicodeBoundaryRegressions:
+    """F2-I01/F2-I02: malformed Unicode is bounded on the real DB path."""
+
+    @pytest.mark.asyncio
+    async def test_surrogate_index_is_permanent_then_corrected_replays(
+        self, spi: Any, database_settings: DatabaseSettings
+    ) -> None:
+        clock = _Clock()
+        invalid = FakeSourceRegistry(index=("blackgate", "\ud800"))
+        first = await _poller(spi, clock).poll_once(_adapter(invalid))
+        assert first.outcome is RegistryPollOutcome.PERMANENT_ERROR
+        assert first.entries_completed == 0
+        assert _count(database_settings, "discovery_observation") == 0
+        async with spi.unit_of_work() as uow:
+            checkpoint = await uow.discovery.get_registry_checkpoint("ransomlook")
+        assert checkpoint.generation == 0
+        for table in FORBIDDEN_TABLES:
+            assert _count(database_settings, table) == 0
+
+        corrected = FakeSourceRegistry(index=("blackgate",))
+        second = await _poller(spi, clock).poll_once(_adapter(corrected))
+        assert second.outcome is RegistryPollOutcome.COMPLETED
+        assert _count(database_settings, "discovery_observation") == 3
+        async with spi.unit_of_work() as uow:
+            checkpoint = await uow.discovery.get_registry_checkpoint("ransomlook")
+        assert checkpoint.cursor == "blackgate"
+        assert checkpoint.generation == 1
+        for table in FORBIDDEN_TABLES:
+            assert _count(database_settings, table) == 0
+
+    @pytest.mark.asyncio
+    async def test_surrogate_location_skips_only_that_record(
+        self, spi: Any, database_settings: DatabaseSettings
+    ) -> None:
+        clock = _Clock()
+        registry = FakeSourceRegistry(
+            index=("blackgate",),
+            details={
+                "blackgate": [
+                    {
+                        "name": "blackgate",
+                        "locations": [
+                            {"slug": "x\ud800"},
+                            {"slug": "https://example.org/valid"},
+                        ],
+                    },
+                    [],
+                ]
+            },
+        )
+        result = await _poller(spi, clock).poll_once(_adapter(registry))
+        assert result.outcome is RegistryPollOutcome.COMPLETED
+        assert result.records_skipped == 1
+        assert _count(database_settings, "discovery_observation") == 2
+        first_rows = _observation_rows(database_settings)
+        assert not any("\ud800" in row[5] for row in first_rows)
+        async with spi.unit_of_work() as uow:
+            checkpoint = await uow.discovery.get_registry_checkpoint("ransomlook")
+        assert checkpoint.cursor == "blackgate"
+        assert checkpoint.generation == 1
+        for table in FORBIDDEN_TABLES:
+            assert _count(database_settings, table) == 0
+
+        async with spi.unit_of_work() as uow:
+            await uow.discovery.advance_registry_checkpoint(
+                "ransomlook",
+                expected_generation=1,
+                cursor=None,
+                completed_at=clock(),
+            )
+            await uow.commit()
+        replay = await _poller(spi, clock).poll_once(_adapter(registry))
+        assert replay.outcome is RegistryPollOutcome.COMPLETED
+        assert replay.observations_replayed == 2
+        assert replay.observations_added == 0
+        assert _observation_rows(database_settings) == first_rows

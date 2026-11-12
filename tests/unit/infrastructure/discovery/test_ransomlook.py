@@ -902,3 +902,100 @@ class TestStatusPrecedence:
         adapter = _adapter(_StaticTransport([RegistryHttpResponse(status, b"body")]))
         with pytest.raises(RegistrySchemaError):
             await adapter.list_entry_ids()
+
+
+class TestUnicodeBoundarySafety:
+    """F2-U04..F2-U09: malformed Unicode is rejected before sort/path/hash."""
+
+    @pytest.mark.asyncio
+    async def test_index_surrogate_is_bounded_schema_error(self) -> None:
+        transport = _StaticTransport([RegistryHttpResponse(200, b'["\\ud800"]')])
+        adapter = _adapter(transport)
+        with pytest.raises(RegistrySchemaError) as error:
+            await adapter.list_entry_ids()
+        assert str(error.value) == "registry index contains an ineligible entry name"
+
+    @pytest.mark.asyncio
+    async def test_detail_group_name_surrogate_mismatch_is_schema_error(self) -> None:
+        registry = FakeSourceRegistry(
+            details={
+                "blackgate": [
+                    {"name": "x\ud800", "locations": []},
+                    [],
+                ]
+            }
+        )
+        with pytest.raises(RegistrySchemaError):
+            await _claims(_adapter(registry), "blackgate")
+
+    @pytest.mark.asyncio
+    async def test_direct_surrogate_entry_never_reaches_http(self) -> None:
+        registry = FakeSourceRegistry()
+        claims, skipped = await _claims(_adapter(registry), "\ud800")
+        assert claims == []
+        assert skipped == 1
+        assert registry.calls == []
+
+    @pytest.mark.asyncio
+    async def test_surrogate_location_is_skipped_and_sibling_persists(self) -> None:
+        registry = FakeSourceRegistry(
+            details={
+                "blackgate": [
+                    {
+                        "name": "blackgate",
+                        "locations": [
+                            {"slug": "x\ud800"},
+                            {"slug": "https://example.org/valid"},
+                        ],
+                    },
+                    [],
+                ]
+            }
+        )
+        claims, skipped = await _claims(_adapter(registry), "blackgate")
+        assert skipped == 1
+        asserted = [claim.asserted_reference for claim in claims]
+        assert asserted == ["blackgate", "https://example.org/valid"]
+        assert not any("\ud800" in value for value in asserted)
+
+    @pytest.mark.asyncio
+    async def test_surrogate_slug_falls_back_to_safe_fqdn(self) -> None:
+        registry = FakeSourceRegistry(
+            details={
+                "blackgate": [
+                    {
+                        "name": "blackgate",
+                        "locations": [
+                            {
+                                "slug": "x\ud800",
+                                "fqdn": "safe-fallback.example.org",
+                            }
+                        ],
+                    },
+                    [],
+                ]
+            }
+        )
+        claims, skipped = await _claims(_adapter(registry), "blackgate")
+        assert skipped == 0
+        assert claims[1].asserted_reference == "safe-fallback.example.org"
+        assert not any("\ud800" in claim.asserted_reference for claim in claims)
+
+    @pytest.mark.asyncio
+    async def test_valid_non_ascii_reference_is_stable(self) -> None:
+        registry = FakeSourceRegistry(
+            details={
+                "blackgate": [
+                    {
+                        "name": "blackgate",
+                        "locations": [{"slug": "caf\u00e9 source"}],
+                    },
+                    [],
+                ]
+            }
+        )
+        first, _ = await _claims(_adapter(registry), "blackgate")
+        second, _ = await _claims(_adapter(registry), "blackgate")
+        assert first[1].asserted_reference == "caf\u00e9 source"
+        assert first[1].provider_record_id == second[1].provider_record_id
+        assert first[1].provider_record_version == second[1].provider_record_version

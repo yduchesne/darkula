@@ -79,6 +79,10 @@ def validate_registry_cursor(value: str) -> str:
         )
     if _CONTROL_CHARS.search(value):
         raise ValueError("registry cursor must not contain control characters")
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        raise ValueError("registry cursor must be UTF-8 encodable") from None
     return value
 
 

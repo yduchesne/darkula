@@ -716,3 +716,31 @@ class TestRateLimitHeaders:
         checkpoint = spi.state.registry_checkpoints["ransomlook"]
         assert checkpoint.cursor is None
         assert checkpoint.cooldown_until == BASE_TIME + timedelta(seconds=900)
+
+
+class TestUnicodeSelectionSafety:
+    """F2-U10/F2-U11: selection-time Unicode failures are permanent."""
+
+    @pytest.mark.asyncio
+    async def test_provider_neutral_surrogate_index_is_permanent(self) -> None:
+        clock = _Clock()
+        spi = MemDiscoverySpi()
+        adapter = _StubAdapter(
+            {"blackgate": _StubProvider([_claim("a")])},
+            index=["blackgate", "\ud800"],
+        )
+        result = await _poller(spi, clock).poll_once(adapter)
+        assert result.outcome is RegistryPollOutcome.PERMANENT_ERROR
+        assert adapter.detail_requests == []
+        assert spi.state.registry_checkpoints == {}
+        assert spi.state.observations_by_key == {}
+
+    @pytest.mark.asyncio
+    async def test_ransomlook_surrogate_index_is_permanent(self) -> None:
+        clock = _Clock()
+        spi = MemDiscoverySpi()
+        registry = FakeSourceRegistry(index=("blackgate", "\ud800"))
+        result = await _poller(spi, clock).poll_once(_real_adapter(registry))
+        assert result.outcome is RegistryPollOutcome.PERMANENT_ERROR
+        assert spi.state.registry_checkpoints == {}
+        assert spi.state.observations_by_key == {}

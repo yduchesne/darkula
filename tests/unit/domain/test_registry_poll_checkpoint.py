@@ -89,3 +89,25 @@ class TestCheckpointValue:
             RegistryPollCheckpoint(
                 provider_id="ransomlook", cursor=None, generation=True
             )
+
+
+class TestUnicodeCursorSafety:
+    """F2-U01..F2-U03: malformed Unicode never becomes a cursor identity."""
+
+    def test_valid_non_ascii_is_unchanged(self) -> None:
+        for value in ("regular-\u00e9", "\u6771\u4eac"):
+            assert validate_registry_cursor(value) == value
+
+    @pytest.mark.parametrize("value", ["\ud800", "x\udfffz"])
+    def test_lone_surrogate_is_rejected_without_echo(self, value: str) -> None:
+        with pytest.raises(ValueError) as error:
+            validate_registry_cursor(value)
+        assert str(error.value) == "registry cursor must be UTF-8 encodable"
+        assert "\ud800" not in str(error.value)
+        assert "\udfff" not in str(error.value)
+
+    def test_checkpoint_rejects_surrogate_cursor(self) -> None:
+        with pytest.raises(ValueError):
+            RegistryPollCheckpoint(
+                provider_id="ransomlook", cursor="\ud800", generation=1
+            )

@@ -1229,3 +1229,34 @@ A `404` detail remains temporary; `401`/`403`, any `300..399` (including
 `304`), unexpected statuses, malformed index/detail, and oversize/deep JSON
 remain permanent; `429` uses the ASCII-bounded `Retry-After` or 900 s
 fallback. No test performs a live RansomLook/Tor/Internet request.
+
+### PR 18-F2 malformed-input boundary corrective
+
+Every untrusted registry string/header used for sorting, path construction,
+digest identity, or numeric conversion is validated at the existing trust
+boundary so malformed data produces a bounded typed outcome rather than an
+unclassified Python exception. This adds no schema, dependency, network, or
+admission change.
+
+| ID | File | Coverage |
+| --- | --- | --- |
+| F2-U01/U02 | `tests/unit/domain/test_registry_poll_checkpoint.py` | valid non-ASCII cursors unchanged; lone high/low UTF-16 surrogates raise fixed-message `ValueError` with no value echo |
+| F2-U03 | same | a checkpoint cannot be constructed with a surrogate cursor |
+| F2-U04 | `tests/unit/infrastructure/discovery/test_ransomlook.py` | escaped surrogate in the JSON index -> sanitized `RegistrySchemaError`, not `UnicodeEncodeError` |
+| F2-U05 | same | surrogate group-name mismatch stays the existing fixed schema error; no identity synthesis |
+| F2-U06 | same | direct surrogate `for_entry` -> zero HTTP, one `INVALID_REFERENCE` skip |
+| F2-U07 | same | surrogate location skipped while valid sibling/group claims persist; no surrogate in claims |
+| F2-U08 | same | surrogate `slug` falls back to a safe `fqdn`; no surrogate retained or hashed |
+| F2-U09 | same | valid non-ASCII NAME_ONLY reference produces stable identity/version across runs |
+| F2-U10/U11 | `tests/unit/app/test_registry_polling.py` | surrogate index from a provider-neutral stub or real adapter -> `PERMANENT_ERROR` with zero detail requests, observations, or checkpoint changes |
+| F2-U12..U15 | `tests/unit/infrastructure/discovery/test_http.py` | `Content-Length` width/grammar bounded before `int()`; overlong/Unicode/sign/blank -> sanitized schema error; 16 zeroes valid, numeric overage rejected |
+| F2-U16 | same | overlong declared length rejected before any stream read; stream closed |
+| F2-U17 | same | mock stream yields one chunk then raises `httpx.ReadError` -> `RegistryTransportError('registry request failed')`, sanitized message, `aclose()` called |
+| F2-U18/U19 | same / existing modules | existing trickle-deadline, cancellation, 429/503, privacy, duplicate-conflict, replay and ordering suites unchanged |
+| F2-I01 | `tests/integration/persistence/test_registry_polling.py` | real parser/poller/service/PostgreSQL: surrogate index -> permanent/no writes/no checkpoint; corrected index -> completed cursor/generation 1; forbidden tables empty |
+| F2-I02 | same | real DB: surrogate location skipped, group+valid location persisted (2 rows), checkpoint advances; cursor reset replay preserves identities/timestamps |
+
+Surrogates are written as escaped Python literals and escaped JSON bytes; no
+invalid UTF-8 is embedded in source files. Mid-stream failure uses HTTPX
+`MockTransport`, not the live provider. Header parsing is tested directly and
+through the async transport; no live RansomLook/Tor/Internet request occurs.

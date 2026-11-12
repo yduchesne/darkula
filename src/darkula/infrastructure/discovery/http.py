@@ -42,6 +42,8 @@ MAX_RELATIVE_PATH_LENGTH = 2048
 
 #: Hard cap for one raw stream chunk read.
 _READ_CHUNK_SIZE = 65536
+#: Hard cap for accepted decimal ``Content-Length`` header width.
+_MAX_CONTENT_LENGTH_DIGITS = 16
 
 _PATH_ALLOWED = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~%!$&'()*+,;=:@/"
@@ -141,7 +143,9 @@ def _declared_length(content_length: str | None, *, max_response_bytes: int) -> 
     if content_length is None:
         return
     candidate = content_length.strip()
-    if not candidate or not all("0" <= character <= "9" for character in candidate):
+    if not 1 <= len(candidate) <= _MAX_CONTENT_LENGTH_DIGITS or not all(
+        "0" <= character <= "9" for character in candidate
+    ):
         raise RegistrySchemaError("registry response declared an invalid length")
     if int(candidate) > max_response_bytes:
         raise RegistrySchemaError("registry response exceeds the bounded size")

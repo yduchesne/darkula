@@ -258,6 +258,13 @@ class RegistryPoller:
         *,
         max_entries: int,
     ) -> tuple[tuple[str, ...], bool]:
+        for name in names:
+            try:
+                validate_registry_cursor(name)
+            except ValueError:
+                raise RegistrySchemaError(
+                    "registry index contains an ineligible entry name"
+                ) from None
         ordered = sorted(names, key=self._sort_key)
         if cursor is not None:
             cursor_key = self._sort_key(validate_registry_cursor(cursor))
@@ -367,9 +374,14 @@ class RegistryPoller:
                 provider_id, checkpoint.generation, RegistryPollOutcome.PERMANENT_ERROR
             )
 
-        selected, exhausted = self._select(
-            names, checkpoint.cursor, max_entries=max_entries
-        )
+        try:
+            selected, exhausted = self._select(
+                names, checkpoint.cursor, max_entries=max_entries
+            )
+        except RegistrySchemaError:
+            return self._result(
+                provider_id, checkpoint.generation, RegistryPollOutcome.PERMANENT_ERROR
+            )
         if exhausted:
             try:
                 advanced = await self._advance(
