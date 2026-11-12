@@ -15,6 +15,7 @@ pytestmark = pytest.mark.integration
 
 
 EXPECTED_TABLES = {
+    "registry_poll_checkpoint",
     "discovery_observation",
     "access_evidence",
     "qualification_decision",
@@ -114,6 +115,9 @@ EXPECTED_FUNCTIONS = {
     "qualification_decision_get_v1",
     "qualification_decision_get_by_key_v1",
     "qualification_decision_list_for_candidate_v1",
+    "registry_poll_checkpoint_get_v1",
+    "registry_poll_checkpoint_advance_v1",
+    "registry_poll_checkpoint_defer_v1",
 }
 
 
@@ -154,8 +158,8 @@ class TestMigrations:
                 ledger = [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
-        # The ledger head is the newest shipped artifact (PR 17 added 0009).
-        assert ledger[-1].startswith("0009_discovery_foundation.sql")
+        # The ledger head is the newest shipped artifact (PR 18 added 0010).
+        assert ledger[-1].startswith("0010_registry_polling.sql")
 
     def test_expected_tables_exist(self, database_settings: DatabaseSettings) -> None:
         conn = _raw_connect(database_settings)
@@ -207,6 +211,8 @@ class TestMigrations:
         assert "access_evidence_exactly_one_target" in constraints
         assert "qualification_decision_outcome_status" in constraints
         assert "qualification_decision_method_provenance" in constraints
+        assert "registry_poll_checkpoint_provider_id_check" in constraints
+        assert "registry_poll_checkpoint_cursor_check" in constraints
 
     def test_host_exposure_is_35432_to_5432(
         self, database_settings: DatabaseSettings

@@ -49,6 +49,7 @@ from darkula.domain.identifiers import (
     SourceCandidateId,
     SourceEndpointId,
 )
+from darkula.domain.registry_polling import RegistryPollCheckpoint
 from darkula.domain.source import (
     CandidateStatus,
     ReconAssessment,
@@ -85,6 +86,7 @@ class MemDiscoveryState:
     access: dict[tuple[DiscoveryObservationId, str, str], AccessEvidence]
     decisions_by_key: dict[str, QualificationDecision]
     decisions_by_id: dict[QualificationDecisionId, QualificationDecision]
+    registry_checkpoints: dict[str, RegistryPollCheckpoint]
 
     @classmethod
     def empty(cls) -> MemDiscoveryState:
@@ -97,6 +99,7 @@ class MemDiscoveryState:
             access={},
             decisions_by_key={},
             decisions_by_id={},
+            registry_checkpoints={},
         )
 
 
@@ -105,6 +108,16 @@ class _Pending:
     observations: list[DiscoveryObservation]
     access: list[AccessEvidence]
     decisions: list[tuple[QualificationDecision, SourceCandidateEventHistory]]
+    registry_checkpoints: dict[str, RegistryPollCheckpoint]
+
+    @classmethod
+    def empty(cls) -> _Pending:
+        return cls(
+            observations=[],
+            access=[],
+            decisions=[],
+            registry_checkpoints={},
+        )
 
 
 class MemDiscoveryRepository(DiscoveryRepository):
@@ -196,6 +209,95 @@ class MemDiscoveryRepository(DiscoveryRepository):
             key=lambda item: (item.observed_at, str(item.observation_id)),
         )
         return tuple(selected[offset : offset + limit])
+
+    def _current_checkpoint(self, provider_id: str) -> RegistryPollCheckpoint | None:
+        staged = self._pending.registry_checkpoints.get(provider_id)
+        if staged is not None:
+            return staged
+        return self._state.registry_checkpoints.get(provider_id)
+
+    async def get_registry_checkpoint(self, provider_id: str) -> RegistryPollCheckpoint:
+        checkpoint = self._current_checkpoint(provider_id)
+        if checkpoint is None:
+            return RegistryPollCheckpoint.unpersisted(provider_id)
+        return checkpoint
+
+    async def advance_registry_checkpoint(
+        self,
+        provider_id: str,
+        *,
+        expected_generation: int,
+        cursor: str | None,
+        completed_at: datetime,
+    ) -> RegistryPollCheckpoint:
+        current = self._current_checkpoint(provider_id)
+        if expected_generation == 0:
+            if current is not None:
+                raise ConflictError(
+                    "the registry poll checkpoint was advanced by another writer"
+                )
+            updated = RegistryPollCheckpoint(
+                provider_id=provider_id,
+                cursor=cursor,
+                generation=1,
+                cooldown_until=None,
+                last_completed_at=completed_at,
+            )
+        else:
+            if current is None or current.generation != expected_generation:
+                raise ConflictError(
+                    "the registry poll checkpoint was advanced by another writer"
+                )
+            updated = RegistryPollCheckpoint(
+                provider_id=provider_id,
+                cursor=cursor,
+                generation=expected_generation + 1,
+                cooldown_until=None,
+                last_completed_at=completed_at,
+            )
+        self._pending.registry_checkpoints[provider_id] = updated
+        return updated
+
+    async def defer_registry_checkpoint(
+        self,
+        provider_id: str,
+        *,
+        expected_generation: int,
+        not_before: datetime,
+    ) -> RegistryPollCheckpoint:
+        current = self._current_checkpoint(provider_id)
+        if expected_generation == 0:
+            if current is not None:
+                raise ConflictError(
+                    "the registry poll checkpoint was advanced by another writer"
+                )
+            updated = RegistryPollCheckpoint(
+                provider_id=provider_id,
+                cursor=None,
+                generation=1,
+                cooldown_until=not_before,
+                last_completed_at=None,
+            )
+        else:
+            if current is None or current.generation != expected_generation:
+                raise ConflictError(
+                    "the registry poll checkpoint was advanced by another writer"
+                )
+            existing_cooldown = current.cooldown_until
+            cooldown = (
+                not_before
+                if existing_cooldown is None
+                else max(existing_cooldown, not_before)
+            )
+            updated = RegistryPollCheckpoint(
+                provider_id=provider_id,
+                cursor=current.cursor,
+                generation=current.generation + 1,
+                cooldown_until=cooldown,
+                last_completed_at=current.last_completed_at,
+            )
+        self._pending.registry_checkpoints[provider_id] = updated
+        return updated
 
 
 class MemAccessRepository(AccessRepository):
@@ -449,7 +551,7 @@ class MemDiscoveryUnitOfWork(UnitOfWork):
 
     def __init__(self, state: MemDiscoveryState) -> None:
         self._state = state
-        self._pending = _Pending(observations=[], access=[], decisions=[])
+        self._pending = _Pending.empty()
         self._discovery: MemDiscoveryRepository | None = None
         self._access: MemAccessRepository | None = None
         self._qualification: MemQualificationRepository | None = None
@@ -486,11 +588,13 @@ class MemDiscoveryUnitOfWork(UnitOfWork):
             self._state.candidate_events.append(event)
             self._state.decisions_by_key[decision.decision_key] = decision
             self._state.decisions_by_id[decision.decision_id] = decision
-        self._pending = _Pending(observations=[], access=[], decisions=[])
+        for provider_id, checkpoint in self._pending.registry_checkpoints.items():
+            self._state.registry_checkpoints[provider_id] = checkpoint
+        self._pending = _Pending.empty()
         self.commits += 1
 
     async def rollback(self) -> None:
-        self._pending = _Pending(observations=[], access=[], decisions=[])
+        self._pending = _Pending.empty()
         self.rollbacks += 1
 
     @property

@@ -31,6 +31,11 @@ dependencies = [
   # SDK calls are isolated with asyncio.to_thread at the adapter boundary.
   "boto3>=1.43,<1.44",
   "openai>=1.109,<1.110",
+  # Bounded async HTTP transport for the PR 18 fixed-origin registry reader
+  # (PR 18-F). Direct dependency so the transport contract is explicit; the
+  # locked 0.28.x API is the verified async-streaming surface. No other code
+  # may use HTTPX as a general-purpose web client.
+  "httpx>=0.28,<0.29",
   # LangSmith agent-observability adapter (PR 15). Provider SDK types stay
   # inside the infrastructure adapter; the application boundary never sees
   # them. Bounded to a verified Python-3.14-compatible range.

@@ -481,3 +481,144 @@ class TestQualificationRepository:
         repository = PostgresQualificationRepository(_Scope(_Cursor([tuple(row)])))
         with pytest.raises(MappingError):
             await repository.get_by_key("f" * 64)
+
+
+def _checkpoint_row(
+    *,
+    provider_id: str = "ransomlook",
+    cursor: str | None = "alpha",
+    generation: int = 1,
+    cooldown_until: datetime | None = None,
+    last_completed_at: datetime | None = _MOMENT,
+) -> tuple[Any, ...]:
+    return (
+        provider_id,
+        cursor,
+        generation,
+        cooldown_until,
+        last_completed_at,
+    )
+
+
+class TestRegistryPollCheckpointRepository:
+    """U39/U40: stored-function calls, CAS outcomes and bounded mapping."""
+
+    @pytest.mark.asyncio
+    async def test_get_missing_returns_unpersisted(self) -> None:
+        cursor = _Cursor()
+        repository = PostgresDiscoveryRepository(_Scope(cursor))
+        checkpoint = await repository.get_registry_checkpoint("ransomlook")
+        assert checkpoint.generation == 0
+        assert checkpoint.cursor is None
+        assert cursor.executed_sql == [
+            "SELECT * FROM registry_poll_checkpoint_get_v1(%s)"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_maps_row(self) -> None:
+        repository = PostgresDiscoveryRepository(_Scope(_Cursor([_checkpoint_row()])))
+        checkpoint = await repository.get_registry_checkpoint("ransomlook")
+        assert checkpoint.cursor == "alpha"
+        assert checkpoint.generation == 1
+
+    @pytest.mark.asyncio
+    async def test_advance_returns_new_checkpoint(self) -> None:
+        cursor = _Cursor([("advanced",), _checkpoint_row(cursor="beta", generation=2)])
+        repository = PostgresDiscoveryRepository(_Scope(cursor))
+        checkpoint = await repository.advance_registry_checkpoint(
+            "ransomlook",
+            expected_generation=1,
+            cursor="beta",
+            completed_at=_MOMENT,
+        )
+        assert checkpoint.cursor == "beta"
+        assert checkpoint.generation == 2
+        assert cursor.executed_sql[0].startswith(
+            "SELECT * FROM registry_poll_checkpoint_advance_v1("
+        )
+        assert cursor.executed_params[0] == (
+            "ransomlook",
+            1,
+            "beta",
+            _MOMENT,
+        )
+
+    @pytest.mark.asyncio
+    async def test_advance_conflict_raises(self) -> None:
+        repository = PostgresDiscoveryRepository(_Scope(_Cursor([("conflict",)])))
+        with pytest.raises(ConflictError):
+            await repository.advance_registry_checkpoint(
+                "ransomlook",
+                expected_generation=1,
+                cursor=None,
+                completed_at=_MOMENT,
+            )
+
+    @pytest.mark.asyncio
+    async def test_advance_unexpected_outcome_is_bounded(self) -> None:
+        repository = PostgresDiscoveryRepository(_Scope(_Cursor([("weird",)])))
+        with pytest.raises(MappingError):
+            await repository.advance_registry_checkpoint(
+                "ransomlook",
+                expected_generation=1,
+                cursor=None,
+                completed_at=_MOMENT,
+            )
+
+    @pytest.mark.asyncio
+    async def test_advance_missing_readback_is_bounded(self) -> None:
+        repository = PostgresDiscoveryRepository(_Scope(_Cursor([("advanced",)])))
+        with pytest.raises(MappingError):
+            await repository.advance_registry_checkpoint(
+                "ransomlook",
+                expected_generation=0,
+                cursor="alpha",
+                completed_at=_MOMENT,
+            )
+
+    @pytest.mark.asyncio
+    async def test_defer_returns_new_checkpoint(self) -> None:
+        cooldown = datetime(2026, 11, 11, 12, 15, tzinfo=UTC)
+        cursor = _Cursor(
+            [("deferred",), _checkpoint_row(generation=2, cooldown_until=cooldown)]
+        )
+        repository = PostgresDiscoveryRepository(_Scope(cursor))
+        checkpoint = await repository.defer_registry_checkpoint(
+            "ransomlook", expected_generation=1, not_before=cooldown
+        )
+        assert checkpoint.cooldown_until == cooldown
+        assert cursor.executed_sql[0].startswith(
+            "SELECT * FROM registry_poll_checkpoint_defer_v1("
+        )
+
+    @pytest.mark.asyncio
+    async def test_defer_conflict_raises(self) -> None:
+        repository = PostgresDiscoveryRepository(_Scope(_Cursor([("conflict",)])))
+        with pytest.raises(ConflictError):
+            await repository.defer_registry_checkpoint(
+                "ransomlook", expected_generation=1, not_before=_MOMENT
+            )
+
+    @pytest.mark.asyncio
+    async def test_defer_unexpected_outcome_is_bounded(self) -> None:
+        repository = PostgresDiscoveryRepository(_Scope(_Cursor([("weird",)])))
+        with pytest.raises(MappingError):
+            await repository.defer_registry_checkpoint(
+                "ransomlook", expected_generation=1, not_before=_MOMENT
+            )
+
+    @pytest.mark.asyncio
+    async def test_defer_missing_readback_is_bounded(self) -> None:
+        repository = PostgresDiscoveryRepository(_Scope(_Cursor([("deferred",)])))
+        with pytest.raises(MappingError):
+            await repository.defer_registry_checkpoint(
+                "ransomlook", expected_generation=0, not_before=_MOMENT
+            )
+
+    @pytest.mark.asyncio
+    async def test_mapping_failure_is_bounded(self) -> None:
+        row = _checkpoint_row()
+        row = (row[0], row[1], -1, row[3], row[4])
+        repository = PostgresDiscoveryRepository(_Scope(_Cursor([row])))
+        with pytest.raises(MappingError):
+            await repository.get_registry_checkpoint("ransomlook")

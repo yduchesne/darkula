@@ -8,7 +8,7 @@ Darkula is an agentic Dark Web monitoring platform. It uses specialized AI agent
 
 See [Architecture](docs/ARCHITECTURE.md) for the authoritative architecture description.
 
-> **Status (November 2026):** The **v0.1 roadmap (PRs 1–16) is complete**, with verified local integration of source persistence, secure sandboxed crawling, reconnaissance, collection scheduling, normalization, extraction, source analysis, evaluation, Redpanda messaging, and OTEL against the **synthetic Fake World**. This is **not yet a live Tor/Internet collector or a production-ready deployment**. [v0.2 planning](docs/ROADMAP_V02.md) covers structured and recursive source discovery, controlled real-world HTTPS/Tor collection, MonitoringProfiles, and programmatic access.
+> **Status (November 2026):** The **v0.1 roadmap (PRs 1–16) is complete**, with verified local integration of source persistence, secure sandboxed crawling, reconnaissance, collection scheduling, normalization, extraction, source analysis, evaluation, Redpanda messaging, and OTEL against the **synthetic Fake World**. PRs 17–18 deliver the v0.2 discovery foundation: immutable `DiscoveryObservation` provenance and a bounded, default-off, read-only RansomLook registry importer with a durable poll checkpoint. This is **not yet a live Tor/Internet collector or a production-ready deployment**, and candidate admission/qualification remains PR 19. [v0.2 planning](docs/ROADMAP_V02.md) covers structured and recursive source discovery, controlled real-world HTTPS/Tor collection, MonitoringProfiles, and programmatic access.
 
 ## How Darkula works
 
@@ -43,7 +43,7 @@ Source assessment
 
 The agents do not autonomously roam the Dark Web. Collection is bounded by explicit policies and budgets, and the coordinator—not an agent—owns the final decisions about what work is authorized.
 
-For v0.2, sufficiently complete, non-conflicting candidate records from explicitly approved structured registries may be **qualified deterministically**, without invoking ReconAgent. Ambiguous or untrusted records instead require authorized agent reconnaissance or remain pending. Both routes retain evidence and decision provenance, and neither authorizes collection or promotes a source automatically.
+For v0.2, sufficiently complete, non-conflicting candidate records from explicitly approved structured registries may be **qualified deterministically**, without invoking ReconAgent. Ambiguous or untrusted records instead require authorized agent reconnaissance or remain pending. Both routes retain evidence and decision provenance, and neither authorizes collection or promotes a source automatically. PR 18 currently provides only the bounded registry **observation import and checkpoint**; candidate creation is PR 19. Live registry access is opt-in and default-off (`scripts/darkula_registry_poll.py --provider ransomlook --live` plus both enable flags).
 
 For authenticated external sources in the planned v0.2 release, an operator must **create/obtain accounts and provision credentials manually**. Darkula will track authentication readiness separately from source qualification: sources requiring credentials remain visible as `CREDENTIALS_PENDING` rather than being rejected, and protected collection requires independently validated access before it can resume. Darkula itself has no user accounts or multitenancy. See [v0.2 Roadmap](docs/ROADMAP_V02.md).
 
@@ -113,7 +113,7 @@ These boundaries allow deterministic test implementations to exercise applicatio
 - [Security](docs/SECURITY.md): Describes the threat model and security boundaries.
 - [Evaluations](docs/EVALUATIONS.md): Describes evaluation strategy for model-backed behavior.
 - [v0.1 Roadmap](docs/ROADMAP_V01.md): Records the completed PR 1–16 scope.
-- [v0.2 Roadmap](docs/ROADMAP_V02.md): Proposed source discovery, real-world collection, and MonitoringProfile work (not yet delivered).
+- [v0.2 Roadmap](docs/ROADMAP_V02.md): PRs 17–18 (discovery provenance and bounded registry polling) delivered; candidate admission, real-world collection, and MonitoringProfile work remain planned.
 - [Production Readiness](docs/PRODUCTION_READINESS.md): Verified local capabilities and gaps before production deployment.
 
 ## License

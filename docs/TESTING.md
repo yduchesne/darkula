@@ -1083,3 +1083,180 @@ stored function. All production SQL lives in versioned stored functions —
 the SQL boundary guard
 (`tests/unit/infrastructure/persistence/postgresql/test_sql_boundary.py`)
 covers the new adapter modules.
+
+## PR 18 testing status — bounded registry polling
+
+PR 18 keeps the external boundary fake and everything behind it real: the
+deterministic `FakeSourceRegistry` (Fake World transport) feeds the **real**
+RansomLook parser/adapter, `RegistryPoller`, `SourceDiscoveryService`,
+`PostgresDarkulaSpi`, and PostgreSQL stored functions. No test contacts
+RansomLook, Tor, the Internet, the crawler, or an LLM.
+
+### Unit matrix — adapter/transport (`tests/unit/infrastructure/discovery/`)
+
+| ID | Boundary | Expected assertion |
+| --- | --- | --- |
+| U01 | valid `GET /api/groups` list | accepted in original order; bytewise sorting/keyset selection is the poller's job |
+| U02 | duplicate/mixed/empty/oversize/object index, malformed JSON, duplicate keys, `NaN`, invalid UTF-8, depth > 16 | typed `RegistrySchemaError`; no cursor progress |
+| U03 | `[group, posts]` detail | only safe group/location fields become `DiscoveryInput`; posts never mapped |
+| U04 | injected `screen`/`source`/`header`/`init_script`/`browser`/`meta`/posts | none appears in claims, versions, or errors |
+| U05 | private group/location | skipped and counted; no corresponding claim |
+| U06 | `available: false` | no access evidence, readiness, or qualification change |
+| U07 | valid absolute `.onion`/HTTPS | `LOCATOR` with PR 17 normalization; target is never fetched |
+| U08 | bare `.onion`/host name | `NAME_ONLY`; no scheme inference |
+| U09 | unsupported scheme/credentials/encoded separators/control | per-record skip; no raw value echoed |
+| U10 | missing `slug` and `fqdn` | `MISSING_REFERENCE` skip |
+| U11 | both `slug` and `fqdn` | slug wins; `fqdn` is not retained |
+| U12 | aware `updated` | UTC normalization plus a version revision |
+| U13 | missing/naive/invalid `updated` | poll-observation-time fallback; stable digest |
+| U14 | reordered JSON keys | identical record ID/version |
+| U15 | changed safe field | new immutable version; earlier observation retained |
+| U16 | contradictory same-key payload | existing `ConflictError`; checkpoint unchanged |
+| U17 | two contradictory same group+slug records in one detail | `RegistryRecordConflict`; no advance |
+| U18 | two records with the same normalized locator | distinct provider records/observations |
+| U33 | entry name path injection (`/`, `?`, `#`, scheme, control) | rejected before transport; fixed host only |
+| U38 | hostile provider values | exceptions/logs contain no URL, secret, body, or identifier |
+| U28/U29 | `429` numeric/malicious `Retry-After` | `0..3600` honored, otherwise fixed `900`; no unbounded sleep |
+| U30 | `503` then success/failure | exactly one retry; failure defers |
+| U31 | `401`/`403`/`3xx`/`404` | typed failures; zero redirects/auth fallback |
+| U32 | oversized response / deep JSON | bounded failure before parsing/advance |
+
+### Unit matrix — poller/checkpoints (`tests/unit/app/`, `tests/unit/domain/`)
+
+| ID | Boundary | Expected assertion |
+| --- | --- | --- |
+| U19 | no checkpoint | at most `min(max_entries, 10)` entries; checkpoint at last completed entry |
+| U20 | cursor at end | CAS reset to `NULL`, no same-run wrap |
+| U21 | new entry earlier than cursor | not lost; captured after the next pass reset |
+| U22 | one invalid record in a valid detail | skip counted; accepted siblings persist |
+| U23 | failure after a committed record | cursor unchanged; retry replays exactly |
+| U24 | clock advanced, no provider timestamp | stored `observed_at`/ID/`ingested_at` reused, no conflict |
+| U25/U26 | concurrent first writer, same/changed payload | exactly one reread; converged replay or bounded conflict |
+| U27 | checkpoint CAS loser | `CHECKPOINT_RACE`; no cursor overwrite |
+| U28/U29 | index/detail `429` | cooldown persisted; a run inside it performs no HTTP |
+| U34 | cancellation | propagates; no advance/defer and no UoW across HTTP |
+| U35/U36 | configuration/CLI | defaults off, bounds enforced, unknown keys rejected, `--live` triple gate |
+| U37 | Fake World registry | exactly four synthetic entries, deterministic call log, GET only |
+| U39/U40 | checkpoint staging/CAS | generation `0 -> 1`, monotonic CAS, cursor/cooldown invariants, rollback discarded |
+
+### Real-PostgreSQL vertical slices (`tests/integration/persistence/test_registry_polling.py`)
+
+Canonical path: Fake World transport -> real RansomLook parser/adapter ->
+`RegistryPoller` -> real `SourceDiscoveryService` -> real
+`PostgresDarkulaSpi` -> `discovery_observation_insert_v1` /
+`registry_poll_checkpoint_*_v1` -> database readback.
+
+| ID | Real-DB path | Assertion |
+| --- | --- | --- |
+| I01 | migrate `0010` | table/functions exist; ledger head is `0010_registry_polling.sql` |
+| I02 | absent checkpoint | generation `0`, cursor `NULL` |
+| I03/I04 | first advance + stale CAS | generation `1`; stale CAS raises without change |
+| I05/I06 | defer then cooldown / rollback | cursor preserved, generation increments, cooldown survives a new SPI; rollback discarded |
+| I07 | one fake registry group | group+location observations persist; every forbidden table stays empty |
+| I08 | repeated pass after reset | counts, IDs, `observed_at`, `ingested_at` unchanged |
+| I09 | changed safe field | new version coexists; earlier observation unchanged |
+| I10 | invalid + valid location | only valid persists; skip counted; checkpoint advances |
+| I11 | mid-group failure | cursor unchanged; next run replays then progresses |
+| I12 | `429` after index | cooldown persisted, cursor unchanged, no HTTP inside cooldown |
+| I13 | `503` then success | exactly two attempts for the failing request; one completed checkpoint |
+| I14 | malformed/private group | no unwanted observations; malformed keeps checkpoint, private excluded and advances |
+| I15 | two concurrent pollers | exactly one `COMPLETED` and one `CHECKPOINT_RACE`; no duplicate observations |
+| I16 | clock changes across runs | first-seen time retained; no same-key conflict |
+| I17 | same normalized locator, distinct records | distinct evidence IDs; zero candidates |
+| I18 | PR 17 exact replay after `0010` | PR 17 behavior unchanged; SQL boundary guard passes |
+| I19 | SPI restart | persisted cursor resumes at the next selected entry |
+| I20 | external calls | only the fake transport is used; no Tor/crawler/LLM/network dependency |
+
+`schema and safety` note: `0010_registry_polling.sql` is additive; migrations
+`0001`–`0009` remain byte-identical. The checkpoint stores only a bounded
+provider ID, exact entry name, generation, and timestamps — no raw registry
+payload, locator, secret, candidate, or source identity.
+
+### PR 18-F registry safety/error-classification fixup
+
+The transport is now HTTPX asynchronous streaming with one **elapsed-time
+deadline per physical attempt** covering connect, status/headers, raw body
+streaming, and close. This is deliberately stronger than an HTTPX socket
+idle timeout: a provider trickling bytes can still exceed the total attempt
+budget. Timeout and caller cancellation cancel the socket read and close the
+connection; there is no `asyncio.to_thread`/`urllib` worker left running.
+Non-200 response bodies are never consumed, and transport/connect/read/
+protocol failures map to a bounded `RegistryTransportError` (the adapter owns
+the single retry). All new tests are offline: HTTPX `MockTransport` for
+response-shape cases, one loopback `asyncio.start_server` trickle test for the
+real deadline/cancellation, and Fake World transport for adapter/poller/
+PostgreSQL slices.
+
+| ID | File | Coverage |
+| --- | --- | --- |
+| T01 | `tests/unit/infrastructure/discovery/test_http.py` | fixed origin, validated path, exact timeout/byte caps to the private async helper |
+| T02 | same | schemed/authority/query/fragment/backslash/dot/long/control paths rejected before I/O |
+| T03 | same | GET-only shape, `Accept-Encoding: identity`, no body/auth/cookie; hostile `HTTP(S)_PROXY` cannot redirect the request |
+| T04 | same | 200 raw bytes exactly at the cap are returned undecoded |
+| T05 | same | invalid/negative/over-cap `Content-Length` and actual stream overage fail as schema |
+| T06 | same | gzip/other content encodings are rejected without decoding |
+| T07 | same | `429`/`3xx`/`5xx` metadata is returned with `body == b""`; error-body streams are never read |
+| T08 | same | connect/read/timeout/remote-protocol HTTPX failures map to bounded transport failure |
+| T09 | same | real loopback chunked trickle exceeds the elapsed deadline, connection closes, wall clock < 1.5 s |
+| T10 | same | caller cancellation propagates unchanged and closes the loopback connection |
+| T11 | `tests/unit/infrastructure/discovery/test_ransomlook.py` | group `private` absent/false/true/null/string/number/list/object type matrix |
+| T12 | same | location malformed flags skip one `INVALID_SCHEMA`; `private=true` skips one `PRIVATE`; valid siblings remain |
+| T13 | same | `.`/`..` entries cause zero detail HTTP, one `INVALID_REFERENCE` skip, no raw `ValueError` |
+| T14 | same | `Retry-After` ASCII/1-4-digit/0-3600 matrix; Unicode digits, HTTP dates, and 10k-digit values never raise |
+| T15 | same | 503-then-200 issues exactly two GETs and waits `max(0.5, interval)` (2.0 in production-shaped test) |
+| T16 | same | transport exception twice issues two GETs and waits the nominal 0.5 s when interval is 0 |
+| T17 | same | cancellation during the retry sleep propagates and issues no second request |
+| T18 | `tests/unit/app/test_registry_polling.py` | contradictory provider duplicate -> `PERMANENT_ERROR`, cursor/generation unchanged, no cooldown |
+| T19 | same | partial committed sibling + conflict -> corrected rerun replays and advances only after success |
+| T20 | `tests/unit/scripts/test_registry_poll.py` | permanent provider outcome exits 2; immutable replay `ConflictError` still exits 4 |
+| T21 | app tests | transport failures keep `TEMPORARY_ERROR` + 900 s defer and exact replay |
+| T22 | app tests | invalid/huge/Unicode `Retry-After` on detail yields 900 s cooldown and no exception |
+| T23 | app tests | caller cancellation during detail work causes no CAS advance and no durable defer |
+| T24 | app tests | CAS race and end-of-pass cursor reset semantics unchanged |
+| T25 | script tests | triple live-enable gate and existing settings bounds unchanged |
+
+Real-PostgreSQL regressions (Fake World transport, real parser/poller/service/
+`PostgresDarkulaSpi`):
+
+| ID | Scenario |
+| --- | --- |
+| I21 | contradictory detail -> `PERMANENT_ERROR`; no cursor advance; committed observations immutable; forbidden tables empty |
+| I22 | corrected detail -> exact replay of committed observations, no duplicates, checkpoint advances after entry completion |
+| I23 | malformed group privacy flag -> `PERMANENT_ERROR` and no cursor/observations; corrected detail then completes |
+| I24 | valid + malformed-private + true-private locations -> only valid ingests; two skips; checkpoint advances |
+
+A `404` detail remains temporary; `401`/`403`, any `300..399` (including
+`304`), unexpected statuses, malformed index/detail, and oversize/deep JSON
+remain permanent; `429` uses the ASCII-bounded `Retry-After` or 900 s
+fallback. No test performs a live RansomLook/Tor/Internet request.
+
+### PR 18-F2 malformed-input boundary corrective
+
+Every untrusted registry string/header used for sorting, path construction,
+digest identity, or numeric conversion is validated at the existing trust
+boundary so malformed data produces a bounded typed outcome rather than an
+unclassified Python exception. This adds no schema, dependency, network, or
+admission change.
+
+| ID | File | Coverage |
+| --- | --- | --- |
+| F2-U01/U02 | `tests/unit/domain/test_registry_poll_checkpoint.py` | valid non-ASCII cursors unchanged; lone high/low UTF-16 surrogates raise fixed-message `ValueError` with no value echo |
+| F2-U03 | same | a checkpoint cannot be constructed with a surrogate cursor |
+| F2-U04 | `tests/unit/infrastructure/discovery/test_ransomlook.py` | escaped surrogate in the JSON index -> sanitized `RegistrySchemaError`, not `UnicodeEncodeError` |
+| F2-U05 | same | surrogate group-name mismatch stays the existing fixed schema error; no identity synthesis |
+| F2-U06 | same | direct surrogate `for_entry` -> zero HTTP, one `INVALID_REFERENCE` skip |
+| F2-U07 | same | surrogate location skipped while valid sibling/group claims persist; no surrogate in claims |
+| F2-U08 | same | surrogate `slug` falls back to a safe `fqdn`; no surrogate retained or hashed |
+| F2-U09 | same | valid non-ASCII NAME_ONLY reference produces stable identity/version across runs |
+| F2-U10/U11 | `tests/unit/app/test_registry_polling.py` | surrogate index from a provider-neutral stub or real adapter -> `PERMANENT_ERROR` with zero detail requests, observations, or checkpoint changes |
+| F2-U12..U15 | `tests/unit/infrastructure/discovery/test_http.py` | `Content-Length` width/grammar bounded before `int()`; overlong/Unicode/sign/blank -> sanitized schema error; 16 zeroes valid, numeric overage rejected |
+| F2-U16 | same | overlong declared length rejected before any stream read; stream closed |
+| F2-U17 | same | mock stream yields one chunk then raises `httpx.ReadError` -> `RegistryTransportError('registry request failed')`, sanitized message, `aclose()` called |
+| F2-U18/U19 | same / existing modules | existing trickle-deadline, cancellation, 429/503, privacy, duplicate-conflict, replay and ordering suites unchanged |
+| F2-I01 | `tests/integration/persistence/test_registry_polling.py` | real parser/poller/service/PostgreSQL: surrogate index -> permanent/no writes/no checkpoint; corrected index -> completed cursor/generation 1; forbidden tables empty |
+| F2-I02 | same | real DB: surrogate location skipped, group+valid location persisted (2 rows), checkpoint advances; cursor reset replay preserves identities/timestamps |
+
+Surrogates are written as escaped Python literals and escaped JSON bytes; no
+invalid UTF-8 is embedded in source files. Mid-stream failure uses HTTPX
+`MockTransport`, not the live provider. Header parsing is tested directly and
+through the async transport; no live RansomLook/Tor/Internet request occurs.

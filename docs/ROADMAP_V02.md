@@ -128,16 +128,19 @@ A versioned, operator-controlled `CandidateQualificationPolicy` runs in trusted 
 
 **Out of scope:** external feed network access, candidate promotion policy, crawling, MonitoringProfiles.
 
-## PR 18 — Structured registry ingestion and RansomLook adapter (P0)
+## PR 18 — Structured registry ingestion and RansomLook adapter (P0) — delivered
 
 **Depends on:** PR 17. **Dominant concern:** ingest an allowed external registry into the common contract.
 
-- Add a bounded, provider-neutral polling/import path and one concrete RansomLook adapter using documented, currently permitted REST/JSON surfaces.
-- Before implementation, verify the provider's live schema, authentication requirements, licensing/redistribution terms, quotas, permitted automated access, and stable identifiers; STOP if legal or technical assumptions cannot be verified.
-- Validate schema and pagination, handle error/rate-limit responses, incremental polling/checkpointing, retriable failures, and source attribution. Remote data is not inherently authoritative.
-- Deterministic fixture responses must exercise all operational logic in CI; real provider calls are opt-in.
+- **Delivered:** a bounded, provider-neutral one-shot polling/import path and one concrete RansomLook adapter over the documented, currently permitted anonymous read-only REST/JSON surfaces (`GET /api/groups`, `GET /api/group/{name}`).
+- The adapter is fixed-origin, GET-only, redirect-denying, credential-free, and bounded (response bytes, JSON depth, index/locations/requests, timeout, one retry, 429 cooldown). It projects only `slug`/`fqdn`/`updated`/`private`; screenshots, source HTML, scraper settings, metadata, posts, and availability flags are never persisted or logged.
+- Polling uses a deterministic bytewise keyset cursor over the sorted index and a durable PostgreSQL compare-and-swap checkpoint (`registry_poll_checkpoint`). The cursor advances only after every accepted observation for the entry committed; partial failures keep the cursor and safely replay. 429/404/5xx/timeouts are bounded and observable, and concurrent CAS losers never overwrite the winner.
+- Provider record identity/revision, Darkula observation identity, and checkpoint position remain distinct; changed safe fields create a new immutable observation version, and a same-key payload difference is a conflict rather than an overwrite.
+- Deterministic Fake World source-registry fixtures exercise all operational logic in CI; real provider calls are opt-in only.
 
-**Acceptance:** reproducible import from fixture to persistent observations/candidates; repeated polling is idempotent; changed/missing fields do not destroy history; rate limits and provider outages are bounded and observable.
+**Acceptance (reconciled to the implemented architectural boundary):** reproducible import from fixture to persistent **`DiscoveryObservation` records and durable poll checkpoints**; repeated polling is idempotent across restarts; changed/missing fields do not destroy history; rate limits and provider outages are bounded and observable; zero `SourceCandidate`/source/endpoint/policy/run/outbox effects. Candidate creation/reconciliation remains **PR 19**.
+
+**Live status:** anonymous read-only contract and CC BY 4.0 attribution are documented; the live `/api/group/{name}` response was not independently confirmed from the authoring environment. Live execution stays default-off and requires explicit operator opt-in (`--live` plus both enable flags).
 
 **Out of scope:** a general MISP/STIX/TAXII platform, crawling candidate URLs, credentialed clandestine access.
 

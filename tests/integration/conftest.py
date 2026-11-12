@@ -44,6 +44,7 @@ def row_values(
 
 
 TABLE_NAMES = (
+    "registry_poll_checkpoint",
     "qualification_decision",
     "access_evidence",
     "discovery_observation",
