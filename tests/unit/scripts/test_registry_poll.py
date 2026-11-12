@@ -10,6 +10,7 @@ import darkula_registry_poll as cli  # type: ignore[import-not-found]
 import pytest
 from pydantic import ValidationError
 
+from darkula.app.persistence import ConflictError
 from darkula.app.registry_polling import RegistryPollOutcome
 from darkula.config.settings import RegistrySettings, Settings
 
@@ -114,3 +115,20 @@ class TestCliGates:
 
         monkeypatch.setattr(cli, "StdlibRegistryHttpTransport", _forbidden)
         assert asyncio.run(cli._run("ransomlook")) == 2
+
+
+class TestConflictExitMapping:
+    """T20: provider-data permanent vs immutable persisted conflict."""
+
+    def test_immutable_conflict_still_exits_four(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def raising(provider: str) -> int:
+            del provider
+            raise ConflictError("immutable conflict")
+
+        monkeypatch.setattr(cli, "_run", raising)
+        assert cli.main(["--provider", "ransomlook", "--live"]) == 4
+
+    def test_permanent_outcome_maps_to_disabled_exit(self) -> None:
+        assert cli._exit_for_outcome(RegistryPollOutcome.PERMANENT_ERROR) == 2

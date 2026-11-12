@@ -487,6 +487,21 @@ class RegistryPoller:
                     checkpoint_generation=generation,
                     outcome=RegistryPollOutcome.PERMANENT_ERROR,
                 )
+            except RegistryRecordConflict:
+                # Contradictory provider records are a permanent provider-data
+                # failure: never advance/reset the cursor, never defer. An
+                # immutable persisted-observation ConflictError is a distinct
+                # exception and still propagates for CLI exit 4.
+                return RegistryPollResult(
+                    provider_id=provider_id,
+                    entries_selected=len(selected),
+                    entries_completed=entries_completed,
+                    observations_added=added,
+                    observations_replayed=replayed,
+                    records_skipped=skipped,
+                    checkpoint_generation=generation,
+                    outcome=RegistryPollOutcome.PERMANENT_ERROR,
+                )
             if isinstance(provider, RecordSkipReporter):
                 skipped += provider.skipped_records
             try:

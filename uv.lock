@@ -272,6 +272,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiokafka" },
     { name = "boto3" },
+    { name = "httpx" },
     { name = "langsmith" },
     { name = "openai" },
     { name = "opentelemetry-api" },
@@ -300,6 +301,7 @@ dev = [
 requires-dist = [
     { name = "aiokafka", specifier = ">=0.14,<0.15" },
     { name = "boto3", specifier = ">=1.43,<1.44" },
+    { name = "httpx", specifier = ">=0.28,<0.29" },
     { name = "langsmith", specifier = ">=0.14,<0.15" },
     { name = "openai", specifier = ">=1.109,<1.110" },
     { name = "opentelemetry-api", specifier = ">=1.37,<2" },

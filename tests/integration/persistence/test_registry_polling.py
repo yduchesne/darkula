@@ -546,3 +546,163 @@ class _SpiUnit:
 
 def spi_unit(settings: DatabaseSettings) -> _SpiUnit:
     return _SpiUnit(settings)
+
+
+class TestProviderSafetyRegressions:
+    """I21-I24: PR 18-F provider-data and privacy regressions on real DB."""
+
+    @staticmethod
+    def _conflicting_detail() -> list[Any]:
+        return [
+            {
+                "name": "blackgate",
+                "locations": [
+                    {"slug": "https://example.org/a"},
+                    {
+                        "slug": "https://example.org/a",
+                        "updated": "2026-01-01T00:00:00Z",
+                    },
+                ],
+            },
+            [],
+        ]
+
+    @pytest.mark.asyncio
+    async def test_contradictory_detail_is_permanent_without_advance(
+        self, spi: Any, database_settings: DatabaseSettings
+    ) -> None:
+        registry = FakeSourceRegistry(
+            index=("blackgate",), details={"blackgate": self._conflicting_detail()}
+        )
+        result = await _poller(spi, _Clock()).poll_once(_adapter(registry))
+        assert result.outcome is RegistryPollOutcome.PERMANENT_ERROR
+        assert result.checkpoint_generation == 0
+        async with spi.unit_of_work() as uow:
+            checkpoint = await uow.discovery.get_registry_checkpoint("ransomlook")
+        assert checkpoint.generation == 0
+        assert checkpoint.cursor is None
+        rows = _observation_rows(database_settings)
+        assert len(rows) == 2
+        for table in FORBIDDEN_TABLES:
+            assert _count(database_settings, table) == 0
+
+    @pytest.mark.asyncio
+    async def test_corrected_detail_replays_partial_then_advances(
+        self, spi: Any, database_settings: DatabaseSettings
+    ) -> None:
+        clock = _Clock()
+        broken = FakeSourceRegistry(
+            index=("blackgate",), details={"blackgate": self._conflicting_detail()}
+        )
+        first = await _poller(spi, clock).poll_once(_adapter(broken))
+        assert first.outcome is RegistryPollOutcome.PERMANENT_ERROR
+        before = _observation_rows(database_settings)
+        assert len(before) == 2
+
+        corrected = FakeSourceRegistry(
+            index=("blackgate",),
+            details={
+                "blackgate": [
+                    {
+                        "name": "blackgate",
+                        "locations": [{"slug": "https://example.org/a"}],
+                    },
+                    [],
+                ]
+            },
+        )
+        second = await _poller(spi, clock).poll_once(_adapter(corrected))
+        assert second.outcome is RegistryPollOutcome.COMPLETED
+        assert second.observations_replayed == 2
+        assert second.observations_added == 0
+        after = _observation_rows(database_settings)
+        assert after == before
+        async with spi.unit_of_work() as uow:
+            checkpoint = await uow.discovery.get_registry_checkpoint("ransomlook")
+        assert checkpoint.cursor == "blackgate"
+        assert checkpoint.generation == 1
+        assert _count(database_settings, "source_candidate") == 0
+
+    @pytest.mark.asyncio
+    async def test_malformed_group_privacy_is_permanent_then_recoverable(
+        self, spi: Any, database_settings: DatabaseSettings
+    ) -> None:
+        clock = _Clock()
+        malformed = FakeSourceRegistry(
+            index=("blackgate",),
+            details={
+                "blackgate": [
+                    {
+                        "name": "blackgate",
+                        "private": None,
+                        "locations": [{"slug": "https://example.org/a"}],
+                    },
+                    [],
+                ]
+            },
+        )
+        first = await _poller(spi, clock).poll_once(_adapter(malformed))
+        assert first.outcome is RegistryPollOutcome.PERMANENT_ERROR
+        assert _count(database_settings, "discovery_observation") == 0
+        async with spi.unit_of_work() as uow:
+            checkpoint = await uow.discovery.get_registry_checkpoint("ransomlook")
+        assert checkpoint.generation == 0
+
+        corrected = FakeSourceRegistry(
+            index=("blackgate",),
+            details={
+                "blackgate": [
+                    {
+                        "name": "blackgate",
+                        "locations": [{"slug": "https://example.org/a"}],
+                    },
+                    [],
+                ]
+            },
+        )
+        second = await _poller(spi, clock).poll_once(_adapter(corrected))
+        assert second.outcome is RegistryPollOutcome.COMPLETED
+        assert _count(database_settings, "discovery_observation") == 2
+        async with spi.unit_of_work() as uow:
+            checkpoint = await uow.discovery.get_registry_checkpoint("ransomlook")
+        assert checkpoint.cursor == "blackgate"
+
+    @pytest.mark.asyncio
+    async def test_malformed_location_privacy_skips_only_that_record(
+        self, spi: Any, database_settings: DatabaseSettings
+    ) -> None:
+        registry = FakeSourceRegistry(
+            index=("blackgate",),
+            details={
+                "blackgate": [
+                    {
+                        "name": "blackgate",
+                        "locations": [
+                            {"slug": "https://example.org/valid"},
+                            {
+                                "slug": "https://example.org/malformed",
+                                "private": None,
+                            },
+                            {
+                                "slug": "https://example.org/private",
+                                "private": True,
+                            },
+                        ],
+                    },
+                    [],
+                ]
+            },
+        )
+        result = await _poller(spi, _Clock()).poll_once(_adapter(registry))
+        assert result.outcome is RegistryPollOutcome.COMPLETED
+        assert result.records_skipped == 2
+        assert _count(database_settings, "discovery_observation") == 2
+        rows = _observation_rows(database_settings)
+        asserted = {row[5] for row in rows}
+        assert "https://example.org/valid" in asserted
+        assert "https://example.org/malformed" not in asserted
+        assert "https://example.org/private" not in asserted
+        async with spi.unit_of_work() as uow:
+            checkpoint = await uow.discovery.get_registry_checkpoint("ransomlook")
+        assert checkpoint.cursor == "blackgate"
+        assert _count(database_settings, "source_candidate") == 0

@@ -142,11 +142,19 @@ def _parse_json(body: bytes) -> Any:
 
 
 def _parse_retry_after(value: str | None) -> int:
-    """Return a bounded numeric Retry-After, or the fixed 900s fallback."""
+    """Return a bounded ASCII numeric Retry-After, or the fixed 900s fallback.
+
+    Never raises for provider-supplied text: only 1-4 ASCII decimal digits
+    are interpreted, and only values in ``0..3600`` are accepted. HTTP dates,
+    fractions, signs, Unicode digits, and longer/degenerate numbers all fall
+    back to the fixed bounded cooldown.
+    """
     if value is None:
         return DEFAULT_DEFER_SECONDS
     candidate = value.strip()
-    if not candidate.isdigit():
+    if not 1 <= len(candidate) <= 4:
+        return DEFAULT_DEFER_SECONDS
+    if not all("0" <= character <= "9" for character in candidate):
         return DEFAULT_DEFER_SECONDS
     seconds = int(candidate)
     if seconds < 0 or seconds > 3600:
@@ -187,6 +195,8 @@ def _safe_reference(value: Any) -> str | None:
 def _detail_name_is_safe(name: str) -> bool:
     if not name or len(name) > 200:
         return False
+    if name in (".", ".."):
+        return False
     if name != name.strip():
         return False
     if "://" in name:
@@ -226,9 +236,13 @@ class RansomLookGroupProvider(DiscoveryProvider):
         path = RANSOMLOOK_DETAIL_PREFIX + quote(self._entry_id, safe="")
         document = await self._adapter._fetch_json(path, request_class="detail")
         group, _posts = self._adapter._parse_detail(document)
-        if group.get("private") is True:
-            self._skip(RegistryRecordSkipReason.PRIVATE)
-            return
+        if "private" in group:
+            private = group["private"]
+            if type(private) is not bool:
+                raise RegistrySchemaError("registry group private flag is not boolean")
+            if private:
+                self._skip(RegistryRecordSkipReason.PRIVATE)
+                return
         name = group.get("name")
         if name is not None:
             if not isinstance(name, str):
@@ -314,9 +328,14 @@ class RansomLookGroupProvider(DiscoveryProvider):
         if not isinstance(location, dict):
             self._skip(RegistryRecordSkipReason.INVALID_SCHEMA)
             return None
-        if location.get("private") is True:
-            self._skip(RegistryRecordSkipReason.PRIVATE)
-            return None
+        if "private" in location:
+            private = location["private"]
+            if type(private) is not bool:
+                self._skip(RegistryRecordSkipReason.INVALID_SCHEMA)
+                return None
+            if private:
+                self._skip(RegistryRecordSkipReason.PRIVATE)
+                return None
         slug_value = location.get("slug")
         fqdn_value = location.get("fqdn")
         slug = _safe_reference(slug_value)
@@ -450,7 +469,7 @@ class RansomLookDiscoveryAdapter:
         await asyncio.sleep(seconds)
 
     async def _sleep_before_retry(self) -> None:
-        await self._wait(RETRY_DELAY_SECONDS)
+        await self._wait(max(RETRY_DELAY_SECONDS, self._request_interval_seconds))
 
     async def _response(self, path: str, *, request_class: str) -> Any:
         validate_relative_path(path)
@@ -476,26 +495,26 @@ class RansomLookDiscoveryAdapter:
                 raise RegistryTransportError(
                     "registry provider is temporarily unavailable"
                 )
-            _reject_unsupported_encoding(response.content_encoding)
-            if len(response.body) > self._max_response_bytes:
-                raise RegistrySchemaError("registry response exceeds the bounded size")
-            if response.status_code == 200:
-                return response
             if response.status_code == 429:
                 raise RegistryRateLimited(_parse_retry_after(response.retry_after))
             if response.status_code in (401, 403):
                 raise RegistryAccessDenied(
                     "registry provider denied anonymous read access"
                 )
-            if response.status_code in (301, 302, 303, 307, 308):
+            if 300 <= response.status_code <= 399:
                 raise RegistrySchemaError("registry redirect is denied")
             if response.status_code == 404 and request_class == "detail":
                 raise RegistryEntryNotFound(
                     "registry entry is listed but temporarily unavailable"
                 )
-            raise RegistrySchemaError(
-                "registry provider returned an unexpected response status"
-            )
+            if response.status_code != 200:
+                raise RegistrySchemaError(
+                    "registry provider returned an unexpected response status"
+                )
+            _reject_unsupported_encoding(response.content_encoding)
+            if len(response.body) > self._max_response_bytes:
+                raise RegistrySchemaError("registry response exceeds the bounded size")
+            return response
 
     async def _fetch_json(self, path: str, *, request_class: str) -> Any:
         if self._logical_requests > 0 and self._request_interval_seconds > 0:

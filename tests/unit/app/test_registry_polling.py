@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -558,3 +558,161 @@ class TestCheckpointParity:
             )
             await uow.rollback()
         assert spi.state.registry_checkpoints == {}
+
+
+def _real_adapter(registry: FakeSourceRegistry) -> RansomLookDiscoveryAdapter:
+    return RansomLookDiscoveryAdapter(
+        transport=registry, request_interval_seconds=0, sleep=_noop_sleep
+    )
+
+
+class _ConflictAfterTwo(DiscoveryProvider):
+    def __init__(self, inner: DiscoveryProvider) -> None:
+        self._inner = inner
+        self.skipped_records = 0
+
+    async def observations(self) -> AsyncIterator[DiscoveryInput]:
+        count = 0
+        async for claim in self._inner.observations():
+            if count >= 2:
+                from darkula.app.registry_polling import RegistryRecordConflict
+
+                raise RegistryRecordConflict("injected contradictory record")
+            count += 1
+            yield claim
+
+
+class _CancelAfterOne(DiscoveryProvider):
+    def __init__(self, inner: DiscoveryProvider) -> None:
+        self._inner = inner
+        self.skipped_records = 0
+
+    async def observations(self) -> AsyncIterator[DiscoveryInput]:
+        count = 0
+        async for claim in self._inner.observations():
+            if count >= 1:
+                raise asyncio.CancelledError()
+            count += 1
+            yield claim
+
+
+class _WrapperAdapter:
+    provider_id = "ransomlook"
+
+    def __init__(
+        self,
+        inner: RansomLookDiscoveryAdapter,
+        wrapper: Callable[[DiscoveryProvider], DiscoveryProvider],
+    ) -> None:
+        self._inner = inner
+        self._wrapper = wrapper
+
+    async def list_entry_ids(self) -> tuple[str, ...]:
+        return ("blackgate",)
+
+    def for_entry(self, entry_id: str, *, observed_at: datetime) -> DiscoveryProvider:
+        return self._wrapper(self._inner.for_entry(entry_id, observed_at=observed_at))
+
+
+class TestProviderDataConflicts:
+    """T18/T19: contradictory provider records are permanent, replayable."""
+
+    @staticmethod
+    def _conflicting_registry() -> FakeSourceRegistry:
+        return FakeSourceRegistry(
+            index=("blackgate",),
+            details={
+                "blackgate": [
+                    {
+                        "name": "blackgate",
+                        "locations": [
+                            {"slug": "https://example.org/a"},
+                            {
+                                "slug": "https://example.org/a",
+                                "updated": "2026-01-01T00:00:00Z",
+                            },
+                        ],
+                    },
+                    [],
+                ]
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_duplicate_conflict_is_permanent_without_advance(self) -> None:
+        clock = _Clock()
+        spi = MemDiscoverySpi()
+        poller = _poller(spi, clock)
+        result = await poller.poll_once(_real_adapter(self._conflicting_registry()))
+        assert result.outcome is RegistryPollOutcome.PERMANENT_ERROR
+        assert result.checkpoint_generation == 0
+        assert spi.state.registry_checkpoints == {}
+        assert len(spi.state.observations_by_key) == 2
+
+    @pytest.mark.asyncio
+    async def test_partial_conflict_then_corrected_rerun_replays(self) -> None:
+        clock = _Clock()
+        spi = MemDiscoverySpi()
+        poller = _poller(spi, clock)
+
+        wrapped = _WrapperAdapter(
+            _real_adapter(self._conflicting_registry()), _ConflictAfterTwo
+        )
+        first = await poller.poll_once(wrapped)
+        assert first.outcome is RegistryPollOutcome.PERMANENT_ERROR
+        assert len(spi.state.observations_by_key) == 2
+        assert spi.state.registry_checkpoints == {}
+
+        corrected = FakeSourceRegistry(
+            index=("blackgate",),
+            details={
+                "blackgate": [
+                    {
+                        "name": "blackgate",
+                        "locations": [{"slug": "https://example.org/a"}],
+                    },
+                    [],
+                ]
+            },
+        )
+        second = await poller.poll_once(_real_adapter(corrected))
+        assert second.outcome is RegistryPollOutcome.COMPLETED
+        assert second.observations_replayed == 2
+        assert second.observations_added == 0
+        assert spi.state.registry_checkpoints["ransomlook"].cursor == "blackgate"
+
+    @pytest.mark.asyncio
+    async def test_cancel_after_partial_claim_does_not_defer(self) -> None:
+        clock = _Clock()
+        spi = MemDiscoverySpi()
+        poller = _poller(spi, clock)
+        wrapped = _WrapperAdapter(
+            _real_adapter(FakeSourceRegistry(index=("blackgate",))), _CancelAfterOne
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await poller.poll_once(wrapped)
+        assert spi.state.registry_checkpoints == {}
+
+
+class TestRateLimitHeaders:
+    """T22: malformed Retry-After on a detail GET stays bounded."""
+
+    @pytest.mark.asyncio
+    async def test_detail_rate_limit_with_invalid_header_uses_fallback(self) -> None:
+        clock = _Clock()
+        spi = MemDiscoverySpi()
+        registry = FakeSourceRegistry(
+            scripted=[
+                ScriptedRegistryResponse(200, body=b'["blackgate"]'),
+                ScriptedRegistryResponse(429, retry_after="9" * 10000),
+            ]
+        )
+        result = await _poller(spi, clock).poll_once(
+            RansomLookDiscoveryAdapter(
+                transport=registry, request_interval_seconds=0, sleep=_noop_sleep
+            )
+        )
+        assert result.outcome is RegistryPollOutcome.TEMPORARY_ERROR
+        checkpoint = spi.state.registry_checkpoints["ransomlook"]
+        assert checkpoint.cursor is None
+        assert checkpoint.cooldown_until == BASE_TIME + timedelta(seconds=900)

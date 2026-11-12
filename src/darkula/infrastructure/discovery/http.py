@@ -1,39 +1,36 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Bounded, fixed-origin registry HTTP GET transport (PR 18).
+"""Bounded, fixed-origin registry HTTP GET transport (PR 18 / PR 18-F).
 
 This is **not** a general-purpose HTTP client and it is not the crawler
 sandbox. It performs one bounded, anonymous, read-only GET against the
-single hardcoded RansomLook origin, with:
+single hardcoded RansomLook origin using HTTPX asynchronous streaming:
 
 - GET only; no request body, cookies, ``Authorization``, bearer token,
-  proxy, browser/renderer, Tor, or arbitrary header propagation;
-- standard verified TLS;
-- ambient ``HTTP(S)_PROXY`` ignored (explicit empty ``ProxyHandler``);
+  user-defined headers, proxy, browser/renderer, Tor, or redirect following;
+- standard verified TLS with environment-derived proxy/SSL settings disabled;
+- ambient ``HTTP(S)_PROXY`` ignored (``trust_env=False`` and ``proxy=None``);
 - redirects denied (any 3xx is returned as its status, ``Location`` is
   never followed or trusted);
 - ``Accept-Encoding: identity`` and rejection of any other encoding;
-- a bounded response read (``max_response_bytes + 1``) and a per-request
-  timeout.
+- a total elapsed-time deadline covering connect, headers, raw body stream
+  and close, plus a bounded raw byte read (``max_response_bytes``).
 
 The caller (the RansomLook adapter) builds a validated relative path from
 an encoded registry entry name. A full URL is never accepted from the
 provider or configuration.
 
-Calling :func:`asyncio.to_thread` means cancelling the awaiting task may
-leave at most one bounded, read-only request completing in its worker
-thread. That thread holds no unit of work, database lock, credential, or
-persistence capability.
+Unlike the previous blocking ``urllib``/``asyncio.to_thread`` implementation,
+timeouts and caller cancellation cancel the actual async socket read and
+close the connection; no worker thread can retain a live HTTP transfer.
 """
 
 from __future__ import annotations
 
 import asyncio
-import ssl
-import urllib.error
-import urllib.request
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
+
+import httpx
 
 from darkula.app.registry_polling import RegistrySchemaError, RegistryTransportError
 
@@ -43,18 +40,27 @@ RANSOMLOOK_ORIGIN = "https://www.ransomlook.io:443"
 #: Conservative per-request limits shared with the adapter.
 MAX_RELATIVE_PATH_LENGTH = 2048
 
+#: Hard cap for one raw stream chunk read.
+_READ_CHUNK_SIZE = 65536
+
 _PATH_ALLOWED = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~%!$&'()*+,;=:@/"
 )
+
+_REQUEST_HEADERS = {
+    "Accept": "application/json",
+    "Accept-Encoding": "identity",
+    "User-Agent": "Darkula/0.1 (read-only registry reader; RansomLook data CC BY 4.0)",
+}
 
 
 def validate_relative_path(path: str) -> str:
     """Return a bounded absolute-path string safe to append to the origin.
 
     Rejects schemes, authorities, query/fragment separators, backslashes,
-    whitespace, control characters, and characters that are not valid in a
-    percent-encoded path. The caller must already have encoded untrusted
-    entry names.
+    whitespace, control characters, dot segments, and characters that are
+    not valid in a percent-encoded path. The caller must already have
+    encoded untrusted entry names.
     """
     if not isinstance(path, str):
         raise ValueError("registry path must be a string")
@@ -121,94 +127,100 @@ class RegistryHttpTransport(Protocol):
     ) -> RegistryHttpResponseLike: ...
 
 
-class _DenyRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Deny every redirect instead of following an untrusted ``Location``."""
-
-    def redirect_request(
-        self,
-        req: urllib.request.Request,
-        fp: object,
-        code: int,
-        msg: str,
-        headers: object,
-        newurl: str,
-    ) -> None:
-        return None
+def _validate_content_encoding(encoding: str | None) -> None:
+    """Reject any response encoding other than an absent/identity encoding."""
+    if encoding is None:
+        return
+    if encoding.strip().lower() in ("", "identity"):
+        return
+    raise RegistrySchemaError("registry response used an unsupported encoding")
 
 
-def _read_bounded(stream: object, max_response_bytes: int) -> bytes:
-    """Read at most ``max_response_bytes + 1`` bytes and enforce the bound."""
-    read: Callable[[int], bytes] = stream.read  # type: ignore[attr-defined]
-    body = read(max_response_bytes + 1)
-    if len(body) > max_response_bytes:
+def _declared_length(content_length: str | None, *, max_response_bytes: int) -> None:
+    """Reject an invalid or over-cap declared ``Content-Length``."""
+    if content_length is None:
+        return
+    candidate = content_length.strip()
+    if not candidate or not all("0" <= character <= "9" for character in candidate):
+        raise RegistrySchemaError("registry response declared an invalid length")
+    if int(candidate) > max_response_bytes:
         raise RegistrySchemaError("registry response exceeds the bounded size")
-    return body
 
 
-def _blocking_get(
+async def _async_get_url(
     url: str,
     *,
     timeout_seconds: float,
     max_response_bytes: int,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> RegistryHttpResponse:
-    context = ssl.create_default_context()
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        _DenyRedirectHandler(),
-        urllib.request.HTTPSHandler(context=context),
-    )
-    request = urllib.request.Request(
-        url,
-        method="GET",
-        headers={
-            "Accept": "application/json",
-            "Accept-Encoding": "identity",
-            "User-Agent": (
-                "Darkula/0.1 (read-only registry reader; RansomLook data CC BY 4.0)"
-            ),
-        },
-    )
+    """Perform one bounded physical GET with an elapsed-time deadline.
+
+    ``transport`` exists only as a private deterministic-test seam; production
+    callers never supply it and no public path accepts an arbitrary URL.
+    """
     try:
-        response = opener.open(request, timeout=timeout_seconds)
-    except urllib.error.HTTPError as exc:
-        # Non-2xx statuses (including any 3xx denied above) arrive here.
-        try:
-            body = _read_bounded(exc, max_response_bytes)
-            encoding = exc.headers.get("Content-Encoding") if exc.headers else None
-            retry_after = exc.headers.get("Retry-After") if exc.headers else None
-        finally:
-            exc.close()
-        return RegistryHttpResponse(
-            status_code=int(exc.code),
-            body=body,
-            content_encoding=encoding,
-            retry_after=retry_after,
-        )
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise RegistryTransportError("registry request failed") from exc
-    with response:
-        encoding = response.headers.get("Content-Encoding")
-        content_length = response.headers.get("Content-Length")
-        if content_length is not None:
-            try:
-                declared = int(content_length)
-            except ValueError as exc:
-                raise RegistrySchemaError(
-                    "registry response declared an invalid length"
-                ) from exc
-            if declared > max_response_bytes:
-                raise RegistrySchemaError("registry response exceeds the bounded size")
-        body = _read_bounded(response, max_response_bytes)
-        return RegistryHttpResponse(
-            status_code=int(response.status),
-            body=body,
-            content_encoding=encoding,
-            retry_after=response.headers.get("Retry-After"),
-        )
+        async with (
+            asyncio.timeout(timeout_seconds),
+            httpx.AsyncClient(
+                verify=True,
+                trust_env=False,
+                proxy=None,
+                follow_redirects=False,
+                http1=True,
+                http2=False,
+                timeout=httpx.Timeout(timeout_seconds),
+                limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+                transport=transport,
+            ) as client,
+            client.stream(
+                "GET",
+                url,
+                headers=_REQUEST_HEADERS,
+                follow_redirects=False,
+            ) as response,
+        ):
+            encoding = response.headers.get("Content-Encoding")
+            retry_after = response.headers.get("Retry-After")
+            if response.status_code != 200:
+                # Never consume an error/redirect body.
+                return RegistryHttpResponse(
+                    status_code=response.status_code,
+                    body=b"",
+                    content_encoding=encoding,
+                    retry_after=retry_after,
+                )
+            _validate_content_encoding(encoding)
+            _declared_length(
+                response.headers.get("Content-Length"),
+                max_response_bytes=max_response_bytes,
+            )
+            body = bytearray()
+            async for chunk in response.aiter_raw(
+                chunk_size=min(_READ_CHUNK_SIZE, max_response_bytes + 1)
+            ):
+                if len(body) + len(chunk) > max_response_bytes:
+                    raise RegistrySchemaError(
+                        "registry response exceeds the bounded size"
+                    )
+                body.extend(chunk)
+            return RegistryHttpResponse(
+                status_code=200,
+                body=bytes(body),
+                content_encoding=encoding,
+                retry_after=retry_after,
+            )
+    except TimeoutError, httpx.TransportError:
+        raise RegistryTransportError("registry request failed") from None
 
 
 class StdlibRegistryHttpTransport:
-    """Standard-library, fixed-origin, bounded read-only GET transport."""
+    """Fixed-origin, bounded read-only async HTTPX GET transport.
+
+    The historical class name is retained for compatibility; the
+    implementation is HTTPX asynchronous streaming with a per-physical-attempt
+    elapsed deadline and no ``asyncio.to_thread``/``urllib`` worker.
+    """
 
     def __init__(self, *, origin: str = RANSOMLOOK_ORIGIN) -> None:
         if origin != RANSOMLOOK_ORIGIN:
@@ -231,8 +243,7 @@ class StdlibRegistryHttpTransport:
         if max_response_bytes < 1:
             raise ValueError("max_response_bytes must be positive")
         url = self.build_url(path)
-        return await asyncio.to_thread(
-            _blocking_get,
+        return await _async_get_url(
             url,
             timeout_seconds=timeout_seconds,
             max_response_bytes=max_response_bytes,

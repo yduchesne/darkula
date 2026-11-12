@@ -395,8 +395,8 @@ enables network access.
 | `max_locations_per_group` | `64` | Bounded locations per group (`1..64`). |
 | `max_index_entries` | `2000` | Hard index cap; may only be lowered. |
 | `max_response_bytes` | `8388608` | Hard per-response byte cap; may only be lowered. |
-| `request_timeout_seconds` | `8.0` | Per-request timeout (`1..8`). |
-| `request_interval_seconds` | `2.0` | Minimum delay between new GETs (`>= 2`). |
+| `request_timeout_seconds` | `8.0` | Per **physical HTTP attempt**, as one elapsed-time deadline covering connect, headers, and the complete body stream (`1..8`). |
+| `request_interval_seconds` | `2.0` | Minimum separation between physical registry GETs; also applied to the single retry (`>= 2`). One logical GET with a retry can therefore exceed one attempt timeout. |
 
 Overrides: `DARKULA_REGISTRY__RANSOMLOOK_ENABLED`, ... Existing rules apply:
 non-empty environment variables win, empty variables are ignored, and unknown

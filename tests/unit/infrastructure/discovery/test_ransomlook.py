@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -37,6 +38,7 @@ from darkula.testing.fake_world.source_registry import (
 )
 
 OBSERVED_AT = datetime(2026, 11, 11, 12, 0, tzinfo=UTC)
+_MISSING = object()
 
 
 async def _noop_sleep(seconds: float) -> None:
@@ -698,3 +700,205 @@ class TestProviderShape:
     def test_default_detail_is_synthetic(self) -> None:
         for name in ("accessbay", "blackgate", "nightleak", "shadowtalk"):
             assert isinstance(default_detail(name), list)
+
+
+class TestPrivacyFailClosed:
+    """T11/T12: explicit nonboolean privacy never becomes public."""
+
+    @staticmethod
+    def _registry(value: Any) -> FakeSourceRegistry:
+        group: dict[str, Any] = {
+            "name": "blackgate",
+            "locations": [{"slug": "https://example.org/a"}],
+        }
+        if value is not _MISSING:
+            group["private"] = value
+        return FakeSourceRegistry(details={"blackgate": [group, []]})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [_MISSING, False])
+    async def test_absent_or_false_group_is_eligible(self, value: Any) -> None:
+        claims, skipped = await _claims(_adapter(self._registry(value)), "blackgate")
+        assert skipped == 0
+        assert len(claims) == 2
+
+    @pytest.mark.asyncio
+    async def test_true_group_is_excluded(self) -> None:
+        claims, skipped = await _claims(_adapter(self._registry(True)), "blackgate")
+        assert claims == []
+        assert skipped == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [None, "true", "false", 0, 1, 0.0, [], {}])
+    async def test_malformed_group_flag_is_schema_error(self, value: Any) -> None:
+        with pytest.raises(RegistrySchemaError):
+            await _claims(_adapter(self._registry(value)), "blackgate")
+
+    @pytest.mark.asyncio
+    async def test_location_private_matrix(self) -> None:
+        registry = FakeSourceRegistry(
+            details={
+                "blackgate": [
+                    {
+                        "name": "blackgate",
+                        "locations": [
+                            {"slug": "https://example.org/valid-1"},
+                            {
+                                "slug": "https://example.org/malformed",
+                                "private": None,
+                            },
+                            {
+                                "slug": "https://example.org/private",
+                                "private": True,
+                            },
+                            {"slug": "https://example.org/valid-2"},
+                        ],
+                    },
+                    [],
+                ]
+            }
+        )
+        claims, skipped = await _claims(_adapter(registry), "blackgate")
+        assert skipped == 2
+        asserted = [claim.asserted_reference for claim in claims]
+        assert asserted == [
+            "blackgate",
+            "https://example.org/valid-1",
+            "https://example.org/valid-2",
+        ]
+        assert not any("private" in value or "malformed" in value for value in asserted)
+
+
+class TestDotSegments:
+    """T13: dot-segment entries never become a URL or a raw ValueError."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", [".", ".."])
+    async def test_dot_segment_is_skipped_without_http(self, name: str) -> None:
+        registry = FakeSourceRegistry()
+        claims, skipped = await _claims(_adapter(registry), name)
+        assert claims == []
+        assert skipped == 1
+        assert registry.calls == []
+
+
+class TestRetryAfterParsing:
+    """T14: ASCII-only, length-bounded, never raises."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("header", "expected"),
+        [
+            (None, 900),
+            ("", 900),
+            ("   ", 900),
+            ("Wed, 21 Oct 2015 07:28:00 GMT", 900),
+            ("0", 0),
+            (" 30 ", 30),
+            ("3600", 3600),
+            ("0000", 0),
+            ("3601", 900),
+            ("-1", 900),
+            ("1.2", 900),
+            ("\u00b2", 900),
+            ("\u0663", 900),
+            ("999999", 900),
+            ("9" * 10000, 900),
+            ("00030", 900),
+        ],
+    )
+    async def test_parse_never_raises(self, header: str | None, expected: int) -> None:
+        assert _parse_retry_after(header) == expected
+
+
+class TestRetryPacing:
+    """T15-T17: one retry, minimum physical spacing, cancellable."""
+
+    @pytest.mark.asyncio
+    async def test_retry_waits_at_least_request_interval(self) -> None:
+        sleeps: list[float] = []
+
+        async def recording_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        transport = _StaticTransport(
+            [
+                RegistryHttpResponse(503, b""),
+                RegistryHttpResponse(200, _index_body("blackgate")),
+            ]
+        )
+        adapter = RansomLookDiscoveryAdapter(
+            transport=transport,
+            request_interval_seconds=2.0,
+            sleep=recording_sleep,
+        )
+        assert await adapter.list_entry_ids() == ("blackgate",)
+        assert len(transport.calls) == 2
+        assert sleeps == [2.0]
+
+    @pytest.mark.asyncio
+    async def test_transport_retry_keeps_nominal_delay_when_interval_zero(self) -> None:
+        sleeps: list[float] = []
+
+        async def recording_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        transport = _StaticTransport(
+            [
+                RegistryHttpResponse(503, b""),
+                RegistryHttpResponse(503, b""),
+            ]
+        )
+        adapter = RansomLookDiscoveryAdapter(
+            transport=transport,
+            request_interval_seconds=0.0,
+            sleep=recording_sleep,
+        )
+        with pytest.raises(RegistryTransportError):
+            await adapter.list_entry_ids()
+        assert len(transport.calls) == 2
+        assert sleeps == [0.5]
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_retry_sleep_propagates(self) -> None:
+        transports = _StaticTransport([RegistryHttpResponse(503, b"")])
+
+        async def cancelling_sleep(seconds: float) -> None:
+            del seconds
+            raise asyncio.CancelledError()
+
+        adapter = RansomLookDiscoveryAdapter(
+            transport=transports,
+            request_interval_seconds=2.0,
+            sleep=cancelling_sleep,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await adapter.list_entry_ids()
+        assert len(transports.calls) == 1
+
+
+class TestStatusPrecedence:
+    """T07/B1: status classification outranks irrelevant error-body metadata."""
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_wins_over_bad_encoding_and_body(self) -> None:
+        transport = _StaticTransport(
+            [
+                RegistryHttpResponse(
+                    429,
+                    b"x" * 10_000,
+                    content_encoding="gzip",
+                    retry_after="30",
+                )
+            ]
+        )
+        adapter = _adapter(transport, max_response_bytes=16)
+        with pytest.raises(RegistryRateLimited):
+            await adapter.list_entry_ids()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [300, 304, 305, 399])
+    async def test_all_3xx_are_denied(self, status: int) -> None:
+        adapter = _adapter(_StaticTransport([RegistryHttpResponse(status, b"body")]))
+        with pytest.raises(RegistrySchemaError):
+            await adapter.list_entry_ids()
