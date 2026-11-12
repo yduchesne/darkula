@@ -976,6 +976,69 @@ class EvaluationSettings(BaseModel):
         return value
 
 
+class RegistrySettings(BaseModel):
+    """Bounded registry polling settings (PR 18).
+
+    Both RansomLook flags default to ``False``: the adapter exists but no
+    live network request happens unless the adapter is explicitly enabled
+    **and** live network is separately opted in. The index/response caps are
+    hard maxima that configuration may only lower, never raise.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ransomlook_enabled: bool = False
+    ransomlook_live_enabled: bool = False
+    max_entries_per_run: int = 10
+    max_locations_per_group: int = 64
+    max_index_entries: int = 2000
+    max_response_bytes: int = 8388608
+    request_timeout_seconds: float = 8.0
+    request_interval_seconds: float = 2.0
+
+    @field_validator("max_entries_per_run")
+    @classmethod
+    def _validate_max_entries(cls, value: int) -> int:
+        if value < 1 or value > 10:
+            raise ValueError("max_entries_per_run must be within [1, 10]")
+        return value
+
+    @field_validator("max_locations_per_group")
+    @classmethod
+    def _validate_max_locations(cls, value: int) -> int:
+        if value < 1 or value > 64:
+            raise ValueError("max_locations_per_group must be within [1, 64]")
+        return value
+
+    @field_validator("max_index_entries")
+    @classmethod
+    def _validate_max_index_entries(cls, value: int) -> int:
+        if value < 1 or value > 2000:
+            raise ValueError("max_index_entries must be within [1, 2000]")
+        return value
+
+    @field_validator("max_response_bytes")
+    @classmethod
+    def _validate_max_response_bytes(cls, value: int) -> int:
+        if value < 1 or value > 8388608:
+            raise ValueError("max_response_bytes must be within [1, 8388608]")
+        return value
+
+    @field_validator("request_timeout_seconds")
+    @classmethod
+    def _validate_timeout(cls, value: float) -> float:
+        if value < 1.0 or value > 8.0:
+            raise ValueError("request_timeout_seconds must be within [1, 8]")
+        return value
+
+    @field_validator("request_interval_seconds")
+    @classmethod
+    def _validate_interval(cls, value: float) -> float:
+        if value < 2.0:
+            raise ValueError("request_interval_seconds must be >= 2")
+        return value
+
+
 class Settings(BaseSettings):
     """Root typed settings with the frozen pydantic-settings contract.
 
@@ -1012,6 +1075,7 @@ class Settings(BaseSettings):
     recon: ReconSettings = ReconSettings()
     source_analysis: SourceAnalysisSettings = SourceAnalysisSettings()
     evaluation: EvaluationSettings = EvaluationSettings()
+    registry: RegistrySettings = RegistrySettings()
 
 
 __all__ = [
@@ -1034,6 +1098,7 @@ __all__ = [
     "ObjectStoreDriver",
     "ObjectStoreSettings",
     "ReconSettings",
+    "RegistrySettings",
     "RelationshipExtractionSettings",
     "SandboxDriver",
     "SemanticExtractionSettings",

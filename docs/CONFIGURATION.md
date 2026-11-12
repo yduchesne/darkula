@@ -378,3 +378,42 @@ Overrides: `DARKULA_EVALUATION__ENABLED`,
 Deliberately **not** configurable: metric definitions, evaluator semantics,
 case expectations, and any universal quality threshold. Thresholds are
 caller-supplied and explicit; there is no hard-coded model-quality gate.
+
+### Registry polling group (PR 18)
+
+Registry imports are **default-off** and one-shot; no scheduler, daemon, or
+broker consumer is introduced. Live network needs all three gates: the
+one-shot `--live` flag **and** `ransomlook_enabled` **and**
+`ransomlook_live_enabled`. Selecting a production profile alone never
+enables network access.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `ransomlook_enabled` | `false` | Allow the RansomLook adapter to run. |
+| `ransomlook_live_enabled` | `false` | Separate live-network opt-in. |
+| `max_entries_per_run` | `10` | Bounded entries per one-shot pass (`1..10`). |
+| `max_locations_per_group` | `64` | Bounded locations per group (`1..64`). |
+| `max_index_entries` | `2000` | Hard index cap; may only be lowered. |
+| `max_response_bytes` | `8388608` | Hard per-response byte cap; may only be lowered. |
+| `request_timeout_seconds` | `8.0` | Per-request timeout (`1..8`). |
+| `request_interval_seconds` | `2.0` | Minimum delay between new GETs (`>= 2`). |
+
+Overrides: `DARKULA_REGISTRY__RANSOMLOOK_ENABLED`, ... Existing rules apply:
+non-empty environment variables win, empty variables are ignored, and unknown
+keys fail closed. There is deliberately **no** user-configurable registry
+origin, API key, or global `network_enabled` switch.
+
+Operator command (production PostgreSQL and migrations required; no in-memory
+fallback):
+
+```bash
+uv run python scripts/darkula_registry_poll.py --provider ransomlook --live
+```
+
+Exit codes: `0` success/no-work/cooldown, `2` disabled/invalid configuration/
+permanent schema rejection, `3` bounded provider failure/rate limit, `4`
+checkpoint race or immutable-record conflict, `130` cancellation. Output is
+limited to aggregate counts, checkpoint generation, and outcome — never
+source names, URLs, or response bodies. RansomLook registry data are made
+available by their contributors under CC BY 4.0; observations are
+third-party claims, not verified facts.

@@ -1083,3 +1083,91 @@ stored function. All production SQL lives in versioned stored functions —
 the SQL boundary guard
 (`tests/unit/infrastructure/persistence/postgresql/test_sql_boundary.py`)
 covers the new adapter modules.
+
+## PR 18 testing status — bounded registry polling
+
+PR 18 keeps the external boundary fake and everything behind it real: the
+deterministic `FakeSourceRegistry` (Fake World transport) feeds the **real**
+RansomLook parser/adapter, `RegistryPoller`, `SourceDiscoveryService`,
+`PostgresDarkulaSpi`, and PostgreSQL stored functions. No test contacts
+RansomLook, Tor, the Internet, the crawler, or an LLM.
+
+### Unit matrix — adapter/transport (`tests/unit/infrastructure/discovery/`)
+
+| ID | Boundary | Expected assertion |
+| --- | --- | --- |
+| U01 | valid `GET /api/groups` list | accepted in original order; bytewise sorting/keyset selection is the poller's job |
+| U02 | duplicate/mixed/empty/oversize/object index, malformed JSON, duplicate keys, `NaN`, invalid UTF-8, depth > 16 | typed `RegistrySchemaError`; no cursor progress |
+| U03 | `[group, posts]` detail | only safe group/location fields become `DiscoveryInput`; posts never mapped |
+| U04 | injected `screen`/`source`/`header`/`init_script`/`browser`/`meta`/posts | none appears in claims, versions, or errors |
+| U05 | private group/location | skipped and counted; no corresponding claim |
+| U06 | `available: false` | no access evidence, readiness, or qualification change |
+| U07 | valid absolute `.onion`/HTTPS | `LOCATOR` with PR 17 normalization; target is never fetched |
+| U08 | bare `.onion`/host name | `NAME_ONLY`; no scheme inference |
+| U09 | unsupported scheme/credentials/encoded separators/control | per-record skip; no raw value echoed |
+| U10 | missing `slug` and `fqdn` | `MISSING_REFERENCE` skip |
+| U11 | both `slug` and `fqdn` | slug wins; `fqdn` is not retained |
+| U12 | aware `updated` | UTC normalization plus a version revision |
+| U13 | missing/naive/invalid `updated` | poll-observation-time fallback; stable digest |
+| U14 | reordered JSON keys | identical record ID/version |
+| U15 | changed safe field | new immutable version; earlier observation retained |
+| U16 | contradictory same-key payload | existing `ConflictError`; checkpoint unchanged |
+| U17 | two contradictory same group+slug records in one detail | `RegistryRecordConflict`; no advance |
+| U18 | two records with the same normalized locator | distinct provider records/observations |
+| U33 | entry name path injection (`/`, `?`, `#`, scheme, control) | rejected before transport; fixed host only |
+| U38 | hostile provider values | exceptions/logs contain no URL, secret, body, or identifier |
+| U28/U29 | `429` numeric/malicious `Retry-After` | `0..3600` honored, otherwise fixed `900`; no unbounded sleep |
+| U30 | `503` then success/failure | exactly one retry; failure defers |
+| U31 | `401`/`403`/`3xx`/`404` | typed failures; zero redirects/auth fallback |
+| U32 | oversized response / deep JSON | bounded failure before parsing/advance |
+
+### Unit matrix — poller/checkpoints (`tests/unit/app/`, `tests/unit/domain/`)
+
+| ID | Boundary | Expected assertion |
+| --- | --- | --- |
+| U19 | no checkpoint | at most `min(max_entries, 10)` entries; checkpoint at last completed entry |
+| U20 | cursor at end | CAS reset to `NULL`, no same-run wrap |
+| U21 | new entry earlier than cursor | not lost; captured after the next pass reset |
+| U22 | one invalid record in a valid detail | skip counted; accepted siblings persist |
+| U23 | failure after a committed record | cursor unchanged; retry replays exactly |
+| U24 | clock advanced, no provider timestamp | stored `observed_at`/ID/`ingested_at` reused, no conflict |
+| U25/U26 | concurrent first writer, same/changed payload | exactly one reread; converged replay or bounded conflict |
+| U27 | checkpoint CAS loser | `CHECKPOINT_RACE`; no cursor overwrite |
+| U28/U29 | index/detail `429` | cooldown persisted; a run inside it performs no HTTP |
+| U34 | cancellation | propagates; no advance/defer and no UoW across HTTP |
+| U35/U36 | configuration/CLI | defaults off, bounds enforced, unknown keys rejected, `--live` triple gate |
+| U37 | Fake World registry | exactly four synthetic entries, deterministic call log, GET only |
+| U39/U40 | checkpoint staging/CAS | generation `0 -> 1`, monotonic CAS, cursor/cooldown invariants, rollback discarded |
+
+### Real-PostgreSQL vertical slices (`tests/integration/persistence/test_registry_polling.py`)
+
+Canonical path: Fake World transport -> real RansomLook parser/adapter ->
+`RegistryPoller` -> real `SourceDiscoveryService` -> real
+`PostgresDarkulaSpi` -> `discovery_observation_insert_v1` /
+`registry_poll_checkpoint_*_v1` -> database readback.
+
+| ID | Real-DB path | Assertion |
+| --- | --- | --- |
+| I01 | migrate `0010` | table/functions exist; ledger head is `0010_registry_polling.sql` |
+| I02 | absent checkpoint | generation `0`, cursor `NULL` |
+| I03/I04 | first advance + stale CAS | generation `1`; stale CAS raises without change |
+| I05/I06 | defer then cooldown / rollback | cursor preserved, generation increments, cooldown survives a new SPI; rollback discarded |
+| I07 | one fake registry group | group+location observations persist; every forbidden table stays empty |
+| I08 | repeated pass after reset | counts, IDs, `observed_at`, `ingested_at` unchanged |
+| I09 | changed safe field | new version coexists; earlier observation unchanged |
+| I10 | invalid + valid location | only valid persists; skip counted; checkpoint advances |
+| I11 | mid-group failure | cursor unchanged; next run replays then progresses |
+| I12 | `429` after index | cooldown persisted, cursor unchanged, no HTTP inside cooldown |
+| I13 | `503` then success | exactly two attempts for the failing request; one completed checkpoint |
+| I14 | malformed/private group | no unwanted observations; malformed keeps checkpoint, private excluded and advances |
+| I15 | two concurrent pollers | exactly one `COMPLETED` and one `CHECKPOINT_RACE`; no duplicate observations |
+| I16 | clock changes across runs | first-seen time retained; no same-key conflict |
+| I17 | same normalized locator, distinct records | distinct evidence IDs; zero candidates |
+| I18 | PR 17 exact replay after `0010` | PR 17 behavior unchanged; SQL boundary guard passes |
+| I19 | SPI restart | persisted cursor resumes at the next selected entry |
+| I20 | external calls | only the fake transport is used; no Tor/crawler/LLM/network dependency |
+
+`schema and safety` note: `0010_registry_polling.sql` is additive; migrations
+`0001`–`0009` remain byte-identical. The checkpoint stores only a bounded
+provider ID, exact entry name, generation, and timestamps — no raw registry
+payload, locator, secret, candidate, or source identity.

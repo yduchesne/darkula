@@ -42,3 +42,17 @@ driver = "fake"
 driver = "podman"
 runtime_image = "localhost/darkula-crawler-runtime:1.63.0"
 sandbox_network = "darkula-intg"
+
+[registry]
+# PR 18 registry polling is default-off. Enabling the adapter does not grant
+# live network access; `ransomlook_live_enabled` (and the one-shot `--live`
+# flag) are separate opt-ins. The index/response caps are hard maxima that a
+# profile or environment may only lower.
+ransomlook_enabled = false
+ransomlook_live_enabled = false
+max_entries_per_run = 10
+max_locations_per_group = 64
+max_index_entries = 2000
+max_response_bytes = 8388608
+request_timeout_seconds = 8.0
+request_interval_seconds = 2.0

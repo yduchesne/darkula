@@ -17,6 +17,7 @@ always propagates unchanged.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
 from darkula.app.persistence import (
@@ -38,10 +39,12 @@ from darkula.domain.identifiers import (
     SourceCandidateId,
     SourceEndpointId,
 )
+from darkula.domain.registry_polling import RegistryPollCheckpoint
 from darkula.infrastructure.persistence.postgresql.errors import map_driver_error
 from darkula.infrastructure.persistence.postgresql.mapping import (
     map_access_evidence,
     map_discovery_observation,
+    map_registry_poll_checkpoint,
 )
 from darkula.infrastructure.persistence.postgresql.scope import ExecutionScope
 
@@ -58,6 +61,11 @@ _GET_BY_KEY_FN = "SELECT * FROM discovery_observation_get_by_key_v1(%s, %s, %s, 
 _LIST_FOR_PROVIDER_FN = (
     "SELECT * FROM discovery_observation_list_for_provider_v1(%s, %s, %s)"
 )
+_CHECKPOINT_GET_FN = "SELECT * FROM registry_poll_checkpoint_get_v1(%s)"
+_CHECKPOINT_ADVANCE_FN = (
+    "SELECT * FROM registry_poll_checkpoint_advance_v1(%s, %s, %s, %s)"
+)
+_CHECKPOINT_DEFER_FN = "SELECT * FROM registry_poll_checkpoint_defer_v1(%s, %s, %s)"
 _ACCESS_APPEND_PENDING_FN = (
     "SELECT * FROM access_evidence_append_pending_v1(%s, %s, %s, %s, %s, %s)"
 )
@@ -206,6 +214,67 @@ class PostgresDiscoveryRepository(DiscoveryRepository):
             _LIST_FOR_PROVIDER_FN, (provider_id, limit, offset)
         )
         return tuple(map_discovery_observation(row) for row in rows)
+
+    async def _read_checkpoint(self, provider_id: str) -> RegistryPollCheckpoint | None:
+        row = await self._fetch_one(_CHECKPOINT_GET_FN, (provider_id,))
+        return None if row is None else map_registry_poll_checkpoint(row)
+
+    async def get_registry_checkpoint(self, provider_id: str) -> RegistryPollCheckpoint:
+        checkpoint = await self._read_checkpoint(provider_id)
+        if checkpoint is None:
+            return RegistryPollCheckpoint.unpersisted(provider_id)
+        return checkpoint
+
+    async def advance_registry_checkpoint(
+        self,
+        provider_id: str,
+        *,
+        expected_generation: int,
+        cursor: str | None,
+        completed_at: datetime,
+    ) -> RegistryPollCheckpoint:
+        row = await self._fetch_one(
+            _CHECKPOINT_ADVANCE_FN,
+            (provider_id, expected_generation, cursor, completed_at),
+        )
+        outcome = None if row is None else row[0]
+        if outcome == "conflict":
+            raise ConflictError(
+                "the registry poll checkpoint was advanced by another writer"
+            )
+        if outcome != "advanced":
+            raise MappingError("unexpected registry poll checkpoint advance outcome")
+        checkpoint = await self._read_checkpoint(provider_id)
+        if checkpoint is None:
+            raise MappingError(
+                "the advanced registry poll checkpoint could not be read"
+            )
+        return checkpoint
+
+    async def defer_registry_checkpoint(
+        self,
+        provider_id: str,
+        *,
+        expected_generation: int,
+        not_before: datetime,
+    ) -> RegistryPollCheckpoint:
+        row = await self._fetch_one(
+            _CHECKPOINT_DEFER_FN,
+            (provider_id, expected_generation, not_before),
+        )
+        outcome = None if row is None else row[0]
+        if outcome == "conflict":
+            raise ConflictError(
+                "the registry poll checkpoint was advanced by another writer"
+            )
+        if outcome != "deferred":
+            raise MappingError("unexpected registry poll checkpoint defer outcome")
+        checkpoint = await self._read_checkpoint(provider_id)
+        if checkpoint is None:
+            raise MappingError(
+                "the deferred registry poll checkpoint could not be read"
+            )
+        return checkpoint
 
 
 class PostgresAccessRepository(AccessRepository):

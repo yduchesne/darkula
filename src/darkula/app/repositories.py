@@ -75,6 +75,7 @@ from darkula.domain.identifiers import (
     SourceId,
     StreamName,
 )
+from darkula.domain.registry_polling import RegistryPollCheckpoint
 from darkula.domain.relationships import (
     ExtractedRelationship,
     RelationshipExtractionResult,
@@ -820,6 +821,49 @@ class DiscoveryRepository(ABC):
         """Return a provider's observations in ``(observed_at, id)`` order.
 
         ``limit`` is bounded to ``1..200`` and ``offset`` must be ``>= 0``.
+        """
+
+    @abstractmethod
+    async def get_registry_checkpoint(self, provider_id: str) -> RegistryPollCheckpoint:
+        """Return one provider's poll checkpoint.
+
+        An absent row returns the value with ``generation == 0`` (never an
+        implicit insert).
+        """
+
+    @abstractmethod
+    async def advance_registry_checkpoint(
+        self,
+        provider_id: str,
+        *,
+        expected_generation: int,
+        cursor: str | None,
+        completed_at: datetime,
+    ) -> RegistryPollCheckpoint:
+        """Compare-and-swap the checkpoint cursor after durable ingestion.
+
+        ``expected_generation == 0`` creates the row; a positive value
+        updates only the matching generation. ``cursor is None`` is the
+        explicit end-of-pass reset. Returns the newly persisted checkpoint.
+
+        :raises ConflictError: if another writer advanced the checkpoint.
+        """
+
+    @abstractmethod
+    async def defer_registry_checkpoint(
+        self,
+        provider_id: str,
+        *,
+        expected_generation: int,
+        not_before: datetime,
+    ) -> RegistryPollCheckpoint:
+        """Compare-and-swap a cooldown without moving the cursor.
+
+        Preserves ``cursor`` and ``last_completed_at``; sets/raises
+        ``cooldown_until`` and increments the generation. Returns the newly
+        persisted checkpoint.
+
+        :raises ConflictError: if another writer advanced the checkpoint.
         """
 
 

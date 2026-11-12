@@ -289,13 +289,13 @@ semantic idempotency key is
 Assessments never mutate `Source` or extraction history, and the absence of
 collected evidence is never inferred to mean inactivity.
 
-## v0.2 discovery foundation (PR 17 delivered)
+## v0.2 discovery foundation (PR 17 delivered; registry polling PR 18 delivered)
 
 PR 17 delivers the executable discovery/provenance domain, additive
 PostgreSQL persistence, and the atomic qualification persistence primitive.
-Everything below is **delivered**, except the items explicitly marked
-planned (PR 18-27). See [v0.2 Roadmap](ROADMAP_V02.md) and
-[Architecture](ARCHITECTURE.md).
+PR 18 delivers bounded registry observation ingestion and a durable poll
+checkpoint, still without candidate admission. See
+[v0.2 Roadmap](ROADMAP_V02.md) and [Architecture](ARCHITECTURE.md).
 
 The v0.1 semantics of `SourceCandidate`, `Source`, `SourceEndpoint`,
 `ReconAssessment`, `CollectionPolicy`, content artifacts, and
@@ -368,8 +368,24 @@ Deterministic, one-observation-at-a-time ingest boundary:
 stored function -> DiscoveryObservation`. It performs no network access,
 crawling, DNS, LLM call, candidate/source/endpoint/policy/run creation,
 event/outbox append, or access/crawl authorization. `DiscoveryProvider` is a
-provider-neutral protocol only; PR 18 owns real adapters, polling,
-checkpoints, and batching. PR 19 owns candidate admission/reconciliation.
+provider-neutral protocol; PR 18 supplies one bounded registry adapter and a
+one-shot poller, PR 19 owns candidate admission/reconciliation.
+
+### RegistryPollCheckpoint (PR 18)
+
+Durable **polling position** for one allowlisted registry provider, not a
+source/candidate/policy identity. Fields: `provider_id`, `cursor` (the exact
+bounded upstream entry name last fully ingested, or `NULL` for the explicit
+end-of-pass state), `generation` (optimistic compare-and-swap counter; `0`
+means not yet persisted), `cooldown_until`, and `last_completed_at`.
+`advance_registry_checkpoint` moves the cursor only after every accepted
+observation for that entry committed; `defer_registry_checkpoint` records a
+429/transient cooldown without moving the cursor. The cursor is never a URL,
+broker offset, source identity, or observation identity, and a checkpoint is
+shared poll state (not owned by a MonitoringProfile). Provider record
+identity/revision remain distinct from the Darkula `observation_id` and its
+acceptance `ingested_at`; replay reuses the first-seen `observed_at` when the
+registry supplies no stable timestamp.
 
 ### AccessEvidence (PR 17)
 

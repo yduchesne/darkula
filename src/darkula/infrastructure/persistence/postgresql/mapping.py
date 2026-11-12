@@ -86,6 +86,7 @@ from darkula.domain.identifiers import (
     SourceId,
     StreamName,
 )
+from darkula.domain.registry_polling import RegistryPollCheckpoint
 from darkula.domain.relationships import (
     ExtractedRelationship,
     RelationshipExtractionResult,
@@ -582,6 +583,24 @@ def map_discovery_observation(row: tuple[Any, ...]) -> DiscoveryObservation:
         )
     except (ValueError, TypeError) as exc:
         raise _mapping_error("discovery observation", exc) from exc
+
+
+def map_registry_poll_checkpoint(row: tuple[Any, ...]) -> RegistryPollCheckpoint:
+    """Map one ``registry_poll_checkpoint_*`` result row.
+
+    Column order: provider_id, cursor, generation, cooldown_until,
+    last_completed_at.
+    """
+    try:
+        return RegistryPollCheckpoint(
+            provider_id=row[0],
+            cursor=row[1],
+            generation=int(row[2]),
+            cooldown_until=row[3],
+            last_completed_at=row[4],
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("registry poll checkpoint", exc) from exc
 
 
 def map_access_evidence(row: tuple[Any, ...]) -> AccessEvidence:
