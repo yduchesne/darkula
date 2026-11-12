@@ -29,12 +29,15 @@ from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
     from darkula.app.repositories import (
+        AccessRepository,
         CollectionRepository,
         ContentRepository,
+        DiscoveryRepository,
         ExtractionRepository,
         GeographicResolutionRepository,
         OutboxRepository,
         ProcessedMessageRepository,
+        QualificationRepository,
         RelationshipRepository,
         SourceCandidateRepository,
         SourceRepository,
@@ -164,6 +167,24 @@ class UnitOfWork(ABC):
     def relationships(self) -> RelationshipRepository:
         """Return the relationship-assertion repository bound to this
         transaction (PR 13)."""
+
+    @property
+    @abstractmethod
+    def discovery(self) -> DiscoveryRepository:
+        """Return the immutable discovery-observation repository bound to
+        this transaction (PR 17)."""
+
+    @property
+    @abstractmethod
+    def access(self) -> AccessRepository:
+        """Return the immutable access-evidence repository bound to this
+        transaction (PR 17)."""
+
+    @property
+    @abstractmethod
+    def qualification(self) -> QualificationRepository:
+        """Return the immutable qualification-decision repository bound to
+        this transaction (PR 17)."""
 
 
 class DarkulaSpi(ABC):

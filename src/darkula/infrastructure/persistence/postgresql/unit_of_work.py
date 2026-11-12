@@ -39,12 +39,15 @@ if TYPE_CHECKING:
     from psycopg_pool import AsyncConnectionPool
 
     from darkula.app.repositories import (
+        AccessRepository,
         CollectionRepository,
         ContentRepository,
+        DiscoveryRepository,
         ExtractionRepository,
         GeographicResolutionRepository,
         OutboxRepository,
         ProcessedMessageRepository,
+        QualificationRepository,
         RelationshipRepository,
         SourceCandidateRepository,
         SourceRepository,
@@ -58,6 +61,10 @@ if TYPE_CHECKING:
     from darkula.infrastructure.persistence.postgresql.content_repository import (
         PostgresContentRepository,
     )
+    from darkula.infrastructure.persistence.postgresql.discovery_repository import (
+        PostgresAccessRepository,
+        PostgresDiscoveryRepository,
+    )
     from darkula.infrastructure.persistence.postgresql.extraction_repository import (
         PostgresExtractionRepository,
     )
@@ -69,6 +76,9 @@ if TYPE_CHECKING:
     )
     from darkula.infrastructure.persistence.postgresql.processed_message_repository import (  # noqa: E501
         PostgresProcessedMessageRepository,
+    )
+    from darkula.infrastructure.persistence.postgresql.qualification_repository import (
+        PostgresQualificationRepository,
     )
     from darkula.infrastructure.persistence.postgresql.relationship_repository import (
         PostgresRelationshipRepository,
@@ -107,6 +117,9 @@ class PostgresUnitOfWork(UnitOfWork):
         self._extraction_repository: PostgresExtractionRepository | None = None
         self._geography_repository: PostgresGeographicResolutionRepository | None = None
         self._relationship_repository: PostgresRelationshipRepository | None = None
+        self._discovery_repository: PostgresDiscoveryRepository | None = None
+        self._access_repository: PostgresAccessRepository | None = None
+        self._qualification_repository: PostgresQualificationRepository | None = None
 
     async def __aenter__(self) -> Self:
         if self._state is not _State.CREATED:
@@ -313,6 +326,42 @@ class PostgresUnitOfWork(UnitOfWork):
 
             self._relationship_repository = PostgresRelationshipRepository(self)
         return self._relationship_repository
+
+    @property
+    def discovery(self) -> DiscoveryRepository:
+        """Return the transaction-bound discovery-observation repository (PR 17)."""
+        self.ensure_open()
+        if self._discovery_repository is None:
+            from darkula.infrastructure.persistence.postgresql.discovery_repository import (  # noqa: E501
+                PostgresDiscoveryRepository,
+            )
+
+            self._discovery_repository = PostgresDiscoveryRepository(self)
+        return self._discovery_repository
+
+    @property
+    def access(self) -> AccessRepository:
+        """Return the transaction-bound access-evidence repository (PR 17)."""
+        self.ensure_open()
+        if self._access_repository is None:
+            from darkula.infrastructure.persistence.postgresql.discovery_repository import (  # noqa: E501
+                PostgresAccessRepository,
+            )
+
+            self._access_repository = PostgresAccessRepository(self)
+        return self._access_repository
+
+    @property
+    def qualification(self) -> QualificationRepository:
+        """Return the transaction-bound qualification-decision repository (PR 17)."""
+        self.ensure_open()
+        if self._qualification_repository is None:
+            from darkula.infrastructure.persistence.postgresql.qualification_repository import (  # noqa: E501
+                PostgresQualificationRepository,
+            )
+
+            self._qualification_repository = PostgresQualificationRepository(self)
+        return self._qualification_repository
 
     async def _release_connection(self) -> None:
         """Return the borrowed connection to the pool exactly once."""

@@ -38,6 +38,17 @@ from darkula.domain.content import (
     ContentArtifact,
     NormalizedContent,
 )
+from darkula.domain.discovery import (
+    AccessEvidence,
+    AccessStatus,
+    DiscoveryDetectionMethod,
+    DiscoveryObservation,
+    DiscoveryReferenceKind,
+    DiscoveryValidationStatus,
+    QualificationDecision,
+    QualificationMethod,
+    QualificationOutcome,
+)
 from darkula.domain.extraction import (
     EntityType,
     ExtractedEntity,
@@ -51,12 +62,14 @@ from darkula.domain.geography import (
     GeographicResolverIdentity,
 )
 from darkula.domain.identifiers import (
+    AccessEvidenceId,
     CandidateEventId,
     CausationId,
     CollectionPolicyId,
     CollectionRunId,
     ContentArtifactId,
     CorrelationId,
+    DiscoveryObservationId,
     ExtractedEntityId,
     ExtractedRelationshipId,
     ExtractionResultId,
@@ -64,6 +77,7 @@ from darkula.domain.identifiers import (
     MessageId,
     NormalizedContentId,
     ObjectKey,
+    QualificationDecisionId,
     ReconAssessmentId,
     RelationshipExtractionResultId,
     SourceAssessmentId,
@@ -533,11 +547,110 @@ def map_outbox_record(row: tuple[Any, ...]) -> OutboxRecord:
         raise _mapping_error("outbox record", exc) from exc
 
 
+def map_discovery_observation(row: tuple[Any, ...]) -> DiscoveryObservation:
+    """Map one ``discovery_observation_*`` result row.
+
+    Column order: observation_id, provider_id, provider_record_id,
+    provider_record_version, detection_method, reference_kind,
+    asserted_reference, normalized_locator, validation_status,
+    source_kind_hint, requires_auth_claim, origin_reference,
+    evidence_reference, evidence_excerpt, observed_at, ingested_at,
+    candidate_id, semantic_key.
+    """
+    try:
+        return DiscoveryObservation(
+            observation_id=DiscoveryObservationId.from_str(str(row[0])),
+            provider_id=row[1],
+            provider_record_id=row[2],
+            provider_record_version=row[3],
+            detection_method=DiscoveryDetectionMethod(row[4]),
+            reference_kind=DiscoveryReferenceKind(row[5]),
+            asserted_reference=row[6],
+            normalized_locator=row[7],
+            validation_status=DiscoveryValidationStatus(row[8]),
+            source_kind_hint=None if row[9] is None else EndpointType(row[9]),
+            requires_auth_claim=row[10],
+            origin_reference=row[11],
+            evidence_reference=row[12],
+            evidence_excerpt=row[13],
+            observed_at=row[14],
+            ingested_at=row[15],
+            candidate_id=(
+                None if row[16] is None else SourceCandidateId.from_str(str(row[16]))
+            ),
+            semantic_key=row[17],
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("discovery observation", exc) from exc
+
+
+def map_access_evidence(row: tuple[Any, ...]) -> AccessEvidence:
+    """Map one ``access_evidence_*`` result row.
+
+    Column order: access_evidence_id, observation_id, candidate_id,
+    source_endpoint_id, status, reason_code, recorded_at,
+    evidence_reference.
+    """
+    try:
+        return AccessEvidence(
+            access_evidence_id=AccessEvidenceId.from_str(str(row[0])),
+            observation_id=DiscoveryObservationId.from_str(str(row[1])),
+            candidate_id=(
+                None if row[2] is None else SourceCandidateId.from_str(str(row[2]))
+            ),
+            source_endpoint_id=(
+                None if row[3] is None else SourceEndpointId.from_str(str(row[3]))
+            ),
+            status=AccessStatus(row[4]),
+            reason_code=row[5],
+            recorded_at=row[6],
+            evidence_reference=row[7],
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("access evidence", exc) from exc
+
+
+def map_qualification_decision(row: tuple[Any, ...]) -> QualificationDecision:
+    """Map one ``qualification_decision_*`` result row.
+
+    Column order: decision_id, candidate_id, method, outcome, evaluated_at,
+    policy_id, policy_version, provider_id, provider_record_id,
+    recon_assessment_id, event_id, expected_status, new_status,
+    decision_key, evidence_observation_ids (uuid array).
+    """
+    try:
+        return QualificationDecision(
+            decision_id=QualificationDecisionId.from_str(str(row[0])),
+            candidate_id=SourceCandidateId.from_str(str(row[1])),
+            method=QualificationMethod(row[2]),
+            outcome=QualificationOutcome(row[3]),
+            evaluated_at=row[4],
+            policy_id=row[5],
+            policy_version=row[6],
+            provider_id=row[7],
+            provider_record_id=row[8],
+            recon_assessment_id=(
+                None if row[9] is None else ReconAssessmentId.from_str(str(row[9]))
+            ),
+            event_id=CandidateEventId.from_str(str(row[10])),
+            expected_status=CandidateStatus(row[11]),
+            new_status=CandidateStatus(row[12]),
+            decision_key=row[13],
+            evidence_observation_ids=tuple(
+                DiscoveryObservationId.from_str(str(item)) for item in row[14]
+            ),
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("qualification decision", exc) from exc
+
+
 __all__ = [
+    "map_access_evidence",
     "map_candidate",
     "map_collection_policy",
     "map_collection_run",
     "map_content_artifact",
+    "map_discovery_observation",
     "map_endpoint",
     "map_event",
     "map_extracted_entity",
@@ -546,6 +659,7 @@ __all__ = [
     "map_geographic_resolution",
     "map_normalized_content",
     "map_outbox_record",
+    "map_qualification_decision",
     "map_recon_assessment",
     "map_relationship_extraction_result",
     "map_scheduled_occurrence",

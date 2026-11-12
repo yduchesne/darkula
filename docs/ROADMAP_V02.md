@@ -1,6 +1,6 @@
 # Darkula v0.2 Roadmap — Source Discovery and Real-World Monitoring
 
-> **Status: PLANNED — not implemented.** This is the proposed v0.2 implementation sequence. PRs 17–27 below are roadmap identifiers, not claims that GitHub pull requests exist or have shipped. Each implementation PR requires a separate, fresh-`main` detailed plan under [Detailed PR Plan Authoring Guide](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
+> **Status: PR 17 implemented; PRs 18–27 planned.** PR 17 (discovery domain, durable provenance, and the qualification persistence primitive) is delivered. The remaining roadmap identifiers below describe planned work, not shipped behavior. Each implementation PR requires a separate, fresh-`main` detailed plan under [Detailed PR Plan Authoring Guide](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
 
 ## Release objective
 
@@ -110,9 +110,11 @@ A versioned, operator-controlled `CandidateQualificationPolicy` runs in trusted 
 - **Operator workflow:** persist state, reason, timestamps, and sanitized evidence; expose credentials-pending/failed/revoked views through operator API/CLI. Reconciliation and worker replays are idempotent, no endless authentication retries, and no automatic collection while blocked.
 - **PR ownership:** PR 17 defines the access-state semantics and durable foundation; PR 19 integrates recognition, reconciliation, and pending-state transitions with candidate reconnaissance/admission; PR 26 implements the operator provisioning references, credential validation, session handling, failure/revocation handling and resumption gates. PR 27 tests the full lifecycle. Earlier PRs must never claim credentials are usable before PR 26.
 
-## PR 17 — Discovery domain and provenance persistence (P0)
+## PR 17 — Discovery domain and provenance persistence (P0) — COMPLETED
 
 **Depends on:** completed v0.1. **Dominant concern:** normalize and persist discovery without attempting to browse.
+
+> **Delivered:** immutable `DiscoveryObservation` (bounded enums, semantic replay tuple/digest, conflict-on-payload-change), deterministic I/O-free HTTP(S)/onion locator normalization, additive migration `0009_discovery_foundation.sql` with new versioned stored functions, `DiscoveryRepository`/`AccessRepository`/`QualificationRepository` through the existing UnitOfWork, in-memory parity fakes, `SourceDiscoveryService.ingest` (no candidate creation), orthogonal `CREDENTIALS_PENDING` evidence for already-existing candidates, and the atomic/immutable qualification decision + candidate event/status primitive. Scope note: ingest produces **zero** candidate lifecycle effects; PR 19 owns admission/reconciliation and trusted qualification policy. Live registry ingestion, crawling, credential provisioning, and MonitoringProfiles remain out of scope.
 
 - Introduce a minimal versioned, provider-neutral discovery observation contract: asserted locator, normalized locator, source kind hint, observed/discovered timestamps, origin reference, provider identity, provenance/evidence, and confidence/validation status where meaningful.
 - Distinguish a source-locator observation from a source-name-only reference. Preserve unverified classifications as claims.

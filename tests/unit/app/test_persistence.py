@@ -11,12 +11,15 @@ import pytest
 
 from darkula.app.persistence import DarkulaSpi, UnitOfWork
 from darkula.app.repositories import (
+    AccessRepository,
     CollectionRepository,
     ContentRepository,
+    DiscoveryRepository,
     ExtractionRepository,
     GeographicResolutionRepository,
     OutboxRepository,
     ProcessedMessageRepository,
+    QualificationRepository,
     RelationshipRepository,
     SourceCandidateRepository,
     SourceRepository,
@@ -76,6 +79,18 @@ class _RecordingUnitOfWork(UnitOfWork):
     @property
     def relationships(self) -> RelationshipRepository:
         raise AssertionError("recording stub exposes no relationship repository")
+
+    @property
+    def discovery(self) -> DiscoveryRepository:
+        raise AssertionError("recording stub exposes no discovery repository")
+
+    @property
+    def access(self) -> AccessRepository:
+        raise AssertionError("recording stub exposes no access repository")
+
+    @property
+    def qualification(self) -> QualificationRepository:
+        raise AssertionError("recording stub exposes no qualification repository")
 
 
 class _RecordingSpi(DarkulaSpi):

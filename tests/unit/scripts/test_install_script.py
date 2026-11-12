@@ -23,6 +23,7 @@ Covered behavior:
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -100,11 +101,29 @@ if sys.argv[1:2] == ["-s"]:
 sys.exit(0)
 """
 
+_GIT_SHIM = """\
+#!/usr/bin/env python3
+import sys
+
+sys.exit(0)
+"""
+
+#: Real tools the installer needs, linked into the isolated ``sysbin`` so the
+#: sandbox never sees host package managers or a host ``podman``.
+_REAL_TOOLS = ("bash", "python3", "dirname", "awk", "sort", "head", "cat")
+
 
 def _write_shim(path: Path, body: str) -> None:
     """Write one executable fake CLI."""
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
+
+
+def _link_real(sysbin: Path, tool: str) -> None:
+    """Link one required real tool into the isolated ``PATH``."""
+    real = shutil.which(tool)
+    if real is not None:
+        os.symlink(real, sysbin / tool)
 
 
 class _Installer:
@@ -113,6 +132,10 @@ class _Installer:
     def __init__(self, tmp_path: Path) -> None:
         self.bin_dir = tmp_path / "bin"
         self.bin_dir.mkdir()
+        self.sysbin = tmp_path / "sysbin"
+        self.sysbin.mkdir()
+        for tool in _REAL_TOOLS:
+            _link_real(self.sysbin, tool)
         self.log_dir = tmp_path / "logs"
         self.log_dir.mkdir()
         self.home = tmp_path / "home"
@@ -120,7 +143,9 @@ class _Installer:
         self._env = dict(os.environ)
         self._env.update(
             {
-                "PATH": str(self.bin_dir) + os.pathsep + self._env["PATH"],
+                # Only the fake commands and a minimal real tool set: the host
+                # podman/package managers must never be visible.
+                "PATH": str(self.bin_dir) + os.pathsep + str(self.sysbin),
                 "HOME": str(self.home),
                 "FAKE_BIN_DIR": str(self.bin_dir),
                 "FAKE_UV_LOG": str(self.log_dir / "uv.log"),
@@ -133,6 +158,7 @@ class _Installer:
         _write_shim(self.bin_dir / "sudo", _SUDO_SHIM)
         _write_shim(self.bin_dir / "apt-get", _APT_GET_SHIM)
         _write_shim(self.bin_dir / "uname", _UNAME_SHIM)
+        _write_shim(self.bin_dir / "git", _GIT_SHIM)
 
     def add_podman(self, version: str = "5.4.1") -> None:
         """Install the fake podman CLI at the requested version."""
@@ -147,7 +173,7 @@ class _Installer:
     def run(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         """Execute the real installer with the isolated environment."""
         return subprocess.run(
-            ["bash", str(_SCRIPT), *arguments],
+            [str(self.sysbin / "bash"), str(_SCRIPT), *arguments],
             cwd=_REPO_ROOT,
             env=self._env,
             capture_output=True,

@@ -33,7 +33,7 @@ import sys
 from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
-from typing import Self, cast
+from typing import Any, Self, cast
 
 import pytest
 from pydantic import BaseModel
@@ -171,6 +171,18 @@ class _SliceUnitOfWork(UnitOfWork):
     @property
     def relationships(self) -> RelationshipRepository:
         raise AssertionError("slice stub exposes no relationship repository")
+
+    @property
+    def discovery(self) -> Any:
+        raise AssertionError("slice stub exposes no discovery repository")
+
+    @property
+    def access(self) -> Any:
+        raise AssertionError("slice stub exposes no access repository")
+
+    @property
+    def qualification(self) -> Any:
+        raise AssertionError("slice stub exposes no qualification repository")
 
 
 def _slice_message() -> StreamMessage:

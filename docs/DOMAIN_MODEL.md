@@ -289,60 +289,136 @@ semantic idempotency key is
 Assessments never mutate `Source` or extraction history, and the absence of
 collected evidence is never inferred to mean inactivity.
 
-## v0.2 proposed concepts — not yet implemented
+## v0.2 discovery foundation (PR 17 delivered)
 
-The following are **planned**, not executable v0.1 types or migration schemas. Keep the existing SourceCandidate, Source/SourceEndpoint, ReconAssessment, CollectionPolicy, content-artifact, and SourceAssessment semantics unchanged. See [v0.2 Roadmap](ROADMAP_V02.md).
+PR 17 delivers the executable discovery/provenance domain, additive
+PostgreSQL persistence, and the atomic qualification persistence primitive.
+Everything below is **delivered**, except the items explicitly marked
+planned (PR 18-27). See [v0.2 Roadmap](ROADMAP_V02.md) and
+[Architecture](ARCHITECTURE.md).
 
-### DiscoveryObservation
+The v0.1 semantics of `SourceCandidate`, `Source`, `SourceEndpoint`,
+`ReconAssessment`, `CollectionPolicy`, content artifacts, and
+`SourceAssessment` are unchanged.
 
-A durable, provenance-bearing observation from a structured registry, collected link, or semantic reference. Distinct concepts:
+### DiscoveryObservation (PR 17)
 
-- **Observation identity** — one durable, idempotently replayable feed/document assertion.
-- **Provider identity and source record ID** — upstream record identity, never Darkula `SourceId`.
-- **Observed locator** — raw claimed URL/address/channel locator, untrusted.
-- **Normalized locator** — validated/canonicalized matching key when technically representable; not itself a Source ID.
-- **Source claim** — classification, name, endpoint/mirror assertion, or unresolved reference. Preserve evidence and confidence separately from authoritative state.
-- **Provenance** — provider or originating content/Source, record or document reference, collection/observation timestamp, extraction mechanism, supporting evidence reference, and import/transform version.
+An immutable, provenance-bearing observation of one untrusted provider claim
+(structured registry, collected link, semantic reference, or manual note).
+It is evidence, never source truth, never a candidate, and never crawl
+authorization.
 
-Multiple observations can refer to the same candidate or endpoint without collapsing distinct evidence. A name-only mention cannot become a crawlable candidate without a concrete validated locator. A mirrored/rotated endpoint claim does not establish logical Source equivalence without explicit trusted reconciliation/approval. Persistence is additive and retains history.
+Frozen enums:
 
-### SourceDiscoveryService
-
-Trusted deterministic producer/reconciler of `SourceCandidate` records from DiscoveryObservations. It does not browse, qualify, promote, or mutate existing Source identity on model authority. It invokes existing candidate repositories/lifecycle rather than introducing competing candidate aggregates. Provider adapters are replaceable and rate-bounded.
-
-### QualificationDecision and routing (v0.2, planned)
-
-Distinct from `ReconAssessment` (which only records actual ReconAgent reasoning), an immutable, durable `QualificationDecision` records **how and why** a `SourceCandidate` was qualified or left pending:
-
-- candidate ID, outcome and timestamp;
-- `method`: `REGISTRY_POLICY` (deterministic, no model) or `AGENT_RECON` (real bounded ReconCoordinator call);
-- policy ID/version, registry adapter/provider ID and source record reference (when applicable), exact durable discovery-evidence references, and deterministic acceptance/rejection/route reason codes;
-- an optional reference to an **actual** `ReconAssessment` only for `AGENT_RECON`. A registry decision must never invent an assessment, model score, or agent evidence reference.
-
-`QualificationDecision` identity (append-only historical record) differs from candidate identity, provider record identity and the candidate lifecycle's `QUALIFIED` event. The decision and event/expected-state transition must be committed atomically and be replay/race-safe. Existing v0.1 candidate status/event values remain authoritative. If existing consumers assume every `QUALIFIED` candidate has a `ReconAssessment`, adjust their reads in PR 19; do not write fake records. Exact schema/idempotency keys, plus compatibility with historical v0.1 assessments, must be frozen in PR 17's detailed implementation plan.
-
-`REGISTRY_POLICY` eligibility requires an explicit versioned operator allowlist for the provider and permitted record class, structurally complete metadata and valid locator, durable evidence and absence of material contradictory identity/mirror claims. Unknown, incomplete or conflicting records take the existing agent route when authorized, or remain pending. Registry qualification does not prove endpoint reachability, authorize collection, merge Sources, approve credentials, or promote to managed Source.
-
-### Source access-readiness state (v0.2, planned)
-
-`AccessStatus` is a **distinct persistent dimension** from `CandidateStatus` and `SourceStatus`. It captures requirements/access readiness for a discovered candidate and, after promotion, a managed Source or endpoint-specific access configuration. The detailed mapping between candidate, managed Source and endpoints belongs to PR 17's executable plan, preserving v0.1 models and future access transitions.
-
-| Value | Semantics |
+| Enum | Values |
 | --- | --- |
-| `UNKNOWN` | No verified knowledge of access requirements |
-| `PUBLIC` | No source login needed for the approved public scope |
-| `CREDENTIALS_PENDING` | Login required but operator-provisioned credentials missing or not yet verified |
-| `READY` | Source-scoped credentials provisioned **and login validation succeeded** |
-| `AUTH_FAILED` | Previously usable authentication is no longer working |
-| `ACCESS_REVOKED` | Operator has explicitly disabled/withdrawn source access |
+| `DiscoveryReferenceKind` | `LOCATOR`, `NAME_ONLY` |
+| `DiscoveryDetectionMethod` | `REGISTRY`, `CONTENT_LINK`, `CONTENT_SEMANTIC`, `MANUAL` |
+| `DiscoveryValidationStatus` | `VALID_LOCATOR`, `UNRESOLVED_NAME` |
+| `AccessStatus` | `UNKNOWN`, `PUBLIC`, `CREDENTIALS_PENDING`, `READY`, `AUTH_FAILED`, `ACCESS_REVOKED` |
+| `QualificationMethod` | `REGISTRY_POLICY`, `AGENT_RECON` |
+| `QualificationOutcome` | `QUALIFIED`, `RECONNAISSANCE_PENDING`, `REJECTED` |
 
-State carries reason, observed/updated timestamps and sanitized evidence/provenance, not username/password/cookies. The status does not equal candidate qualification: `CREDENTIALS_PENDING` can coexist with `QUALIFIED` when public evidence is sufficient, or with `RECONNAISSANCE_PENDING` when further authorized inspection is needed. Missing credentials are never grounds for analytical `REJECT`.
+Persisted fields: `observation_id` (UUID), `provider_id`,
+`provider_record_id`, `provider_record_version`, `detection_method`,
+`reference_kind`, `asserted_reference`, `normalized_locator`,
+`validation_status`, `source_kind_hint`, `requires_auth_claim`,
+`origin_reference`, `evidence_reference`, `evidence_excerpt`, `observed_at`
+(provider time), `ingested_at` (Darkula acceptance time), `candidate_id`
+(always `NULL` from PR 17 ingestion), and `semantic_key`.
 
-Transitions are trusted: public/required access is observed and verified; `CREDENTIALS_PENDING -> READY` requires successful login validation after **manual external account provisioning**; `READY -> AUTH_FAILED` when login fails or expires; `AUTH_FAILED -> READY` after corrected credentials and validation; `ACCESS_REVOKED` requires explicit operator reauthorization before validation can restore access. Enforce endpoint-specific credential isolation if a managed Source exposes distinct login boundaries. `AccessStatus` is independent of `CollectionPolicy` authorization; both must allow a protected collection run.
+**Identity and replay.** The semantic replay tuple is
+`(provider_id, provider_record_id, provider_record_version,
+detection_method, reference_kind)`, stored as five columns under one UNIQUE
+constraint. `semantic_key` is a deterministic SHA-256 over UTF-8, 4-byte
+big-endian length-prefixed components of that tuple. Python `hash()`,
+random UUIDs, broker positions, timestamps, candidate IDs, and URIs are never
+replay identity. A replay with an identical normalized payload returns the
+stored original row (original `observation_id`/`ingested_at`) with no second
+row. A same-tuple payload difference (including a changed `observed_at`) is a
+conflict: no overwrite, no merge, no second row. Distinct provider record
+versions and distinct providers coexist as separate immutable observations;
+equal locators never collapse evidence.
 
-No Darkula user, tenant or account is introduced: the credentials are for *external* sources, manually obtained and kept in a secrets manager. `CollectionPolicy.authentication_reference` remains a secret-free reference. PR 26 adds resolution and session handling; earlier PRs must not treat stored references as active usable credentials.
+**Locator validation.** `normalize_discovery_locator` is a deterministic,
+I/O-free, conservative syntactic normalizer for absolute `http`/`https`
+locators (including `.onion` hosts). It lowercases scheme/host, applies
+standard-library IDNA to non-ASCII hosts, validates IPv4/IPv6 literals,
+removes only the scheme's default port, preserves path/query byte-for-byte,
+rejects userinfo/fragments/controls/backslashes/trailing-dot hosts/invalid
+ports/ambiguous percent-encoding/dot segments/secret-like query keys, and is
+idempotent. It does not resolve DNS, fetch, follow redirects, unshorten, or
+grant egress: DNS/redirect/private-address authorization remains PR 20.
+A `NAME_ONLY` reference has `normalized_locator = NULL`,
+`validation_status = UNRESOLVED_NAME`, and is rejected if it parses as an
+absolute URL. No URL is ever synthesized for a name.
 
-### MonitoringProfile
+**Bounds.** Provider ID 1-100 lower-case ASCII `[a-z0-9][a-z0-9._-]*`
+(uppercase rejected, never folded); record ID 1-256; record version 1-128
+(opaque, never trimmed/folded); asserted/origin/evidence reference <= 2048;
+excerpt <= 512; no C0/DEL controls; no blank values; credential/secret-like
+values rejected where detectable; timestamps timezone-aware and normalized to
+UTC (naive rejected). Validation runs in Python before any transaction and is
+mirrored by database CHECK constraints.
+
+### SourceDiscoveryService (PR 17)
+
+Deterministic, one-observation-at-a-time ingest boundary:
+`DiscoveryInput -> validate/normalize -> one short UnitOfWork -> versioned
+stored function -> DiscoveryObservation`. It performs no network access,
+crawling, DNS, LLM call, candidate/source/endpoint/policy/run creation,
+event/outbox append, or access/crawl authorization. `DiscoveryProvider` is a
+provider-neutral protocol only; PR 18 owns real adapters, polling,
+checkpoints, and batching. PR 19 owns candidate admission/reconciliation.
+
+### AccessEvidence (PR 17)
+
+An immutable, non-authorizing access record with `access_evidence_id`,
+`observation_id`, exactly one of `candidate_id`/`source_endpoint_id`,
+`status`, `reason_code`, `recorded_at`, and `evidence_reference`. Access
+readiness is orthogonal to `CandidateStatus` and `SourceStatus`.
+
+PR 17 ingestion with no admitted candidate creates **no** access record (it
+persists the `requires_auth_claim` on the observation only). The only PR 17
+write operation appends `CREDENTIALS_PENDING` with reason
+`PROVIDER_AUTH_CLAIM` for an **already existing** candidate whose observation
+claims `requires_auth=True`; it never changes candidate lifecycle and never
+produces `PUBLIC`/`READY`/`AUTH_FAILED`/`ACCESS_REVOKED`. Provider
+`requires_auth=false` or `available=true` claims never imply `PUBLIC` or
+`READY`. Replay of the same `(observation_id, candidate_id, status)` returns
+the existing immutable record; a different status for the same tuple is a
+conflict. Latest state is derived from ordered immutable evidence
+(`recorded_at`, `access_evidence_id`), never a mutable current-status column.
+
+### QualificationDecision (PR 17 persistence primitive)
+
+An immutable decision record distinct from `ReconAssessment` (which only
+records actual ReconAgent reasoning). It carries `decision_id`,
+`candidate_id`, `method`, `outcome`, `evaluated_at`, `policy_id`,
+`policy_version`, optional `provider_id`/`provider_record_id`, evidence
+`observation_id`s (1-64 unique), optional real `recon_assessment_id`,
+`event_id`, `expected_status`, `new_status`, and a deterministic
+`decision_key`.
+
+Rules: registry decisions require provider/record identity and must not
+reference a `ReconAssessment`; agent decisions require a real assessment that
+belongs to the same candidate. Every outcome maps to exactly one existing
+candidate status/event: `QUALIFIED -> QUALIFIED`, `RECONNAISSANCE_PENDING ->
+RECONNAISSANCE_PENDING` (`NEEDS_MORE_RECON`), `REJECTED -> REJECTED`.
+`decision_key` is SHA-256 over length-prefixed
+`(candidate UUID, method, policy ID, policy version, sorted evidence UUIDs,
+recon assessment UUID or empty)`.
+
+The decision, exactly one candidate status transition, and exactly one
+candidate event commit atomically in one stored function/transaction. Exact
+replay returns the original decision with no second event; a same-key
+different payload or a stale expected state is a conflict with zero durable
+effects. **No PR 17 service produces decisions**: PR 19 owns deciding
+eligibility, policy trust, recon routing, and invoking the repository
+operation. The existing PR 10 `ReconCoordinator` path is unchanged; PR 19
+must coordinate ownership so a candidate is not double-transitioned.
+
+### MonitoringProfile (v0.2, planned — owned by PR 24/25)
 
 Caller-defined monitoring interest, **not** a tenant or account:
 

@@ -2,7 +2,7 @@
 
 ## v0.2 planned acceptance and test boundaries
 
-The completed v0.1 integration suite uses controlled Fake World sources. The requirements below are **planned** for [v0.2](ROADMAP_V02.md); no new tests are claimed by this documentation-only PR.
+The completed v0.1 integration suite uses controlled Fake World sources. PR 17's discovery/provenance tests are delivered (see [PR 17 testing status](#pr-17-testing-status--discovery-foundation)); the remaining requirements below are **planned** for [v0.2](ROADMAP_V02.md).
 
 - **Discovery contract/persistence:** deterministic registry fixtures; malformed/unresolvable locators; provider evidence and provenance retention; replay/race idempotency; stable candidate identity without URI-equals-Source assumptions.
 - **Source reconciliation:** duplicates from separate feeds, changed provider records, aliases/mirrors, malicious claims, rejected candidates, and failed imports. No automatic source merge or promotion.
@@ -969,3 +969,87 @@ script has deterministic lifecycle tests
 (`tests/unit/scripts/test_darkula_observability_script.py`) covering ownership
 labels, pinned images, explicit ports, foreign-resource refusal, occupied-port
 refusal, and safe/idempotent cleanup.
+
+## PR 17 testing status — discovery foundation
+
+PR 17's tests are deterministic and offline. No network, DNS, Tor, crawler,
+LLM, or Fake World scenario is required: the external provider boundary is a
+pure `DiscoveryInput` value and is faked, never the persistence or domain
+behavior under test. Migrations `0001`-`0008` remain byte-identical (the
+frozen SHA-256 guard in
+`tests/unit/app/test_source_analysis_security_guards.py` still covers them);
+`0009_discovery_foundation.sql` is additive only.
+
+### Unit matrix — domain (`tests/unit/domain/test_discovery.py`)
+
+| ID | Assertion |
+| --- | --- |
+| U01 | Valid HTTP(S) locator normalizes scheme/host case, drops the default port, empty path -> `/` |
+| U02 | Non-default port and path/query are preserved byte-for-byte; normalization is idempotent |
+| U03 | Syntactically valid `.onion` host accepted with no network access |
+| U04 | Unsupported schemes, userinfo, fragments, whitespace/control characters rejected |
+| U05 | Encoded dot/slash, invalid IPv4/IPv6/port, trailing-dot host, protocol-relative and bare host rejected without repair |
+| U06 | NAME_ONLY persists `normalized_locator=NULL` and `UNRESOLVED_NAME` |
+| U07 | A NAME_ONLY reference that is an absolute URL is rejected (classification mismatch) |
+| U08 | Aware non-UTC timestamps normalize to canonical UTC |
+| U09 | Naive datetimes are rejected |
+| U10 | Blank/oversized fields and secret-like values are rejected without echoing the value |
+| U11 | The semantic digest is a stable hard-coded length-prefixed SHA-256 |
+| U12 | Distinct record versions/providers produce distinct semantic keys |
+| U13 | Same semantic tuple with a changed payload (`observed_at`) is bound for conflict, not update (also asserted end-to-end in U19) |
+| U14 | `requires_auth=True` stays an untrusted boolean claim; no READY/access state is produced |
+| U15 | `REGISTRY_POLICY` decisions reject a `ReconAssessment` reference (never fabricated) |
+| U16 | `AGENT_RECON` decisions require a real `ReconAssessmentId` |
+| U17 | Empty or duplicate evidence observation IDs are rejected |
+| U18 | Outcome/status mismatch, decision-key mismatch, and event-type mismatch are rejected |
+
+### Unit matrix — application/persistence (`tests/unit/app/test_source_discovery.py`, `tests/unit/infrastructure/persistence/postgresql/test_discovery_repositories.py`)
+
+| ID | Assertion |
+| --- | --- |
+| U19 | `SourceDiscoveryService.ingest` persists observations only: no candidate/source/endpoint/policy/run/event/access rows, exact replay returns the original identity/acceptance time, same-key payload change conflicts, provider/record-version separation holds |
+| U20 | `asyncio.CancelledError` during ingest propagates and rolls the unit of work back with nothing persisted |
+| U21 | Pending access evidence requires an existing candidate and an observation that claims authentication; replay returns the same immutable evidence; candidate status is unchanged |
+| U22 | Qualification replay returns the original decision with no second event; stale expected state conflicts with zero effects; missing evidence/recon provenance is rejected |
+| U23 | PostgreSQL repository adapters marshal parameters and map rows exactly, surface controlled outcomes as typed bounded errors, and propagate cancellation |
+
+### Real-PostgreSQL vertical slice (`tests/integration/persistence/test_discovery_repository.py`)
+
+Runs through the real `SourceDiscoveryService -> PostgresDarkulaSpi ->
+PostgresUnitOfWork -> versioned stored function -> PostgreSQL` path; direct
+SQL is used only for seeding/verification.
+
+| ID | Scenario |
+| --- | --- |
+| I01 | `0009` applies after frozen `0001`-`0008`; new tables/functions/constraints exist (`test_migrations.py`) |
+| I02 | Valid locator round-trips with the correct locator, UTC timestamps, and semantic key |
+| I03 | Ingesting the same payload twice yields one row and returns the original identity/time |
+| I04 | Concurrent identical ingests converge on one row without deadlock |
+| I05 | Concurrent same-key conflicting payloads produce one winner and one `ConflictError` with no overwrite |
+| I06 | The same URL from two providers yields two distinct immutable observations |
+| I07 | A new provider record version yields a second immutable observation and retains the original |
+| I08 | A name-only observation persists a null locator with no candidate/source/policy/access effects |
+| I09 | A `requires_auth=True` claim without a candidate writes no access evidence |
+| I10 | Pending evidence for an existing candidate is orthogonal: one `CREDENTIALS_PENDING` record, candidate status unchanged |
+| I11 | Pending evidence replay creates no second row and no status mutation |
+| I12 | Rollback after insert leaves no observation |
+| I13 | A valid `REGISTRY_POLICY` decision persists one decision and exactly one existing candidate event/status transition with no `ReconAssessment` |
+| I14 | Exact qualification replay appends no second event/decision |
+| I15 | A competing/stale expected state loses with `ConflictError` and no partial rows |
+| I16 | `AGENT_RECON` with a nonexistent or mismatched recon assessment is rejected atomically |
+| I17 | `AGENT_RECON` with a genuine seeded assessment links decision + event + transition atomically |
+| I18 | Missing candidate/evidence surfaces a typed bounded error that echoes no values or table names |
+| I19 | Existing PR 10 recon, PR 16 collection, crawler, extraction, and source-analysis suites remain unchanged and pass |
+
+### Schema and safety notes
+
+`0009_discovery_foundation.sql` adds three tables
+(`discovery_observation`, `access_evidence`, `qualification_decision`) and
+new `_v1` stored functions only. Replay identity is the five-column semantic
+tuple plus a UNIQUE `semantic_key`; access evidence uses two partial unique
+indexes because PostgreSQL treats NULLs as distinct; decision evidence is a
+bounded `uuid[]` (1-64) with FK-style existence verification inside the
+stored function. All production SQL lives in versioned stored functions —
+the SQL boundary guard
+(`tests/unit/infrastructure/persistence/postgresql/test_sql_boundary.py`)
+covers the new adapter modules.

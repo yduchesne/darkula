@@ -143,6 +143,18 @@ class _FakeUnitOfWork(UnitOfWork):
     def relationships(self) -> Any:
         raise AssertionError("outbox test exposes no relationship repository")
 
+    @property
+    def discovery(self) -> Any:
+        raise AssertionError("outbox test exposes no discovery repository")
+
+    @property
+    def access(self) -> Any:
+        raise AssertionError("outbox test exposes no access repository")
+
+    @property
+    def qualification(self) -> Any:
+        raise AssertionError("outbox test exposes no qualification repository")
+
 
 class _RecordingSpi(DarkulaSpi):
     def __init__(self, shared: _Shared) -> None:

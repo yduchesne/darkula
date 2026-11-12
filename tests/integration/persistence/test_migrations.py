@@ -15,6 +15,9 @@ pytestmark = pytest.mark.integration
 
 
 EXPECTED_TABLES = {
+    "discovery_observation",
+    "access_evidence",
+    "qualification_decision",
     "source_candidate",
     "source_candidate_event_history",
     "recon_assessment",
@@ -97,6 +100,20 @@ EXPECTED_FUNCTIONS = {
     "extracted_relationship_list_for_result_v1",
     "extracted_relationship_list_for_content_v1",
     "extracted_relationship_get_v1",
+    "discovery_observation_insert_v1",
+    "discovery_observation_get_v1",
+    "discovery_observation_get_by_key_v1",
+    "discovery_observation_list_for_provider_v1",
+    "access_evidence_append_pending_v1",
+    "access_evidence_get_pending_v1",
+    "access_evidence_list_for_candidate_v1",
+    "access_evidence_list_for_endpoint_v1",
+    "access_evidence_latest_for_candidate_v1",
+    "access_evidence_latest_for_endpoint_v1",
+    "qualification_decide_and_transition_v1",
+    "qualification_decision_get_v1",
+    "qualification_decision_get_by_key_v1",
+    "qualification_decision_list_for_candidate_v1",
 }
 
 
@@ -137,8 +154,8 @@ class TestMigrations:
                 ledger = [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
-        # The ledger head is the newest shipped artifact (PR 14 added 0008).
-        assert ledger[-1].startswith("0008_source_analysis.sql")
+        # The ledger head is the newest shipped artifact (PR 17 added 0009).
+        assert ledger[-1].startswith("0009_discovery_foundation.sql")
 
     def test_expected_tables_exist(self, database_settings: DatabaseSettings) -> None:
         conn = _raw_connect(database_settings)
@@ -185,6 +202,11 @@ class TestMigrations:
             "extracted_relationship_relationship_extraction_result_id_fkey"
             in constraints
         )
+        assert "discovery_observation_semantic_tuple" in constraints
+        assert "discovery_observation_reference_classification" in constraints
+        assert "access_evidence_exactly_one_target" in constraints
+        assert "qualification_decision_outcome_status" in constraints
+        assert "qualification_decision_method_provenance" in constraints
 
     def test_host_exposure_is_35432_to_5432(
         self, database_settings: DatabaseSettings

@@ -235,6 +235,18 @@ class MemCandidateUnitOfWork(UnitOfWork):
     def relationships(self) -> Any:
         raise AssertionError("recon fake exposes no relationship repository")
 
+    @property
+    def discovery(self) -> Any:
+        raise AssertionError("recon fake exposes no discovery repository")
+
+    @property
+    def access(self) -> Any:
+        raise AssertionError("recon fake exposes no access repository")
+
+    @property
+    def qualification(self) -> Any:
+        raise AssertionError("recon fake exposes no qualification repository")
+
 
 class MemCandidateSpi(DarkulaSpi):
     """DarkulaSpi handing out :class:`MemCandidateUnitOfWork` instances."""
