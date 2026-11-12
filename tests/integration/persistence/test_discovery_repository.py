@@ -16,6 +16,7 @@ qualification decision primitive.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -70,12 +71,13 @@ def _input(
     record_version: str = "v1",
     requires_auth: bool | None = None,
     observed_at: datetime = OBSERVED_AT,
+    detection_method: DiscoveryDetectionMethod = DiscoveryDetectionMethod.REGISTRY,
 ) -> DiscoveryInput:
     return DiscoveryInput(
         provider_id=provider_id,
         provider_record_id=record_id,
         provider_record_version=record_version,
-        detection_method=DiscoveryDetectionMethod.REGISTRY,
+        detection_method=detection_method,
         reference_kind=DiscoveryReferenceKind.LOCATOR,
         asserted_reference=url,
         observed_at=observed_at,
@@ -127,6 +129,54 @@ def _candidate_status(database_settings: Any, candidate_id: SourceCandidateId) -
         conn.close()
     assert row is not None
     return str(row[0])
+
+
+def _event_count(database_settings: Any, candidate_id: SourceCandidateId) -> int:
+    """Test-only count of the candidate's lifecycle history rows."""
+    conn = _raw_connect(database_settings)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM source_candidate_event_history "
+                "WHERE candidate_id = %s",
+                (str(candidate_id),),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    return int(row[0])
+
+
+def _decision_count_for(database_settings: Any, candidate_id: SourceCandidateId) -> int:
+    """Test-only count of the candidate's immutable qualification decisions."""
+    conn = _raw_connect(database_settings)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM qualification_decision WHERE candidate_id = %s",
+                (str(candidate_id),),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    return int(row[0])
+
+
+def _event_persisted(database_settings: Any, event_id: CandidateEventId) -> bool:
+    """Test-only existence check for one lifecycle history identity."""
+    conn = _raw_connect(database_settings)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM source_candidate_event_history WHERE event_id = %s",
+                (str(event_id),),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return row is not None
 
 
 async def _seed_candidate(
@@ -345,7 +395,8 @@ class TestPendingAccessEvidence:
 def _decision(
     *,
     candidate_id: SourceCandidateId,
-    observation_id: DiscoveryObservationId,
+    observation_id: DiscoveryObservationId | None = None,
+    evidence: tuple[DiscoveryObservationId, ...] | None = None,
     method: str = "REGISTRY_POLICY",
     outcome: str = "QUALIFIED",
     expected: CandidateStatus = CandidateStatus.DISCOVERED,
@@ -355,7 +406,9 @@ def _decision(
 ) -> QualificationDecision:
     qualification_method = QualificationMethod(method)
     qualification_outcome = QualificationOutcome(outcome)
-    evidence = (observation_id,)
+    if evidence is None:
+        assert observation_id is not None, "a decision needs cited evidence"
+        evidence = (observation_id,)
     return QualificationDecision(
         decision_id=QualificationDecisionId.generate(),
         candidate_id=candidate_id,
@@ -554,3 +607,345 @@ class TestQualificationPrimitive:
         assert str(missing_candidate) not in message
         assert "ransomlook" not in message
         assert "source_candidate" not in message
+
+
+async def _commit_decision(
+    spi: PostgresDarkulaSpi,
+    decision: QualificationDecision,
+    event: SourceCandidateEventHistory | None = None,
+) -> QualificationDecision:
+    """Commit one qualification decision (and its linked event) for a test."""
+    async with spi.unit_of_work() as uow:
+        persisted = await uow.qualification.decide_and_transition(
+            decision, _event(decision) if event is None else event
+        )
+        await uow.commit()
+    return persisted
+
+
+async def _expect_conflict_then_commit(
+    spi: PostgresDarkulaSpi,
+    decision: QualificationDecision,
+    event: SourceCandidateEventHistory,
+) -> None:
+    """Assert a typed replay conflict, then prove the caller's commit is inert."""
+    async with spi.unit_of_work() as uow:
+        with pytest.raises(ConflictError):
+            await uow.qualification.decide_and_transition(decision, event)
+        await uow.commit()
+
+
+class TestQualificationAtomicity:
+    """F1: the transition, event, and decision share one rollback boundary."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_decision_pk_conflict_rolls_back_candidate_event_and_decision(  # noqa: E501
+        self, spi: PostgresDarkulaSpi, database_settings: Any
+    ) -> None:
+        observed = await _service(spi).ingest(_input())
+        candidate_a = await _seed_candidate(spi)
+        candidate_b = await _seed_candidate(spi)
+        decision_a = _decision(
+            candidate_id=candidate_a, observation_id=observed.observation_id
+        )
+        await _commit_decision(spi, decision_a)
+
+        decision_b = _decision(
+            candidate_id=candidate_b, observation_id=observed.observation_id
+        )
+        # A distinct semantic key/event for B, colliding only on the decision PK
+        # inserted *after* the candidate UPDATE inside the stored function.
+        forced = dataclasses.replace(decision_b, decision_id=decision_a.decision_id)
+        assert forced.decision_key != decision_a.decision_key
+        assert forced.event_id != decision_a.event_id
+
+        await _expect_conflict_then_commit(spi, forced, _event(forced))
+
+        assert _candidate_status(database_settings, candidate_b) == "DISCOVERED"
+        assert _event_count(database_settings, candidate_b) == 1
+        assert _decision_count_for(database_settings, candidate_b) == 0
+        assert not _event_persisted(database_settings, forced.event_id)
+        assert _count(database_settings, "qualification_decision") == 1
+        assert _candidate_status(database_settings, candidate_a) == "QUALIFIED"
+        assert _event_count(database_settings, candidate_a) == 2
+
+
+class TestQualificationReplay:
+    """F2: exact replay requires matching event identity and payload."""
+
+    async def _seeded(
+        self, spi: PostgresDarkulaSpi
+    ) -> tuple[SourceCandidateId, DiscoveryObservation]:
+        observed = await _service(spi).ingest(_input())
+        candidate_id = await _seed_candidate(spi)
+        return candidate_id, observed
+
+    @pytest.mark.asyncio
+    async def test_exact_replay_regenerated_decision_id_returns_original(
+        self, spi: PostgresDarkulaSpi, database_settings: Any
+    ) -> None:
+        candidate_id, observed = await self._seeded(spi)
+        decision = _decision(
+            candidate_id=candidate_id, observation_id=observed.observation_id
+        )
+        persisted = await _commit_decision(spi, decision)
+        retry = dataclasses.replace(
+            decision, decision_id=QualificationDecisionId.generate()
+        )
+        replay = await _commit_decision(spi, retry, _event(retry))
+        assert replay.decision_id == persisted.decision_id
+        assert replay.evaluated_at == persisted.evaluated_at
+        assert _count(database_settings, "qualification_decision") == 1
+        assert _event_count(database_settings, candidate_id) == 2
+
+    @pytest.mark.asyncio
+    async def test_changed_event_id_on_retry_conflicts_without_effects(
+        self, spi: PostgresDarkulaSpi, database_settings: Any
+    ) -> None:
+        candidate_id, observed = await self._seeded(spi)
+        decision = _decision(
+            candidate_id=candidate_id, observation_id=observed.observation_id
+        )
+        await _commit_decision(spi, decision)
+        retry = dataclasses.replace(decision, event_id=CandidateEventId.generate())
+        await _expect_conflict_then_commit(spi, retry, _event(retry))
+        assert _count(database_settings, "qualification_decision") == 1
+        assert _event_count(database_settings, candidate_id) == 2
+        assert not _event_persisted(database_settings, retry.event_id)
+
+    @pytest.mark.asyncio
+    async def test_changed_evaluated_at_on_retry_conflicts_without_effects(
+        self, spi: PostgresDarkulaSpi, database_settings: Any
+    ) -> None:
+        candidate_id, observed = await self._seeded(spi)
+        decision = _decision(
+            candidate_id=candidate_id, observation_id=observed.observation_id
+        )
+        await _commit_decision(spi, decision)
+        retry = dataclasses.replace(
+            decision, evaluated_at=decision.evaluated_at + timedelta(seconds=1)
+        )
+        await _expect_conflict_then_commit(spi, retry, _event(decision))
+        assert _count(database_settings, "qualification_decision") == 1
+        assert _event_count(database_settings, candidate_id) == 2
+
+    @pytest.mark.asyncio
+    async def test_changed_event_occurred_at_conflicts_without_effects(
+        self, spi: PostgresDarkulaSpi, database_settings: Any
+    ) -> None:
+        candidate_id, observed = await self._seeded(spi)
+        decision = _decision(
+            candidate_id=candidate_id, observation_id=observed.observation_id
+        )
+        original = _event(decision)
+        await _commit_decision(spi, decision, original)
+        retry = dataclasses.replace(
+            original, occurred_at=original.occurred_at + timedelta(seconds=1)
+        )
+        await _expect_conflict_then_commit(spi, decision, retry)
+        assert _count(database_settings, "qualification_decision") == 1
+        assert _event_count(database_settings, candidate_id) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "changed"),
+        [
+            ("context", {"step": "retry"}),
+            ("reason", "retry reason"),
+            ("provenance", "retry provenance"),
+        ],
+    )
+    async def test_changed_event_payload_conflicts_without_effects(
+        self,
+        spi: PostgresDarkulaSpi,
+        database_settings: Any,
+        field: str,
+        changed: Any,
+    ) -> None:
+        candidate_id, observed = await self._seeded(spi)
+        decision = _decision(
+            candidate_id=candidate_id, observation_id=observed.observation_id
+        )
+        original = dataclasses.replace(
+            _event(decision),
+            context={"step": "first"},
+            reason="first reason",
+            provenance="first provenance",
+        )
+        await _commit_decision(spi, decision, original)
+        retry = dataclasses.replace(original, **{field: changed})
+        await _expect_conflict_then_commit(spi, decision, retry)
+        assert _count(database_settings, "qualification_decision") == 1
+        assert _event_count(database_settings, candidate_id) == 2
+
+    @pytest.mark.asyncio
+    async def test_jsonb_key_order_only_replays(
+        self, spi: PostgresDarkulaSpi, database_settings: Any
+    ) -> None:
+        candidate_id, observed = await self._seeded(spi)
+        decision = _decision(
+            candidate_id=candidate_id, observation_id=observed.observation_id
+        )
+        original = dataclasses.replace(
+            _event(decision), context={"alpha": 1, "beta": 2}
+        )
+        persisted = await _commit_decision(spi, decision, original)
+        reordered = dataclasses.replace(original, context={"beta": 2, "alpha": 1})
+        replay = await _commit_decision(spi, decision, reordered)
+        assert replay.decision_id == persisted.decision_id
+        assert _count(database_settings, "qualification_decision") == 1
+        assert _event_count(database_settings, candidate_id) == 2
+
+
+class TestRegistryProvenance:
+    """F3: REGISTRY_POLICY needs a cited REGISTRY provider/record match."""
+
+    async def _seeded(
+        self, spi: PostgresDarkulaSpi
+    ) -> tuple[SourceCandidateId, DiscoveryObservation]:
+        observed = await _service(spi).ingest(_input())
+        candidate_id = await _seed_candidate(spi)
+        return candidate_id, observed
+
+    @pytest.mark.asyncio
+    async def test_cited_registry_observation_matches_provider_and_record(
+        self, spi: PostgresDarkulaSpi, database_settings: Any
+    ) -> None:
+        candidate_id, observed = await self._seeded(spi)
+        decision = _decision(
+            candidate_id=candidate_id, observation_id=observed.observation_id
+        )
+        persisted = await _commit_decision(spi, decision)
+        assert persisted.evidence_observation_ids == (observed.observation_id,)
+        assert _candidate_status(database_settings, candidate_id) == "QUALIFIED"
+        assert _count(database_settings, "qualification_decision") == 1
+        assert _event_count(database_settings, candidate_id) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["provider_id", "provider_record_id"])
+    async def test_wrong_provider_or_record_is_rejected(
+        self, spi: PostgresDarkulaSpi, database_settings: Any, field: str
+    ) -> None:
+        candidate_id, observed = await self._seeded(spi)
+        claimed = {
+            "provider_id": "other-registry",
+            "provider_record_id": "record-2",
+        }
+        claimed[field] = "ransomlook" if field == "provider_id" else "record-1"
+        decision = _decision(
+            candidate_id=candidate_id,
+            observation_id=observed.observation_id,
+            provider_id=claimed["provider_id"],
+            provider_record_id=claimed["provider_record_id"],
+        )
+        async with spi.unit_of_work() as uow:
+            with pytest.raises(IntegrityError):
+                await uow.qualification.decide_and_transition(
+                    decision, _event(decision)
+                )
+            await uow.commit()
+        assert _candidate_status(database_settings, candidate_id) == "DISCOVERED"
+        assert _count(database_settings, "qualification_decision") == 0
+        assert _event_count(database_settings, candidate_id) == 1
+
+    @pytest.mark.asyncio
+    async def test_matching_observation_outside_cited_set_is_rejected(
+        self, spi: PostgresDarkulaSpi, database_settings: Any
+    ) -> None:
+        matching = await _service(spi).ingest(_input())
+        unrelated = await _service(spi).ingest(
+            _input(provider_id="other-registry", record_id="record-9")
+        )
+        candidate_id = await _seed_candidate(spi)
+        decision = _decision(
+            candidate_id=candidate_id,
+            observation_id=unrelated.observation_id,
+            provider_id=matching.provider_id,
+            provider_record_id=matching.provider_record_id,
+        )
+        async with spi.unit_of_work() as uow:
+            with pytest.raises(IntegrityError):
+                await uow.qualification.decide_and_transition(
+                    decision, _event(decision)
+                )
+            await uow.commit()
+        assert _candidate_status(database_settings, candidate_id) == "DISCOVERED"
+        assert _count(database_settings, "qualification_decision") == 0
+        assert _event_count(database_settings, candidate_id) == 1
+
+    @pytest.mark.asyncio
+    async def test_cited_non_registry_detection_is_rejected(
+        self, spi: PostgresDarkulaSpi, database_settings: Any
+    ) -> None:
+        observed = await _service(spi).ingest(
+            _input(detection_method=DiscoveryDetectionMethod.MANUAL)
+        )
+        candidate_id = await _seed_candidate(spi)
+        decision = _decision(
+            candidate_id=candidate_id,
+            observation_id=observed.observation_id,
+            provider_id=observed.provider_id,
+            provider_record_id=observed.provider_record_id,
+        )
+        async with spi.unit_of_work() as uow:
+            with pytest.raises(IntegrityError):
+                await uow.qualification.decide_and_transition(
+                    decision, _event(decision)
+                )
+            await uow.commit()
+        assert _candidate_status(database_settings, candidate_id) == "DISCOVERED"
+        assert _count(database_settings, "qualification_decision") == 0
+        assert _event_count(database_settings, candidate_id) == 1
+
+    @pytest.mark.asyncio
+    async def test_mixed_cited_evidence_with_one_match_is_accepted(
+        self, spi: PostgresDarkulaSpi, database_settings: Any
+    ) -> None:
+        matching = await _service(spi).ingest(_input())
+        unrelated = await _service(spi).ingest(
+            _input(provider_id="other-registry", record_id="record-9")
+        )
+        candidate_id = await _seed_candidate(spi)
+        decision = _decision(
+            candidate_id=candidate_id,
+            evidence=(matching.observation_id, unrelated.observation_id),
+            provider_id=matching.provider_id,
+            provider_record_id=matching.provider_record_id,
+        )
+        persisted = await _commit_decision(spi, decision)
+        assert persisted.evidence_observation_ids == (
+            matching.observation_id,
+            unrelated.observation_id,
+        )
+        assert _candidate_status(database_settings, candidate_id) == "QUALIFIED"
+        assert _count(database_settings, "qualification_decision") == 1
+
+    @pytest.mark.asyncio
+    async def test_agent_recon_needs_no_registry_provenance(
+        self, spi: PostgresDarkulaSpi, database_settings: Any
+    ) -> None:
+        observed = await _service(spi).ingest(
+            _input(detection_method=DiscoveryDetectionMethod.MANUAL)
+        )
+        candidate_id = await _seed_candidate(spi)
+        assessment = ReconAssessment(
+            assessment_id=ReconAssessmentId.generate(),
+            candidate_id=candidate_id,
+            assessed_at=OBSERVED_AT,
+            disposition=ReconDisposition.QUALIFY,
+            confidence=Confidence(0.9),
+        )
+        async with spi.unit_of_work() as uow:
+            await uow.source_candidates.append_recon_assessment(assessment)
+            await uow.commit()
+        decision = _decision(
+            candidate_id=candidate_id,
+            observation_id=observed.observation_id,
+            method="AGENT_RECON",
+            recon_id=assessment.assessment_id,
+            provider_id=None,
+            provider_record_id=None,
+        )
+        persisted = await _commit_decision(spi, decision)
+        assert persisted.recon_assessment_id == assessment.assessment_id
+        assert _candidate_status(database_settings, candidate_id) == "QUALIFIED"

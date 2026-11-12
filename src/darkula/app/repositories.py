@@ -894,12 +894,18 @@ class QualificationRepository(ABC):
         """Persist one decision atomically with its candidate transition/event.
 
         :raises ConflictError: on a stale expected candidate state or a
-            same-key/different-payload replay (zero durable effects).
+            same-key/different-immutable-payload replay (zero durable effects),
+            including a changed event identity, event payload, or evaluation
+            timestamp; a regenerated ``decision_id`` alone is an exact replay
+            and returns the original stored decision.
         :raises NotFoundError: if the candidate does not exist.
         :raises IntegrityError: if referenced evidence or recon provenance
-            is missing/inconsistent (zero durable effects).
+            is missing/inconsistent (zero durable effects), including a
+            ``REGISTRY_POLICY`` decision that cites no ``REGISTRY``
+            observation matching its claimed provider record.
         :raises ValueError: if ``event`` does not match the decision's
-            candidate/event-type contract.
+            candidate, event type, or linked ``event_id`` (before any
+            database access).
         """
 
     @abstractmethod

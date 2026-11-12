@@ -38,9 +38,11 @@ from darkula.domain.discovery import (
     DiscoveryObservation,
     DiscoveryReferenceKind,
     QualificationDecision,
+    QualificationMethod,
     qualification_event_type,
 )
 from darkula.domain.identifiers import (
+    CandidateEventId,
     DiscoveryObservationId,
     QualificationDecisionId,
     ReconAssessmentId,
@@ -68,7 +70,7 @@ def _same_payload(first: Any, second: Any, *, excluded: frozenset[str]) -> bool:
 
 _OBSERVATION_GENERATED = frozenset({"observation_id", "ingested_at"})
 _ACCESS_GENERATED = frozenset({"access_evidence_id", "recorded_at"})
-_DECISION_GENERATED = frozenset({"decision_id", "event_id", "evaluated_at"})
+_DECISION_GENERATED = frozenset({"decision_id"})
 
 
 @dataclass
@@ -312,14 +314,28 @@ class MemQualificationRepository(QualificationRepository):
             raise ValueError(
                 "the qualification event type does not match the decision outcome"
             )
-        existing = self._state.decisions_by_key.get(decision.decision_key)
+        if event.event_id != decision.event_id:
+            raise ValueError("qualification event_id does not match decision.event_id")
+
+        existing = self._existing_decision(decision.decision_key)
         if existing is not None:
+            stored_event = self._stored_event(existing.event_id)
+            if stored_event is None:
+                raise ConflictError(
+                    "the stored qualification event for the decision key is missing"
+                )
             if not _same_payload(existing, decision, excluded=_DECISION_GENERATED):
                 raise ConflictError(
                     "the qualification decision key already exists with a "
                     "different payload"
                 )
+            if stored_event != event:
+                raise ConflictError(
+                    "the qualification decision key already exists with a "
+                    "different event identity or payload"
+                )
             return existing
+
         current = self._status(decision.candidate_id)
         if current is None:
             raise NotFoundError("the candidate does not exist")
@@ -327,19 +343,74 @@ class MemQualificationRepository(QualificationRepository):
             raise ConflictError(
                 "the candidate status does not equal the expected status"
             )
-        for evidence_id in decision.evidence_observation_ids:
-            if evidence_id not in self._state.observations_by_id:
-                raise IntegrityError(
-                    "a referenced discovery observation does not exist"
-                )
+        observations = [
+            self._observation(observation_id)
+            for observation_id in decision.evidence_observation_ids
+        ]
+        if any(observation is None for observation in observations):
+            raise IntegrityError("a referenced discovery observation does not exist")
+        if decision.method is QualificationMethod.REGISTRY_POLICY and not any(
+            observation is not None
+            and observation.provider_id == decision.provider_id
+            and observation.provider_record_id == decision.provider_record_id
+            and observation.detection_method is DiscoveryDetectionMethod.REGISTRY
+            for observation in observations
+        ):
+            raise IntegrityError(
+                "no cited registry observation establishes the claimed provider record"
+            )
         if decision.recon_assessment_id is not None:
             owner = self._state.recon_assessments.get(decision.recon_assessment_id)
             if owner != decision.candidate_id:
                 raise IntegrityError(
                     "the recon assessment does not belong to the candidate"
                 )
+        if self._decision_id_used(decision.decision_id):
+            raise ConflictError("the qualification decision identity is already in use")
+        if self._event_id_used(event.event_id):
+            raise ConflictError("the qualification event identity is already in use")
         self._pending.decisions.append((decision, event))
         return decision
+
+    def _existing_decision(self, decision_key: str) -> QualificationDecision | None:
+        for decision, _event in reversed(self._pending.decisions):
+            if decision.decision_key == decision_key:
+                return decision
+        return self._state.decisions_by_key.get(decision_key)
+
+    def _stored_event(
+        self, event_id: CandidateEventId
+    ) -> SourceCandidateEventHistory | None:
+        for _decision, event in reversed(self._pending.decisions):
+            if event.event_id == event_id:
+                return event
+        for event in reversed(self._state.candidate_events):
+            if event.event_id == event_id:
+                return event
+        return None
+
+    def _observation(
+        self, observation_id: DiscoveryObservationId
+    ) -> DiscoveryObservation | None:
+        for observation in reversed(self._pending.observations):
+            if observation.observation_id == observation_id:
+                return observation
+        return self._state.observations_by_id.get(observation_id)
+
+    def _decision_id_used(self, decision_id: QualificationDecisionId) -> bool:
+        if decision_id in self._state.decisions_by_id:
+            return True
+        return any(
+            decision.decision_id == decision_id
+            for decision, _event in self._pending.decisions
+        )
+
+    def _event_id_used(self, event_id: CandidateEventId) -> bool:
+        if any(event.event_id == event_id for event in self._state.candidate_events):
+            return True
+        return any(
+            event.event_id == event_id for _decision, event in self._pending.decisions
+        )
 
     async def get(
         self, decision_id: QualificationDecisionId

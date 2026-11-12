@@ -10,7 +10,9 @@ model, or crawler is involved.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from tests.support.discovery_fakes import (
@@ -76,13 +78,14 @@ def valid_input(
     record_id: str = "record-1",
     record_version: str = "v1",
     requires_auth: bool | None = None,
+    detection_method: DiscoveryDetectionMethod = DiscoveryDetectionMethod.REGISTRY,
 ) -> DiscoveryInput:
     """Return one valid untrusted registry LOCATOR observation input."""
     return DiscoveryInput(
         provider_id=provider_id,
         provider_record_id=record_id,
         provider_record_version=record_version,
-        detection_method=DiscoveryDetectionMethod.REGISTRY,
+        detection_method=detection_method,
         reference_kind=DiscoveryReferenceKind.LOCATOR,
         asserted_reference=url,
         observed_at=OBSERVED_AT,
@@ -126,14 +129,33 @@ def candidate(candidate_id: SourceCandidateId) -> SourceCandidate:
 def event_for(
     candidate_id: SourceCandidateId,
     event_type: CandidateEventType = CandidateEventType.DISCOVERED,
+    *,
+    event_id: CandidateEventId | None = None,
 ) -> SourceCandidateEventHistory:
-    """Return one candidate lifecycle event."""
+    """Return one candidate lifecycle event.
+
+    ``event_id`` defaults to a fresh identity (candidate seeding);
+    qualification call sites must pass the decision's linked event ID.
+    """
     return SourceCandidateEventHistory(
-        event_id=CandidateEventId.generate(),
+        event_id=event_id if event_id is not None else CandidateEventId.generate(),
         candidate_id=candidate_id,
         event_type=event_type,
         occurred_at=OBSERVED_AT,
     )
+
+
+def linked_event(
+    decision_record: QualificationDecision,
+    **changes: Any,
+) -> SourceCandidateEventHistory:
+    """Return the event a decision must carry (its linked event identity)."""
+    event = event_for(
+        decision_record.candidate_id,
+        CandidateEventType.QUALIFIED,
+        event_id=decision_record.event_id,
+    )
+    return dataclasses.replace(event, **changes) if changes else event
 
 
 def decision(
@@ -436,7 +458,11 @@ class TestQualificationPrimitive:
         async with spi.unit_of_work() as uow:
             persisted = await uow.qualification.decide_and_transition(
                 decision_record,
-                event_for(candidate_id, CandidateEventType.QUALIFIED),
+                event_for(
+                    candidate_id,
+                    CandidateEventType.QUALIFIED,
+                    event_id=decision_record.event_id,
+                ),
             )
             await uow.commit()
         assert persisted.decision_key == decision_record.decision_key
@@ -450,16 +476,19 @@ class TestQualificationPrimitive:
         decision_record = decision(
             candidate_id=candidate_id, evidence=(observation.observation_id,)
         )
+        linked = event_for(
+            candidate_id,
+            CandidateEventType.QUALIFIED,
+            event_id=decision_record.event_id,
+        )
         async with spi.unit_of_work() as uow:
             first = await uow.qualification.decide_and_transition(
-                decision_record,
-                event_for(candidate_id, CandidateEventType.QUALIFIED),
+                decision_record, linked
             )
             await uow.commit()
         async with spi.unit_of_work() as uow:
             replay = await uow.qualification.decide_and_transition(
-                decision_record,
-                event_for(candidate_id, CandidateEventType.QUALIFIED),
+                decision_record, linked
             )
             await uow.commit()
         assert replay.decision_id == first.decision_id
@@ -478,7 +507,11 @@ class TestQualificationPrimitive:
             with pytest.raises(ConflictError):
                 await uow.qualification.decide_and_transition(
                     decision_record,
-                    event_for(candidate_id, CandidateEventType.QUALIFIED),
+                    event_for(
+                        candidate_id,
+                        CandidateEventType.QUALIFIED,
+                        event_id=decision_record.event_id,
+                    ),
                 )
             await uow.commit()
         assert spi.latest_status(candidate_id) is CandidateStatus.DISCOVERED
@@ -500,7 +533,11 @@ class TestQualificationPrimitive:
             with pytest.raises(IntegrityError):
                 await uow.qualification.decide_and_transition(
                     decision_record,
-                    event_for(candidate_id, CandidateEventType.QUALIFIED),
+                    event_for(
+                        candidate_id,
+                        CandidateEventType.QUALIFIED,
+                        event_id=decision_record.event_id,
+                    ),
                 )
             await uow.commit()
         assert spi.state.decisions_by_id == {}
@@ -527,7 +564,11 @@ class TestQualificationPrimitive:
         async with spi.unit_of_work() as uow:
             await uow.qualification.decide_and_transition(
                 decision_record,
-                event_for(candidate_id, CandidateEventType.QUALIFIED),
+                event_for(
+                    candidate_id,
+                    CandidateEventType.QUALIFIED,
+                    event_id=decision_record.event_id,
+                ),
             )
             await uow.commit()
         assert spi.latest_status(candidate_id) is CandidateStatus.QUALIFIED
@@ -543,7 +584,11 @@ class TestQualificationPrimitive:
             with pytest.raises(IntegrityError):
                 await uow.qualification.decide_and_transition(
                     decision_record,
-                    event_for(candidate_id, CandidateEventType.QUALIFIED),
+                    event_for(
+                        candidate_id,
+                        CandidateEventType.QUALIFIED,
+                        event_id=decision_record.event_id,
+                    ),
                 )
             await uow.commit()
         assert spi.state.decisions_by_id == {}
@@ -558,7 +603,11 @@ class TestQualificationPrimitive:
             with pytest.raises(ValueError):
                 await uow.qualification.decide_and_transition(
                     decision_record,
-                    event_for(candidate_id, CandidateEventType.REJECTED),
+                    event_for(
+                        candidate_id,
+                        CandidateEventType.REJECTED,
+                        event_id=decision_record.event_id,
+                    ),
                 )
             await uow.commit()
         assert len(spi.state.candidate_events) == 1
@@ -576,7 +625,11 @@ class TestQualificationPrimitive:
             with pytest.raises(NotFoundError):
                 await uow.qualification.decide_and_transition(
                     decision_record,
-                    event_for(candidate_id, CandidateEventType.QUALIFIED),
+                    event_for(
+                        candidate_id,
+                        CandidateEventType.QUALIFIED,
+                        event_id=decision_record.event_id,
+                    ),
                 )
             await uow.commit()
 
@@ -589,3 +642,324 @@ class TestQualificationPrimitive:
             qualification_event_type(QualificationOutcome.REJECTED)
             is CandidateEventType.REJECTED
         )
+
+
+class TestQualificationReplayParity:
+    """F2 parity: exact replay requires matching event identity and payload."""
+
+    async def _seeded(
+        self,
+    ) -> tuple[MemDiscoverySpi, SourceCandidateId, DiscoveryObservation]:
+        spi = MemDiscoverySpi()
+        observation = await stored_observation(spi)
+        candidate_id = await seeded_candidate(spi)
+        return spi, candidate_id, observation
+
+    async def _commit(
+        self,
+        spi: MemDiscoverySpi,
+        decision_record: QualificationDecision,
+        event: SourceCandidateEventHistory,
+    ) -> QualificationDecision:
+        async with spi.unit_of_work() as uow:
+            persisted = await uow.qualification.decide_and_transition(
+                decision_record, event
+            )
+            await uow.commit()
+        return persisted
+
+    async def _expect_conflict(
+        self,
+        spi: MemDiscoverySpi,
+        decision_record: QualificationDecision,
+        event: SourceCandidateEventHistory,
+    ) -> None:
+        async with spi.unit_of_work() as uow:
+            with pytest.raises(ConflictError):
+                await uow.qualification.decide_and_transition(decision_record, event)
+            await uow.commit()
+
+    @pytest.mark.asyncio
+    async def test_exact_replay_regenerated_decision_id_returns_original(
+        self,
+    ) -> None:
+        spi, candidate_id, observation = await self._seeded()
+        decision_record = decision(
+            candidate_id=candidate_id, evidence=(observation.observation_id,)
+        )
+        event = linked_event(decision_record)
+        persisted = await self._commit(spi, decision_record, event)
+        retry = dataclasses.replace(
+            decision_record, decision_id=QualificationDecisionId.generate()
+        )
+        replay = await self._commit(spi, retry, event)
+        assert replay.decision_id == persisted.decision_id
+        assert len(spi.state.candidate_events) == 2
+        assert len(spi.state.decisions_by_id) == 1
+
+    @pytest.mark.asyncio
+    async def test_changed_event_identity_on_same_key_conflicts(self) -> None:
+        spi, candidate_id, observation = await self._seeded()
+        decision_record = decision(
+            candidate_id=candidate_id, evidence=(observation.observation_id,)
+        )
+        await self._commit(spi, decision_record, linked_event(decision_record))
+        retry = dataclasses.replace(
+            decision_record, event_id=CandidateEventId.generate()
+        )
+        await self._expect_conflict(spi, retry, linked_event(retry))
+        assert spi.latest_status(candidate_id) is CandidateStatus.QUALIFIED
+        assert len(spi.state.candidate_events) == 2
+        assert len(spi.state.decisions_by_id) == 1
+
+    @pytest.mark.asyncio
+    async def test_changed_evaluated_at_on_same_key_conflicts(self) -> None:
+        spi, candidate_id, observation = await self._seeded()
+        decision_record = decision(
+            candidate_id=candidate_id, evidence=(observation.observation_id,)
+        )
+        event = linked_event(decision_record)
+        await self._commit(spi, decision_record, event)
+        retry = dataclasses.replace(
+            decision_record,
+            evaluated_at=decision_record.evaluated_at + timedelta(seconds=1),
+        )
+        await self._expect_conflict(spi, retry, event)
+        assert spi.latest_status(candidate_id) is CandidateStatus.QUALIFIED
+        assert len(spi.state.candidate_events) == 2
+
+    @pytest.mark.asyncio
+    async def test_changed_event_occurred_at_on_same_key_conflicts(self) -> None:
+        spi, candidate_id, observation = await self._seeded()
+        decision_record = decision(
+            candidate_id=candidate_id, evidence=(observation.observation_id,)
+        )
+        event = linked_event(decision_record)
+        await self._commit(spi, decision_record, event)
+        retry = dataclasses.replace(
+            event, occurred_at=event.occurred_at + timedelta(seconds=1)
+        )
+        await self._expect_conflict(spi, decision_record, retry)
+        assert len(spi.state.candidate_events) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "changed"),
+        [
+            ("context", {"step": "retry"}),
+            ("reason", "retry reason"),
+            ("provenance", "retry provenance"),
+        ],
+    )
+    async def test_changed_event_payload_on_same_key_conflicts(
+        self, field: str, changed: Any
+    ) -> None:
+        spi, candidate_id, observation = await self._seeded()
+        decision_record = decision(
+            candidate_id=candidate_id, evidence=(observation.observation_id,)
+        )
+        event = linked_event(
+            decision_record,
+            context={"step": "first"},
+            reason="first reason",
+            provenance="first provenance",
+        )
+        await self._commit(spi, decision_record, event)
+        retry = dataclasses.replace(event, **{field: changed})
+        await self._expect_conflict(spi, decision_record, retry)
+        assert len(spi.state.candidate_events) == 2
+
+    @pytest.mark.asyncio
+    async def test_json_key_order_only_is_exact_replay(self) -> None:
+        spi, candidate_id, observation = await self._seeded()
+        decision_record = decision(
+            candidate_id=candidate_id, evidence=(observation.observation_id,)
+        )
+        event = linked_event(decision_record, context={"alpha": 1, "beta": 2})
+        persisted = await self._commit(spi, decision_record, event)
+        reordered = dataclasses.replace(event, context={"beta": 2, "alpha": 1})
+        replay = await self._commit(spi, decision_record, reordered)
+        assert replay.decision_id == persisted.decision_id
+        assert len(spi.state.candidate_events) == 2
+        assert len(spi.state.decisions_by_id) == 1
+
+    @pytest.mark.asyncio
+    async def test_same_key_repeated_before_commit_replays_pending(self) -> None:
+        spi, candidate_id, observation = await self._seeded()
+        decision_record = decision(
+            candidate_id=candidate_id, evidence=(observation.observation_id,)
+        )
+        event = linked_event(decision_record)
+        async with spi.unit_of_work() as uow:
+            first = await uow.qualification.decide_and_transition(
+                decision_record, event
+            )
+            replay = await uow.qualification.decide_and_transition(
+                decision_record, event
+            )
+            assert replay.decision_id == first.decision_id
+            await uow.commit()
+        assert len(spi.state.candidate_events) == 2
+        assert len(spi.state.decisions_by_id) == 1
+
+    @pytest.mark.asyncio
+    async def test_duplicate_event_identity_on_new_key_conflicts(self) -> None:
+        spi, candidate_id, observation = await self._seeded()
+        decision_record = decision(
+            candidate_id=candidate_id, evidence=(observation.observation_id,)
+        )
+        event = linked_event(decision_record)
+        await self._commit(spi, decision_record, event)
+        other_candidate = await seeded_candidate(spi)
+        other = decision(
+            candidate_id=other_candidate, evidence=(observation.observation_id,)
+        )
+        colliding = dataclasses.replace(other, event_id=event.event_id)
+        await self._expect_conflict(spi, colliding, linked_event(colliding))
+        assert len(spi.state.candidate_events) == 3
+        assert len(spi.state.decisions_by_id) == 1
+
+
+class TestRegistryProvenanceParity:
+    """F3 parity: a cited REGISTRY observation must prove provider/record."""
+
+    async def _seeded(
+        self,
+    ) -> tuple[MemDiscoverySpi, SourceCandidateId, DiscoveryObservation]:
+        spi = MemDiscoverySpi()
+        observation = await stored_observation(spi)
+        candidate_id = await seeded_candidate(spi)
+        return spi, candidate_id, observation
+
+    async def _accepted(
+        self,
+        spi: MemDiscoverySpi,
+        decision_record: QualificationDecision,
+    ) -> QualificationDecision:
+        async with spi.unit_of_work() as uow:
+            persisted = await uow.qualification.decide_and_transition(
+                decision_record, linked_event(decision_record)
+            )
+            await uow.commit()
+        return persisted
+
+    async def _rejected(
+        self,
+        spi: MemDiscoverySpi,
+        candidate_id: SourceCandidateId,
+        decision_record: QualificationDecision,
+    ) -> None:
+        async with spi.unit_of_work() as uow:
+            with pytest.raises(IntegrityError):
+                await uow.qualification.decide_and_transition(
+                    decision_record, linked_event(decision_record)
+                )
+            await uow.commit()
+        assert spi.latest_status(candidate_id) is CandidateStatus.DISCOVERED
+        assert spi.state.decisions_by_id == {}
+        assert len(spi.state.candidate_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_cited_registry_observation_matches_provider_and_record(
+        self,
+    ) -> None:
+        spi, candidate_id, observation = await self._seeded()
+        record = decision(
+            candidate_id=candidate_id, evidence=(observation.observation_id,)
+        )
+        persisted = await self._accepted(spi, record)
+        assert persisted.evidence_observation_ids == (observation.observation_id,)
+        assert spi.latest_status(candidate_id) is CandidateStatus.QUALIFIED
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["provider_id", "provider_record_id"])
+    async def test_wrong_provider_or_record_is_rejected(self, field: str) -> None:
+        spi, candidate_id, observation = await self._seeded()
+        claimed = {"provider_id": "other-registry", "provider_record_id": "r2"}
+        claimed[field] = "ransomlook" if field == "provider_id" else "record-1"
+        record = decision(
+            candidate_id=candidate_id,
+            evidence=(observation.observation_id,),
+            provider_id=claimed["provider_id"],
+            provider_record_id=claimed["provider_record_id"],
+        )
+        await self._rejected(spi, candidate_id, record)
+
+    @pytest.mark.asyncio
+    async def test_matching_observation_outside_cited_set_is_rejected(self) -> None:
+        spi = MemDiscoverySpi()
+        matching = await stored_observation(spi)
+        unrelated = await stored_observation(
+            spi, valid_input(provider_id="other-registry", record_id="record-9")
+        )
+        candidate_id = await seeded_candidate(spi)
+        record = decision(
+            candidate_id=candidate_id,
+            evidence=(unrelated.observation_id,),
+            provider_id=matching.provider_id,
+            provider_record_id=matching.provider_record_id,
+        )
+        await self._rejected(spi, candidate_id, record)
+
+    @pytest.mark.asyncio
+    async def test_cited_non_registry_detection_is_rejected(self) -> None:
+        spi = MemDiscoverySpi()
+        observed = await stored_observation(
+            spi, valid_input(detection_method=DiscoveryDetectionMethod.MANUAL)
+        )
+        candidate_id = await seeded_candidate(spi)
+        record = decision(
+            candidate_id=candidate_id,
+            evidence=(observed.observation_id,),
+            provider_id=observed.provider_id,
+            provider_record_id=observed.provider_record_id,
+        )
+        await self._rejected(spi, candidate_id, record)
+
+    @pytest.mark.asyncio
+    async def test_mixed_cited_evidence_with_one_match_is_accepted(self) -> None:
+        spi = MemDiscoverySpi()
+        matching = await stored_observation(spi)
+        unrelated = await stored_observation(
+            spi, valid_input(provider_id="other-registry", record_id="record-9")
+        )
+        candidate_id = await seeded_candidate(spi)
+        record = decision(
+            candidate_id=candidate_id,
+            evidence=(matching.observation_id, unrelated.observation_id),
+            provider_id=matching.provider_id,
+            provider_record_id=matching.provider_record_id,
+        )
+        persisted = await self._accepted(spi, record)
+        assert persisted.evidence_observation_ids == (
+            matching.observation_id,
+            unrelated.observation_id,
+        )
+        assert spi.latest_status(candidate_id) is CandidateStatus.QUALIFIED
+
+    @pytest.mark.asyncio
+    async def test_agent_recon_needs_no_registry_provenance(self) -> None:
+        spi = MemDiscoverySpi()
+        observed = await stored_observation(
+            spi, valid_input(detection_method=DiscoveryDetectionMethod.MANUAL)
+        )
+        candidate_id = await seeded_candidate(spi)
+        assessment = ReconAssessment(
+            assessment_id=ReconAssessmentId.generate(),
+            candidate_id=candidate_id,
+            assessed_at=OBSERVED_AT,
+            disposition=ReconDisposition.QUALIFY,
+            confidence=Confidence(0.9),
+        )
+        await seed_recon_assessment(spi, assessment)
+        record = decision(
+            candidate_id=candidate_id,
+            evidence=(observed.observation_id,),
+            method=QualificationMethod.AGENT_RECON,
+            provider_id=None,
+            provider_record_id=None,
+            recon_id=assessment.assessment_id,
+        )
+        persisted = await self._accepted(spi, record)
+        assert persisted.recon_assessment_id == assessment.assessment_id
+        assert spi.latest_status(candidate_id) is CandidateStatus.QUALIFIED

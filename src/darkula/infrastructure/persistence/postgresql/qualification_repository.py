@@ -67,6 +67,8 @@ def _validate_event(
         raise ValueError(
             "the qualification event type does not match the decision outcome"
         )
+    if event.event_id != decision.event_id:
+        raise ValueError("qualification event_id does not match decision.event_id")
 
 
 class PostgresQualificationRepository(QualificationRepository):

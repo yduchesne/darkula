@@ -688,8 +688,9 @@ $$;
 -- 'state_conflict' / 'unknown_candidate' / 'unknown_evidence' /
 -- 'invalid_provenance'.
 --
--- Replay comparison excludes generated identities (decision_id, event_id)
--- and the evaluation timestamp; every semantic field must match exactly.
+-- Replay comparison exempts only a regenerated decision_id: every persisted
+-- semantic field, the evaluation timestamp, and all immutable fields of the
+-- linked candidate event must match exactly (JSONB compares by content).
 CREATE FUNCTION qualification_decide_and_transition_v1(
     p_decision_id            uuid,
     p_candidate_id           uuid,
@@ -717,6 +718,7 @@ AS $$
 DECLARE
     current_status     text;
     existing           qualification_decision%ROWTYPE;
+    stored_event       source_candidate_event_history%ROWTYPE;
     expected_event     text;
     expected_new       text;
     unsorted_evidence  uuid[];
@@ -735,6 +737,13 @@ BEGIN
       FROM qualification_decision d
      WHERE d.decision_key = p_decision_key;
     IF FOUND THEN
+        SELECT h.* INTO stored_event
+          FROM source_candidate_event_history h
+         WHERE h.event_id = existing.event_id
+           AND h.candidate_id = existing.candidate_id;
+        IF NOT FOUND THEN
+            RETURN 'conflict';
+        END IF;
         SELECT array_agg(v ORDER BY v) INTO unsorted_evidence
           FROM unnest(existing.evidence_observation_ids) v;
         SELECT array_agg(v ORDER BY v) INTO sorted_evidence
@@ -752,6 +761,13 @@ BEGIN
            AND existing.expected_status = p_expected_status
            AND existing.new_status = p_new_status
            AND unsorted_evidence IS NOT DISTINCT FROM sorted_evidence
+           AND existing.evaluated_at = p_evaluated_at
+           AND existing.event_id = p_event_id
+           AND stored_event.event_type = p_event_type
+           AND stored_event.occurred_at = p_event_occurred_at
+           AND stored_event.context IS NOT DISTINCT FROM p_event_context
+           AND stored_event.reason IS NOT DISTINCT FROM p_event_reason
+           AND stored_event.provenance IS NOT DISTINCT FROM p_event_provenance
         THEN
             RETURN 'replayed';
         END IF;
@@ -786,6 +802,20 @@ BEGIN
            OR p_provider_record_id IS NULL
            OR p_recon_assessment_id IS NOT NULL
         THEN
+            RETURN 'invalid_provenance';
+        END IF;
+        -- At least one *cited* observation must itself be a registry
+        -- detection of the claimed provider record; a matching observation
+        -- elsewhere in the database does not establish the claim.
+        IF NOT EXISTS (
+            SELECT 1
+              FROM unnest(p_evidence_observation_ids) AS cited(observation_id)
+              JOIN discovery_observation o
+                ON o.observation_id = cited.observation_id
+             WHERE o.provider_id = p_provider_id
+               AND o.provider_record_id = p_provider_record_id
+               AND o.detection_method = 'REGISTRY'
+        ) THEN
             RETURN 'invalid_provenance';
         END IF;
     ELSIF p_method = 'AGENT_RECON' THEN
@@ -833,15 +863,15 @@ BEGIN
         RETURN 'conflict';
     END IF;
 
-    UPDATE source_candidate
-       SET status = p_new_status
-     WHERE id = p_candidate_id
-       AND status = p_expected_status;
-    IF NOT FOUND THEN
-        RETURN 'state_conflict';
-    END IF;
-
     BEGIN
+        UPDATE source_candidate
+           SET status = p_new_status
+         WHERE id = p_candidate_id
+           AND status = p_expected_status;
+        IF NOT FOUND THEN
+            RETURN 'state_conflict';
+        END IF;
+
         INSERT INTO source_candidate_event_history (
             event_id, candidate_id, event_type, occurred_at, context, reason,
             provenance

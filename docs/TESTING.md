@@ -1041,6 +1041,36 @@ SQL is used only for seeding/verification.
 | I18 | Missing candidate/evidence surfaces a typed bounded error that echoes no values or table names |
 | I19 | Existing PR 10 recon, PR 16 collection, crawler, extraction, and source-analysis suites remain unchanged and pass |
 
+### PR 17-F qualification integrity regressions
+
+These regressions pin the qualification persistence boundary (F1 atomicity,
+F2 exact replay, F3 cited registry provenance). In-memory parity tests live in
+`tests/unit/app/test_source_discovery.py`; the adapter event-identity check
+lives in `tests/unit/infrastructure/persistence/postgresql/test_discovery_repositories.py`;
+the same scenarios run against real PostgreSQL in
+`tests/integration/persistence/test_discovery_repository.py`.
+
+Negative tests catch the typed error and then **commit the unit of work**
+before asserting readback, so a conflict path is proven side-effect-free
+independently of caller rollback timing.
+
+| ID | Layer | Assertion |
+| --- | --- | --- |
+| F1 | PostgreSQL | A forced duplicate `qualification_decision` primary key (distinct semantic key/event, second INSERT) rolls back the candidate status update and the event insert even though the caller commits after catching `ConflictError` |
+| B-U01 | adapter | `event.event_id != decision.event_id` raises `ValueError` before any SQL is executed |
+| B-U02 | in-memory | Exact replay with a regenerated `decision_id` returns the original decision and appends no event |
+| B-U03 | in-memory | Same key with a changed event identity conflicts; state unchanged |
+| B-U04 | in-memory | Same key with a changed `evaluated_at` conflicts; state unchanged |
+| B-U05 | in-memory | Same key with a changed `event.occurred_at` conflicts; state unchanged |
+| B-U06 | in-memory | Same key with changed `context`, `reason`, or `provenance` conflicts; state unchanged |
+| B-U07 | in-memory | JSON object key order alone is an exact replay |
+| B-U08 | in-memory | Same-key replay before commit returns the staged decision without a duplicate event (committed and pending uniqueness parity) |
+| C-U01–C-U07 | in-memory | Cited registry evidence must match provider/record with `REGISTRY` detection; uncited matches, wrong provider/record, and non-registry detections are rejected; mixed evidence with one match and `AGENT_RECON` remain accepted |
+| B-I01 | PostgreSQL | Exact replay with a regenerated `decision_id` returns the original stored ID/time and appends no event |
+| B-I02–B-I04 | PostgreSQL | Changed event identity, `evaluated_at`, or event `occurred_at` conflicts with no decision/event change |
+| B-I05 | PostgreSQL | Changed `context`, `reason`, or `provenance` conflicts with no change; `JSONB` key ordering alone replays (B-I06) |
+| C-I01–C-I07 | PostgreSQL | Cited `REGISTRY` provider/record provenance is required and enforced before mutation; a matching but uncited observation is insufficient; `AGENT_RECON` is unaffected |
+
 ### Schema and safety notes
 
 `0009_discovery_foundation.sql` adds three tables

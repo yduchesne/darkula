@@ -404,6 +404,22 @@ class TestQualificationRepository:
         with pytest.raises(ValueError):
             await repository.decide_and_transition(decision, event)
 
+    @pytest.mark.asyncio
+    async def test_event_id_must_match_decision_event_id(self) -> None:
+        cursor = _Cursor()
+        repository = PostgresQualificationRepository(_Scope(cursor))
+        decision = _decision()
+        event = SourceCandidateEventHistory(
+            event_id=CandidateEventId.generate(),
+            candidate_id=decision.candidate_id,
+            event_type=CandidateEventType.QUALIFIED,
+            occurred_at=_MOMENT,
+        )
+        assert event.event_id != decision.event_id
+        with pytest.raises(ValueError):
+            await repository.decide_and_transition(decision, event)
+        assert cursor.executed_sql == []
+
     def _event(self, decision: QualificationDecision) -> SourceCandidateEventHistory:
         return SourceCandidateEventHistory(
             event_id=decision.event_id,

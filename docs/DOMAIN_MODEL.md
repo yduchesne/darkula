@@ -410,13 +410,32 @@ RECONNAISSANCE_PENDING` (`NEEDS_MORE_RECON`), `REJECTED -> REJECTED`.
 recon assessment UUID or empty)`.
 
 The decision, exactly one candidate status transition, and exactly one
-candidate event commit atomically in one stored function/transaction. Exact
-replay returns the original decision with no second event; a same-key
-different payload or a stale expected state is a conflict with zero durable
-effects. **No PR 17 service produces decisions**: PR 19 owns deciding
-eligibility, policy trust, recon routing, and invoking the repository
-operation. The existing PR 10 `ReconCoordinator` path is unchanged; PR 19
-must coordinate ownership so a candidate is not double-transitioned.
+candidate event commit atomically in one stored function/transaction: the
+candidate `UPDATE`, the event `INSERT`, and the decision `INSERT` share one
+protected PL/pgSQL block, so a `unique_violation` on the decision row also
+rolls back the status change and the event even if the caller commits the unit
+of work after handling the typed conflict.
+
+Replay is exact: the supplied event must be linked by
+`event.event_id == decision.event_id`, and an existing `decision_key` replays
+only when every immutable decision field, the original `evaluated_at`, and the
+persisted event's type, `occurred_at`, nullable `context` (JSONB content, key
+order irrelevant), `reason`, and `provenance` all match. A regenerated
+`decision_id` is permitted on an otherwise exact retry and the stored ID is
+returned; any other difference is a `ConflictError` with zero durable effects
+and never a second decision.
+
+A `REGISTRY_POLICY` decision must also cite at least one observation whose
+`detection_method = 'REGISTRY'` and whose `provider_id`/
+`provider_record_id` equal the claimed pair. A matching observation that is
+merely present in the database, or a non-registry observation with equal
+strings, does not satisfy the provenance rule (`IntegrityError`, no effects);
+`AGENT_RECON` instead requires the genuine same-candidate assessment.
+
+**No PR 17 service produces decisions**: PR 19 owns deciding eligibility,
+policy trust, recon routing, and invoking the repository operation. The
+existing PR 10 `ReconCoordinator` path is unchanged; PR 19 must coordinate
+ownership so a candidate is not double-transitioned.
 
 ### MonitoringProfile (v0.2, planned — owned by PR 24/25)
 
