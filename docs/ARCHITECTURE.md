@@ -3,9 +3,9 @@
 ## Purpose and scope
 Darkula v0.1 is a generic secure framework for discovering sources, qualifying them, collecting them repeatedly, normalizing hostile content, extracting structured facts, and assessing source value. Multi-tenancy and product-specific commercial features are intentionally deferred.
 
-## v0.2 planned extension — source discovery, real-world transport and MonitoringProfiles
+## v0.2 extension — source discovery foundation (PR 17 delivered), remaining capabilities planned
 
-> **Planning only.** The v0.1 architecture and PR 1–16 delivered sections below remain the implementation baseline. The capabilities in this section are **not implemented** by that baseline. The authoritative sequencing is in [v0.2 Roadmap](ROADMAP_V02.md).
+> **Status.** PR 17 delivers the v0.2 *discovery/provenance foundation* only: the immutable `DiscoveryObservation` domain, conservative locator validation, additive PostgreSQL persistence through versioned stored functions/UnitOfWork, orthogonal access-pending evidence, and an immutable atomic `QualificationDecision` persistence primitive. PRs 18–27 remain **planned**: no live registry adapter, provider polling, candidate admission/reconciliation, trusted qualification routing, real HTTPS/Tor crawling, credential provisioning/validation, or MonitoringProfile is implemented. The v0.1 architecture and PR 1–16 delivered sections remain the implementation baseline; the authoritative sequencing is in [v0.2 Roadmap](ROADMAP_V02.md).
 
 ### Upstream discovery and admission
 
@@ -38,6 +38,8 @@ Content references (v0.2 recursive/semantic discovery) ---+
 ```
 
 A DiscoveryObservation is an untrusted claim and may refer to a URL, a named but unresolved source, a suspected mirror, or a provider-defined record. Preserve provider/source reference, detection method, time, original context/evidence, normalized locator where available, and relation assertions. The provider's classification or `available` flag must not become authorization or established truth. Names without validated locators cannot be scheduled for crawl.
+
+**Delivered by PR 17:** `SourceDiscoveryService.ingest` validates and persists one observation per call and **does not create, reconcile, or promote candidates** — the diagram's `reconcile -> persist -> admit` step is PR 19 work. Replay is idempotent on the stable provider tuple; distinct provider records/versions retain separate immutable evidence; a same-key payload difference fails as a conflict. Ingest never calls ReconAgent, the crawler, an LLM, or any external registry, and never grants access or crawl authority. Name-only observations carry no synthetic locator. Access-pending evidence (`CREDENTIALS_PENDING`) may only be appended, by an explicit operation, for an already existing candidate whose observation claims `requires_auth=True`; it never changes candidate lifecycle and never produces `READY`. The `QualificationDecision` contract and its atomic decision + candidate-event/status stored-function primitive are delivered, but **no PR 17 code decides qualification**: PR 19 owns policy trust, routing, and invocation. The PR 10 `ReconCoordinator` path is unchanged.
 
 The existing `SourceCandidate` identity and lifecycle remain authoritative. **v0.2 adds policy-routed qualification:** a trusted, versioned `CandidateQualificationPolicy` can qualify a complete, non-conflicting record from an explicitly approved registry adapter *without* ReconAgent or an LLM; incomplete/ambiguous records go through the existing `ReconCoordinator` (when authorized) or remain pending. The `ReconAgent` does not gain network tooling or persistence access. `QUALIFIED` remains distinct from `PROMOTED`. Discovery cannot silently promote Sources or manufacture CollectionPolicies.
 

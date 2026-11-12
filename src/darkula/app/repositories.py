@@ -47,6 +47,13 @@ from darkula.domain.content import (
     ContentArtifact,
     NormalizedContent,
 )
+from darkula.domain.discovery import (
+    AccessEvidence,
+    DiscoveryDetectionMethod,
+    DiscoveryObservation,
+    DiscoveryReferenceKind,
+    QualificationDecision,
+)
 from darkula.domain.extraction import ExtractedEntity, ExtractionResult
 from darkula.domain.geography import GeographicResolution
 from darkula.domain.identifiers import (
@@ -54,12 +61,14 @@ from darkula.domain.identifiers import (
     CollectionRunId,
     ConsumerId,
     ContentArtifactId,
+    DiscoveryObservationId,
     ExtractedEntityId,
     ExtractedRelationshipId,
     ExtractionResultId,
     GeographicResolutionId,
     MessageId,
     NormalizedContentId,
+    QualificationDecisionId,
     RelationshipExtractionResultId,
     SourceCandidateId,
     SourceEndpointId,
@@ -81,14 +90,17 @@ from darkula.domain.source import (
 )
 
 __all__ = [
+    "AccessRepository",
     "ClaimOutcome",
     "CollectionRepository",
     "ContentRepository",
+    "DiscoveryRepository",
     "ExtractionRepository",
     "GeographicResolutionRepository",
     "OutboxRecord",
     "OutboxRepository",
     "ProcessedMessageRepository",
+    "QualificationRepository",
     "ReclaimOutcome",
     "RelationshipRepository",
     "ScheduleOutcome",
@@ -752,3 +764,162 @@ class RelationshipRepository(ABC):
         self, relationship_id: ExtractedRelationshipId
     ) -> ExtractedRelationship | None:
         """Return one assertion occurrence by identity or ``None``."""
+
+
+class DiscoveryRepository(ABC):
+    """Immutable discovery-observation persistence contract (PR 17).
+
+    All methods are transaction-scoped through the owning unit of work.
+    Observations are append-only. ``insert_or_get_exact`` is idempotent on
+    the semantic tuple ``(provider_id, provider_record_id,
+    provider_record_version, detection_method, reference_kind)``: an exact
+    replay returns the stored original row (original identity and
+    ``ingested_at``), while a same-key payload difference raises
+    :class:`ConflictError` without overwriting anything.
+
+    An observation never creates or mutates a candidate, source, endpoint,
+    policy, run, or authorization.
+    """
+
+    @abstractmethod
+    async def insert_or_get_exact(
+        self, observation: DiscoveryObservation
+    ) -> DiscoveryObservation:
+        """Persist one observation, or return the exact replayed original.
+
+        :raises ConflictError: if the semantic tuple already exists with a
+            different normalized payload (no update, no second row).
+        """
+
+    @abstractmethod
+    async def get(
+        self, observation_id: DiscoveryObservationId
+    ) -> DiscoveryObservation | None:
+        """Return one observation by identity or ``None`` when absent."""
+
+    @abstractmethod
+    async def get_by_key(
+        self,
+        *,
+        provider_id: str,
+        provider_record_id: str,
+        provider_record_version: str,
+        detection_method: DiscoveryDetectionMethod,
+        reference_kind: DiscoveryReferenceKind,
+    ) -> DiscoveryObservation | None:
+        """Return the observation for the semantic tuple or ``None``."""
+
+    @abstractmethod
+    async def list_for_provider(
+        self,
+        provider_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[DiscoveryObservation, ...]:
+        """Return a provider's observations in ``(observed_at, id)`` order.
+
+        ``limit`` is bounded to ``1..200`` and ``offset`` must be ``>= 0``.
+        """
+
+
+class AccessRepository(ABC):
+    """Immutable access-evidence persistence contract (PR 17).
+
+    Evidence is append-only and orthogonal to candidate/source lifecycle.
+    PR17's own write path is deliberately narrow: ``append_evidence`` only
+    accepts ``CREDENTIALS_PENDING`` evidence for an existing candidate whose
+    observation claims ``requires_auth_claim is True``. It never records
+    ``PUBLIC``/``READY``/``AUTH_FAILED``/``ACCESS_REVOKED`` and never
+    changes a candidate status.
+    """
+
+    @abstractmethod
+    async def append_evidence(self, evidence: AccessEvidence) -> AccessEvidence:
+        """Append one pending access-evidence record or return its replay.
+
+        :raises ValueError: if the evidence is not a candidate-linked
+            ``CREDENTIALS_PENDING`` record (no broad write primitive exists).
+        :raises NotFoundError: if the observation or candidate does not
+            exist.
+        :raises ConflictError: if the observation does not claim required
+            authentication, links another candidate, or a different status
+            already exists for the same observation/candidate.
+        """
+
+    @abstractmethod
+    async def list_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> tuple[AccessEvidence, ...]:
+        """Return a candidate's evidence in ``(recorded_at, id)`` order."""
+
+    @abstractmethod
+    async def list_for_endpoint(
+        self, endpoint_id: SourceEndpointId
+    ) -> tuple[AccessEvidence, ...]:
+        """Return an endpoint's evidence in ``(recorded_at, id)`` order."""
+
+    @abstractmethod
+    async def latest_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> AccessEvidence | None:
+        """Return the deterministic latest candidate evidence or ``None``."""
+
+    @abstractmethod
+    async def latest_for_endpoint(
+        self, endpoint_id: SourceEndpointId
+    ) -> AccessEvidence | None:
+        """Return the deterministic latest endpoint evidence or ``None``."""
+
+
+class QualificationRepository(ABC):
+    """Immutable qualification-decision persistence contract (PR 17).
+
+    This is a persistence primitive only: no PR17 service decides
+    qualification, evaluates policy trust, or routes reconnaissance. PR 19
+    owns those decisions and invokes ``decide_and_transition``. The decision,
+    exactly one existing candidate status transition, and exactly one
+    existing candidate event commit atomically (one stored function/one
+    transaction). A registry decision never references a fabricated
+    ``ReconAssessment``; an agent decision must reference a real assessment
+    belonging to the same candidate.
+    """
+
+    @abstractmethod
+    async def decide_and_transition(
+        self,
+        decision: QualificationDecision,
+        event: SourceCandidateEventHistory,
+    ) -> QualificationDecision:
+        """Persist one decision atomically with its candidate transition/event.
+
+        :raises ConflictError: on a stale expected candidate state or a
+            same-key/different-immutable-payload replay (zero durable effects),
+            including a changed event identity, event payload, or evaluation
+            timestamp; a regenerated ``decision_id`` alone is an exact replay
+            and returns the original stored decision.
+        :raises NotFoundError: if the candidate does not exist.
+        :raises IntegrityError: if referenced evidence or recon provenance
+            is missing/inconsistent (zero durable effects), including a
+            ``REGISTRY_POLICY`` decision that cites no ``REGISTRY``
+            observation matching its claimed provider record.
+        :raises ValueError: if ``event`` does not match the decision's
+            candidate, event type, or linked ``event_id`` (before any
+            database access).
+        """
+
+    @abstractmethod
+    async def get(
+        self, decision_id: QualificationDecisionId
+    ) -> QualificationDecision | None:
+        """Return one decision by identity or ``None`` when absent."""
+
+    @abstractmethod
+    async def get_by_key(self, decision_key: str) -> QualificationDecision | None:
+        """Return the decision for a stable replay key or ``None``."""
+
+    @abstractmethod
+    async def list_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> tuple[QualificationDecision, ...]:
+        """Return immutable decisions in ``(evaluated_at, id)`` order."""

@@ -520,6 +520,18 @@ class MemExtractionUnitOfWork(UnitOfWork):
             )
         return self._relationships
 
+    @property
+    def discovery(self) -> Any:
+        raise AssertionError("extraction fake exposes no discovery repository")
+
+    @property
+    def access(self) -> Any:
+        raise AssertionError("extraction fake exposes no access repository")
+
+    @property
+    def qualification(self) -> Any:
+        raise AssertionError("extraction fake exposes no qualification repository")
+
 
 class MemExtractionSpi(DarkulaSpi):
     """One in-memory SPI producing snapshot-isolated extraction units of work."""

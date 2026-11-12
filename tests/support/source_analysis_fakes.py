@@ -274,6 +274,18 @@ class MemSourceAnalysisUnitOfWork(UnitOfWork):
     def relationships(self) -> Any:
         return self._relationships
 
+    @property
+    def discovery(self) -> Any:
+        raise AssertionError("source-analysis fake exposes no discovery repository")
+
+    @property
+    def access(self) -> Any:
+        raise AssertionError("source-analysis fake exposes no access repository")
+
+    @property
+    def qualification(self) -> Any:
+        raise AssertionError("source-analysis fake exposes no qualification repository")
+
 
 class MemSourceAnalysisSpi(DarkulaSpi):
     """One in-memory SPI producing the PR 14 fakes."""

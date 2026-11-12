@@ -143,6 +143,18 @@ class _FakeUoW(UnitOfWork):
     def relationships(self) -> Any:
         raise AssertionError("consumer test exposes no relationship repository")
 
+    @property
+    def discovery(self) -> Any:
+        raise AssertionError("consumer test exposes no discovery repository")
+
+    @property
+    def access(self) -> Any:
+        raise AssertionError("consumer test exposes no access repository")
+
+    @property
+    def qualification(self) -> Any:
+        raise AssertionError("consumer test exposes no qualification repository")
+
     async def record(
         self,
         *,

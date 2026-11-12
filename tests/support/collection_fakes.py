@@ -512,6 +512,18 @@ class MemUnitOfWork(UnitOfWork):
     def relationships(self) -> Any:
         raise AssertionError("collection fake exposes no relationship repository")
 
+    @property
+    def discovery(self) -> Any:
+        raise AssertionError("collection fake exposes no discovery repository")
+
+    @property
+    def access(self) -> Any:
+        raise AssertionError("collection fake exposes no access repository")
+
+    @property
+    def qualification(self) -> Any:
+        raise AssertionError("collection fake exposes no qualification repository")
+
 
 class MemSpi(DarkulaSpi):
     """DarkulaSpi handing out :class:`MemUnitOfWork` instances."""

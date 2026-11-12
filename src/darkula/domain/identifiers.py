@@ -251,6 +251,31 @@ class ExtractedRelationshipId(_UuidId):
     """
 
 
+class DiscoveryObservationId(_UuidId):
+    """Identity of one immutable discovery observation (PR 17).
+
+    Distinct from the provider record identity it records, from the
+    ``semantic_key`` replay tuple, and from any candidate/source identity.
+    """
+
+
+class AccessEvidenceId(_UuidId):
+    """Identity of one immutable access-evidence record (PR 17).
+
+    Access readiness is orthogonal to candidate/source lifecycle; this
+    identity is never a candidate status, a source status, or a credential.
+    """
+
+
+class QualificationDecisionId(_UuidId):
+    """Identity of one immutable qualification decision (PR 17).
+
+    Distinct from the candidate lifecycle event it commits with, from any
+    ``ReconAssessmentId`` it may reference, and from the ``decision_key``
+    replay digest.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class _BoundedName:
     """Immutable bounded-name base for logical Darkula names."""
@@ -317,6 +342,7 @@ class ObjectKey(_BoundedName):
 __all__ = [
     "MAX_LOGICAL_NAME_LENGTH",
     "MAX_OBJECT_KEY_LENGTH",
+    "AccessEvidenceId",
     "CandidateEventId",
     "CausationId",
     "CollectionPolicyId",
@@ -324,6 +350,7 @@ __all__ = [
     "ConsumerId",
     "ContentArtifactId",
     "CorrelationId",
+    "DiscoveryObservationId",
     "ExtractedEntityId",
     "ExtractedRelationshipId",
     "ExtractionResultId",
@@ -332,6 +359,7 @@ __all__ = [
     "NormalizedContentId",
     "ObjectKey",
     "OperationName",
+    "QualificationDecisionId",
     "ReconAssessmentId",
     "RelationshipExtractionResultId",
     "SourceAssessmentId",
