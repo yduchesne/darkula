@@ -1,6 +1,6 @@
 # Darkula v0.2 Roadmap — Source Discovery and Real-World Monitoring
 
-> **Status: PRs 17–19 implemented; PRs 20–27 planned.** PR 17 (discovery domain, durable provenance, and the qualification persistence primitive), PR 18 (bounded RansomLook registry polling), and PR 19 (candidate admission, deduplication and policy-routed qualification) are delivered. The remaining roadmap identifiers below describe planned work, not shipped behavior. Each implementation PR requires a separate, fresh-`main` detailed plan under [Detailed PR Plan Authoring Guide](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
+> **Status: PRs 17–20 implemented; PRs 21–27 planned.** PR 17 (discovery domain, durable provenance, and the qualification persistence primitive), PR 18 (bounded RansomLook registry polling), and PR 19 (candidate admission, deduplication and policy-routed qualification) and PR 20 (operator-approved public HTTPS crawling) are delivered. The remaining roadmap identifiers below describe planned work, not shipped behavior. Each implementation PR requires a separate, fresh-`main` detailed plan under [Detailed PR Plan Authoring Guide](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
 
 ## Release objective
 
@@ -161,16 +161,18 @@ A versioned, operator-controlled `CandidateQualificationPolicy` runs in trusted 
 
 **Acceptance:** deterministic acceptance of a trusted, complete registry record performs zero agent/LLM calls, persists a `REGISTRY_POLICY` decision and `QUALIFIED` event without a fake `ReconAssessment`; ambiguous/conflicting/unknown records route to authorized agent reconnaissance or remain pending; provider disablement/revocation prevents new policy qualification; decision/transition replay/races converge, distinct claimed mirrors stay unmerged unless approved, known endpoints do not spawn duplicate source collection, rejected/inaccessible candidates retain auditable history, and an authentication-gated candidate is retained in `CREDENTIALS_PENDING` without an automatic `REJECT`.
 
-## PR 20 — Controlled real-world HTTPS crawling (P0)
+## PR 20 — Controlled real-world HTTPS crawling (P0) — delivered
 
 **Depends on:** v0.1 sandbox/crawler. **Dominant concern:** add a separate operator-approved real-network capability without relaxing Fake World isolation.
+
+> **Delivered:** an explicit, default-off public-HTTPS path reusing `CrawlerController`, `CrawlerRuntime` and `PodmanSandbox`. Each authorized execution provisions one fresh internal-only network and a dedicated CONNECT gateway attached separately to the Darkula-owned `darkula-live-egress` network. The trusted controller enforces the global switch, exact-origin allowlist, per-call `PublicHttpsGrant`, path prefix and hard live budgets before any Podman work; Chromium performs every request through the gateway with full request/WebSocket interception; the gateway resolves the exact approved FQDN afresh, vets every A/AAAA answer, dials only the selected numeric IPv4 and never inspects TLS. Legacy v1 Fake World behavior, `darkula-intg` and the v1 JSON protocol are byte-for-byte unchanged; v2 is live-only. CI performs zero public network requests. Tor/onion transport (PR 21), recursive discovery (PR 22), authenticated sessions (PR 26) and Source promotion remain out of scope.
 
 - Introduce narrowly scoped HTTPS destination authorization and network egress enforcement; handle DNS rebinding, IP-classification/private/link-local/metadata access, redirect chains, proxy configuration, and TLS/certificate failures.
 - Preserve same-origin/allowed-path/budget checks in the trusted controller **and** independent sandbox network restrictions.
 - Reuse `CrawlerController`, `CrawlerRuntime`, and `PodmanSandbox`; no direct HTTP/browser access from an agent or trusted app path.
 - Add explicit opt-in integration with harmless, controlled public endpoints; default CI remains local Fake World.
 
-**Acceptance:** an approved public endpoint is collected end-to-end, and cross-origin redirects, rebinding, forbidden networks, time/resource violations, and cancellation fail closed without sandbox escape or credential leakage.
+**Acceptance:** an approved public endpoint is collected end-to-end, and cross-origin redirects, rebinding, forbidden networks, time/resource violations, and cancellation fail closed without sandbox escape or credential leakage. **Offline acceptance is delivered and gated in CI (U20/I20); operator-approved live L20 evidence is separate and was not required for the offline suite.**
 
 ## PR 21 — Tor transport and onion crawling (P0)
 

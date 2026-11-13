@@ -61,7 +61,7 @@ fully offline and deterministically (integration tests carry the
 
 PR 7 extends the same `--intg` flow with crawler infrastructure:
 `scripts/darkula_crawler.sh start` builds the pinned crawler runtime image
-(`localhost/darkula-crawler-runtime:1.63.0`, cached when the tag is
+(`localhost/darkula-crawler-runtime:1.63.0-pr20`, cached when the tag is
 unchanged) and the stdlib-only Fake World image
 (`localhost/darkula-fakeworld-intg:1`), creates the Darkula-owned internal
 network `darkula-intg` (internal subnet, `darkula.owned=true` label, no
@@ -1480,3 +1480,48 @@ observation.
 The PR 19-F1 standalone benchmark's only change is its migration-head
 precondition (`0013_registry_qualification_replay.sql`); fixture sizes,
 sampling, metrics, and safety checks are unchanged.
+
+
+## PR 20 testing status — controlled public HTTPS crawling
+
+**Default CI is fully offline.** The unit suite and `./build.sh --intg` make
+zero public DNS/TCP/HTTP requests. The live path is proven with a real
+rootless-Podman topology plus a **test-only fail-closed gateway image** whose
+resolver/dialer always deny; production configuration never selects it.
+
+Commands:
+
+```text
+uv run pytest tests/unit/crawler/test_public_https_authorization.py
+uv run pytest tests/unit/crawler/test_https_egress_policy.py tests/unit/crawler/test_https_gateway.py
+uv run pytest tests/unit/crawler/test_live_browser_policy.py
+uv run pytest tests/unit/crawler/test_https_smoke_cli.py tests/unit/crawler/test_public_https_security_guards.py
+./build.sh --intg   # includes tests/integration/crawler/test_public_https_isolation.py
+```
+
+Coverage IDs:
+
+- **U20-01..U20-48** (unit): legacy v1 byte/golden and isolated policy
+  preservation; triple live authorization; exact host/path/URL validation;
+  hard live ceilings; v2 protocol strictness and controller identity/version
+  checks; gateway parser/DNS/IP classification, numeric-IP pinning, rebind,
+  timeouts, budgets, cancellation and internal-only bind; browser route/
+  WebSocket/method/redirect/request-budget policy; Podman argv/topology/
+  cleanup and the CLI double gate; static import/TLS guards.
+- **I20-01..I20-15** (real Podman, offline): existing Fake World suite remains
+  green (I20-01/I20-15); missing/foreign outer network refusal; fresh
+  ephemeral `/24` + pinned gateway/crawler addresses; gateway listener
+  reachability; denial of direct public/private/metadata/DNS paths; raw
+  CONNECT wrong-target/wrong-port refusal; no ambient proxy/default route;
+  concurrent executions use distinct networks; denied gateway yields no
+  `completed`; cancellation and forced failure leave zero crawler, gateway or
+  ephemeral-network resources; cleanup refuses unverified resources.
+- **L20-01..L20-05** (manual, operator-approved, never CI): see
+  [test_public_https_smoke.md](../tests/manual/test_public_https_smoke.md)
+  and [HTTPS_EGRESS_OPERATIONS.md](HTTPS_EGRESS_OPERATIONS.md). A genuinely
+  public successful crawl is not claimed by the offline suite.
+
+The integration fixture provisions the exact `darkula-live-egress` outer
+network (verifying ownership/non-internal semantics, removing it only when it
+created it) and builds/removes its own test gateway image. It never calls the
+operator provisioning script and never touches Fake World's `darkula-intg`.

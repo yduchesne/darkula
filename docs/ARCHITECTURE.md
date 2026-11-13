@@ -308,6 +308,32 @@ Crawler navigation policy and sandbox network policy are defense-in-depth contro
 
 **Credentials.** The runtime image and sandbox contain no Darkula application credentials, no LLM/DB/DataStream/ObjectStore clients, and no general secrets. The only authentication material that may cross the boundary is the narrowly scoped source credential of the specific crawl (BlackGate synthetic login), and a crawl without credentials sets the credentials flag denied.
 
+## PR 20 delivered mechanics — controlled public HTTPS
+
+Two immutable service paths now exist; the legacy path is unchanged.
+
+```text
+Legacy (v1, default, Fake World)
+  CrawlerController -> PodmanSandbox -> one disposable container on darkula-intg --internal -> Fake World
+
+Public HTTPS (v2, explicit opt-in)
+  CrawlerController (grant + allowlist + budgets, zero DNS/HTTP)
+    -> PodmanSandbox
+       -> fresh ephemeral internal network (one execution, --internal)
+       -> gateway sidecar: internal address only + darkula-live-egress
+          (exact CONNECT host:443, fresh DNS vetting, numeric-IP dial)
+       -> crawler container: ephemeral network only, --dns none, --http-proxy=false
+          Chromium proxy -> 10.x.x.10:3128, full route/websocket interception
+```
+
+`PublicHttpsGrant` is a **per-execution operator authorization**, not Source identity, candidate status, access readiness, or a persistent capability; it never creates or promotes a Source. The controller validates the global `crawler.real_https_enabled` switch, the exact `crawler.real_https_allowed_origins` entry, the grant's exact HTTPS:443 FQDN, the component-boundary path prefix, the absence of credentials and the hard live ceilings before any Podman resource exists. The controller performs no DNS lookup, HTTP request, or browser action itself.
+
+The ephemeral network and gateway are named with an execution token + random nonce and carry `darkula.owned=true`, a fixed `darkula.service=https-egress-*` label and the bounded execution ID; ownership is verified from exact metadata before every mutation/removal. The outer `darkula-live-egress` network is provisioned only by `scripts/darkula_https_egress.sh` and is never created by `execute`. The crawler never joins the outer network; the gateway never publishes a host port and binds only its assigned internal IPv4 address.
+
+The browser intercepts **every** request (navigation, redirect, subresource, JS fetch) before it reaches the network and denies WebSockets, non-GET/HEAD methods, auth headers, downloads, HTTP downgrades and requests outside the exact origin/path prefix. A violation is sticky and returns no partial successful pages. The gateway cannot see encrypted paths/methods; those checks live independently in Playwright, while the network layer independently limits CONNECT to the exact approved FQDN:443.
+
+The runtime protocol is versioned side-by-side: v1 bytes and behavior are frozen (Fake World), while v2 adds exactly `network_mode` and `allowed_path_prefix`, forbids credentials, and is accepted only for live executions. Controller and runtime both validate the returned version and (for v2) the request identity and every returned page/link against the grant.
+
 ## Data plane
 ```text
 PostgreSQL        DataStream                 ObjectStore

@@ -20,9 +20,11 @@ import pytest
 from darkula.infrastructure.sandbox.podman import (
     PodmanSandbox,
     PodmanSandboxConfig,
+    _LiveResources,
 )
 from darkula.sandbox.contracts import (
     AllowedDestination,
+    EgressMode,
     NetworkPolicy,
     ResourceLimits,
     SandboxExecutionPolicy,
@@ -35,7 +37,7 @@ from darkula.sandbox.contracts import (
 )
 
 CONFIG = PodmanSandboxConfig(
-    image="localhost/darkula-crawler-runtime:1.63.0",
+    image="localhost/darkula-crawler-runtime:1.63.0-pr20",
     network="darkula-intg",
     binary="podman",
 )
@@ -94,7 +96,7 @@ class TestRunArgv:
         assert "darkula.execution=exec-abcd1234" in joined
         # Only the allow-listed runtime command may run inside.
         assert argv[-4:] == [
-            "localhost/darkula-crawler-runtime:1.63.0",
+            "localhost/darkula-crawler-runtime:1.63.0-pr20",
             "python3",
             "-m",
             "crawler_runtime",
@@ -491,3 +493,299 @@ class TestResultTypes:
             execution_id="exec-abcd1234", exit_reason=SandboxExitReason.COMPLETED
         )
         assert result.execution_id == "exec-abcd1234"
+
+
+# -- PR 20 public HTTPS topology (U20-42..U20-46) -------------------------
+
+
+def live_policy() -> SandboxExecutionPolicy:
+    return SandboxExecutionPolicy(
+        network=NetworkPolicy(
+            egress=EgressMode.PUBLIC_HTTPS_PROXY,
+            destinations=(AllowedDestination("approved.example.org", 443),),
+        )
+    )
+
+
+def live_request(**overrides: object) -> SandboxExecutionRequest:
+    base: dict[str, object] = {
+        "execution_id": "exec-live1234",
+        "policy": live_policy(),
+        "workload": SandboxWorkload(WorkloadKind.CRAWLER, b'{"version":2}'),
+    }
+    base.update(overrides)
+    return SandboxExecutionRequest(**base)  # type: ignore[arg-type]
+
+
+def live_resources() -> _LiveResources:
+    return _LiveResources(
+        execution_id="exec-live1234",
+        network="darkula-https-net-exec-live1234-deadbeef",
+        gateway="darkula-https-gw-exec-live1234-deadbeef",
+        crawler="darkula-crawler-exec-live1234-deadbeef",
+    )
+
+
+class TestLiveCrawlerArgv:
+    def test_u20_42_legacy_argv_is_unchanged(self) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        argv = sandbox._build_run_argv(request(), "darkula-crawler-x-y")
+        assert "--network" in argv
+        assert argv[argv.index("--network") + 1] == "darkula-intg"
+        assert "--dns" not in argv
+        assert "--http-proxy=false" not in argv
+
+    def test_u20_43_crawler_one_internal_network_dns_none(self) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        argv = sandbox._build_live_crawler_argv(
+            live_request(),
+            name="darkula-crawler-x-y",
+            network="darkula-https-net-x-y",
+            crawler_ip="10.89.1.11",
+            gateway_ip="10.89.1.10",
+            subnet="10.89.1.0/24",
+        )
+        joined = " ".join(argv)
+        assert argv.count("--network") == 1
+        assert (
+            argv[argv.index("--network") + 1] == "darkula-https-net-x-y:ip=10.89.1.11"
+        )
+        assert argv[argv.index("--dns") + 1] == "none"
+        assert "--http-proxy=false" in argv
+        assert "DARKULA_CRAWLER_HTTPS_PROXY=http://10.89.1.10:3128" in argv
+        assert "DARKULA_CRAWLER_INTERNAL_CIDR=10.89.1.0/24" in argv
+        assert "darkula-live-egress" not in joined
+        assert "--network host" not in joined
+        assert "--privileged" not in joined
+        assert "-p" not in argv and "--publish" not in argv
+        assert "-v" not in argv
+        forbidden = (
+            "HTTP_PROXY=",
+            "HTTPS_PROXY=",
+            "ALL_PROXY=",
+            "http_proxy=",
+            "https_proxy=",
+            "all_proxy=",
+        )
+        assert not any(argument.startswith(forbidden) for argument in argv)
+        assert argv[-4:] == [
+            "localhost/darkula-crawler-runtime:1.63.0-pr20",
+            "python3",
+            "-m",
+            "crawler_runtime",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_u20_43_gateway_two_networks_no_ports(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        recorded: list[list[str]] = []
+
+        async def fake_run(
+            argv: list[str], *, command_timeout: float = 30.0
+        ) -> tuple[int, bytes, bytes]:
+            recorded.append(argv)
+            return 0, b"", b""
+
+        monkeypatch.setattr(sandbox, "_run_podman", fake_run)
+        await sandbox._start_live_gateway(
+            live_request(), live_resources(), "approved.example.org", "10.89.1.10"
+        )
+        argv = recorded[0]
+        joined = " ".join(argv)
+        assert argv.count("--network") == 2
+        assert "darkula-https-net-exec-live1234-deadbeef:ip=10.89.1.10" in argv
+        assert "darkula-live-egress" in argv
+        assert "--http-proxy=false" in argv
+        assert argv[argv.index("--user") + 1] == "10002"
+        assert "--read-only" in argv
+        assert "--cap-drop" in argv and argv[argv.index("--cap-drop") + 1] == "all"
+        assert "--security-opt" in argv
+        assert "no-new-privileges" in argv
+        assert "DARKULA_EGRESS_HOST=approved.example.org" in argv
+        assert "DARKULA_EGRESS_BIND_IPV4=10.89.1.10" in argv
+        assert "DARKULA_EGRESS_LISTEN_PORT=3128" in argv
+        assert "-p" not in argv and "--publish" not in argv
+        assert "-v" not in argv and "--privileged" not in argv
+        assert "--network=host" not in joined
+        assert argv[-3:] == ["python3", "-m", "https_egress"]
+
+    @pytest.mark.asyncio
+    async def test_u20_44_missing_outer_network_is_typed_failure_no_create(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        calls: list[list[str]] = []
+
+        async def fake_run(
+            argv: list[str], *, command_timeout: float = 30.0
+        ) -> tuple[int, bytes, bytes]:
+            calls.append(argv)
+            return 0, b"", b""
+
+        async def no_network(name: str) -> dict[str, object] | None:
+            return None
+
+        async def ok_cleanup(self: object, resources: object) -> bool:
+            return True
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/podman")
+        monkeypatch.setattr(sandbox, "_run_podman", fake_run)
+        monkeypatch.setattr(sandbox, "_network_inspect", no_network)
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", ok_cleanup)
+        result = await sandbox.execute(live_request())
+        assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert not any(argv[:2] == ["network", "create"] for argv in calls)
+
+    @pytest.mark.asyncio
+    async def test_u20_44_foreign_outer_network_never_attached(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        calls: list[list[str]] = []
+
+        async def fake_run(
+            argv: list[str], *, command_timeout: float = 30.0
+        ) -> tuple[int, bytes, bytes]:
+            calls.append(argv)
+            return 0, b"", b""
+
+        async def unowned(name: str) -> dict[str, object] | None:
+            return {"labels": {}, "internal": False}
+
+        async def ok_cleanup(self: object, resources: object) -> bool:
+            return True
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/podman")
+        monkeypatch.setattr(sandbox, "_run_podman", fake_run)
+        monkeypatch.setattr(sandbox, "_network_inspect", unowned)
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", ok_cleanup)
+        result = await sandbox.execute(live_request())
+        assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_u20_45_gateway_verification_failure_launches_no_crawler(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        calls: list[list[str]] = []
+        cleanup_calls: list[str] = []
+
+        async def fake_run(
+            argv: list[str], *, command_timeout: float = 30.0
+        ) -> tuple[int, bytes, bytes]:
+            calls.append(argv)
+            return 0, b"", b""
+
+        async def network_doc(name: str) -> dict[str, object] | None:
+            return {
+                "labels": {"darkula.owned": "true"},
+                "internal": True,
+                "subnets": [{"subnet": "10.89.1.0/24"}],
+            }
+
+        async def no_preflight(resources: object) -> None:
+            return None
+
+        async def bad_container(name: str) -> dict[str, object] | None:
+            return {
+                "Config": {"Labels": {"darkula.owned": "true"}},
+                "State": {"Running": True},
+                "NetworkSettings": {
+                    "Networks": {"darkula-https-net-exec-live1234-deadbeef": {}}
+                },
+                "HostConfig": {},
+            }
+
+        async def no_ready(name: str) -> None:
+            return None
+
+        async def ok_cleanup(self: PodmanSandbox, resources: _LiveResources) -> bool:
+            cleanup_calls.append(resources.crawler)
+            return True
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/podman")
+        monkeypatch.setattr(sandbox, "_run_podman", fake_run)
+        monkeypatch.setattr(sandbox, "_network_inspect", network_doc)
+        monkeypatch.setattr(sandbox, "_preflight_public_https", no_preflight)
+        monkeypatch.setattr(sandbox, "_container_inspect", bad_container)
+        monkeypatch.setattr(sandbox, "_wait_live_gateway_ready", no_ready)
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", ok_cleanup)
+        result = await sandbox.execute(live_request())
+        assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert not any("crawler_runtime" in argv for argv in calls)
+        assert cleanup_calls
+
+    @pytest.mark.asyncio
+    async def test_u20_46_cleanup_order_crawler_gateway_network(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        order: list[str] = []
+
+        async def remove_container(self: object, name: str) -> bool:
+            order.append(f"container:{name}")
+            return True
+
+        async def remove_network(self: object, name: str) -> bool:
+            order.append(f"network:{name}")
+            return True
+
+        monkeypatch.setattr(PodmanSandbox, "_remove_owned_container", remove_container)
+        monkeypatch.setattr(PodmanSandbox, "_remove_owned_network", remove_network)
+        resources = live_resources()
+        assert await sandbox._cleanup_live(resources) is True
+        assert order == [
+            f"container:{resources.crawler}",
+            f"container:{resources.gateway}",
+            f"network:{resources.network}",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_u20_46_cleanup_failure_is_never_completed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+
+        async def payload(
+            self: object, request: object, resources: object
+        ) -> tuple[int | None, bytes, bool, bool]:
+            return 0, b"{}", False, False
+
+        async def failed_cleanup(self: object, resources: object) -> bool:
+            return False
+
+        monkeypatch.setattr(sandbox, "_run_public_https", payload.__get__(sandbox))
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", failed_cleanup)
+        result = await sandbox.execute(live_request())
+        assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert result.metrics.cleanup_succeeded is False
+        assert "cleanup" in (result.reason or "")
+
+    @pytest.mark.asyncio
+    async def test_u20_46_cancellation_propagates_after_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        cleaned: list[str] = []
+
+        async def hang(
+            self: object, request: object, resources: object
+        ) -> tuple[int | None, bytes, bool, bool]:
+            await asyncio.Event().wait()  # pragma: no cover - cancelled
+            return 0, b"", False, False
+
+        async def cleanup(self: object, resources: _LiveResources) -> bool:
+            cleaned.append(resources.network)
+            return True
+
+        monkeypatch.setattr(sandbox, "_run_public_https", hang.__get__(sandbox))
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", cleanup)
+        task = asyncio.create_task(sandbox.execute(live_request()))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cleaned

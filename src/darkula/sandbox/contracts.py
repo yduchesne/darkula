@@ -79,9 +79,15 @@ class EgressMode(StrEnum):
     destinations on a Darkula-owned internal topology; everything else
     (Internet, host, other containers, private/LAN, cloud metadata) is
     denied by the enforcing adapter.
+
+    ``PUBLIC_HTTPS_PROXY`` (PR 20) is the explicit public-HTTPS capability:
+    exactly one approved public FQDN on TCP 443, reached only through a
+    per-execution CONNECT gateway on a separate egress network. It is never a
+    general Internet grant.
     """
 
     ISOLATED = "isolated"
+    PUBLIC_HTTPS_PROXY = "public_https_proxy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,14 +268,45 @@ class SandboxExecutionPolicy:
             )
         if self.runtime.devices:
             raise SandboxRequestError("sandbox devices are unsupported in PR 7")
-        if self.network.egress is not EgressMode.ISOLATED:
-            raise SandboxRequestError(
-                "only isolated network egress is supported in PR 7"
-            )
+        if self.network.egress is EgressMode.ISOLATED:
+            pass
+        elif self.network.egress is EgressMode.PUBLIC_HTTPS_PROXY:
+            _validate_public_https_policy(self)
+        else:
+            raise SandboxRequestError("unsupported network egress mode")
         if self.input.credentials_allowed and self.network.destinations == ():
             raise SandboxRequestError(
                 "credentials require at least one authorized destination"
             )
+
+
+def _validate_public_https_policy(policy: SandboxExecutionPolicy) -> None:
+    """Validate the PR 20 public-HTTPS capability envelope eagerly."""
+    # Lazy import keeps the crawler/sandbox import graph acyclic.
+    from darkula.crawler.public_https_policy import is_safe_public_host
+
+    destinations = policy.network.destinations
+    if len(destinations) != 1:
+        raise SandboxRequestError(
+            "public HTTPS egress requires exactly one authorized destination"
+        )
+    destination = destinations[0]
+    if destination.port != 443:
+        raise SandboxRequestError("public HTTPS egress requires destination port 443")
+    if not is_safe_public_host(destination.host):
+        raise SandboxRequestError(
+            "public HTTPS destination host is not a safe public FQDN"
+        )
+    if policy.input.credentials_allowed:
+        raise SandboxRequestError("public HTTPS egress forbids credentials")
+    if not policy.filesystem.root_read_only:
+        raise SandboxRequestError("public HTTPS egress requires a read-only rootfs")
+    if not policy.runtime.drop_all_capabilities:
+        raise SandboxRequestError("public HTTPS egress requires dropped capabilities")
+    if not policy.runtime.no_new_privileges:
+        raise SandboxRequestError("public HTTPS egress requires no-new-privileges")
+    if not policy.runtime.non_root_user:
+        raise SandboxRequestError("public HTTPS egress requires a non-root user")
 
 
 @dataclass(frozen=True, slots=True)

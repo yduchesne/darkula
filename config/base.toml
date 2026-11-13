@@ -40,8 +40,19 @@ driver = "fake"
 
 [crawler]
 driver = "podman"
-runtime_image = "localhost/darkula-crawler-runtime:1.63.0"
+runtime_image = "localhost/darkula-crawler-runtime:1.63.0-pr20"
 sandbox_network = "darkula-intg"
+# PR 20 public HTTPS crawling is default-off. The global switch and exact
+# origin allowlist are two independent opt-ins; neither alone authorizes a
+# request. Never commit a permissive live allowlist.
+real_https_enabled = false
+real_https_allowed_origins = []
+real_https_egress_network = "darkula-live-egress"
+real_https_gateway_image = "localhost/darkula-https-egress:1"
+real_https_max_pages = 20
+real_https_max_requests = 60
+real_https_max_depth = 2
+real_https_max_timeout_seconds = 90.0
 
 [registry]
 # PR 18 registry polling is default-off. Enabling the adapter does not grant

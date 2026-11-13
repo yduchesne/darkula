@@ -273,7 +273,7 @@ class CrawlerSettings(BaseModel):
     #: Selected sandbox implementation driver (explicit; fail closed).
     driver: SandboxDriver = SandboxDriver.PODMAN
     #: Deterministic crawler runtime image tag (never ``latest``).
-    runtime_image: str = "localhost/darkula-crawler-runtime:1.63.0"
+    runtime_image: str = "localhost/darkula-crawler-runtime:1.63.0-pr20"
     #: Darkula-owned internal Podman network used by the podman sandbox to
     #: enforce authorized-only connectivity. Must carry ``darkula.owned=true``;
     #: the tooling provisions it and never touches foreign networks.
@@ -308,6 +308,106 @@ class CrawlerSettings(BaseModel):
     max_page_text_bytes: int = 4096
     #: Hard bound on the number of discovered links returned per execution.
     max_discovered_links: int = 500
+    #: PR 20 explicit global opt-in for public HTTPS crawling (default off).
+    real_https_enabled: bool = False
+    #: Exact approved public HTTPS origins (canonical ``https://fqdn:443``).
+    real_https_allowed_origins: tuple[str, ...] = ()
+    #: Fixed Darkula-owned outer egress network (never the internal network).
+    real_https_egress_network: str = "darkula-live-egress"
+    #: Fixed locally built CONNECT gateway image tag (never ``latest``).
+    real_https_gateway_image: str = "localhost/darkula-https-egress:1"
+    #: Hard live page ceiling (cannot be raised by a request).
+    real_https_max_pages: int = 20
+    #: Hard live browser-request ceiling (cannot be raised by a request).
+    real_https_max_requests: int = 60
+    #: Hard live navigation-depth ceiling (cannot be raised by a request).
+    real_https_max_depth: int = 2
+    #: Hard live execution-time ceiling in seconds.
+    real_https_max_timeout_seconds: float = 90.0
+
+    @field_validator("real_https_allowed_origins")
+    @classmethod
+    def _validate_real_https_origins(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        # Lazy import keeps the crawler package import graph acyclic.
+        from darkula.crawler.public_https_policy import is_safe_public_host
+
+        if len(value) > 8:
+            raise ValueError(
+                "crawler.real_https_allowed_origins allows at most 8 entries"
+            )
+        seen: set[str] = set()
+        for raw in value:
+            if not isinstance(raw, str):
+                raise ValueError(
+                    "crawler.real_https_allowed_origins entries must be strings"
+                )
+            prefix = "https://"
+            suffix = ":443"
+            if not raw.startswith(prefix) or not raw.endswith(suffix):
+                raise ValueError(
+                    "crawler.real_https_allowed_origins entries must be canonical "
+                    "https://<fqdn>:443"
+                )
+            host = raw[len(prefix) : -len(suffix)]
+            if not is_safe_public_host(host) or raw != f"https://{host}:443":
+                raise ValueError(
+                    "crawler.real_https_allowed_origins entries must be canonical "
+                    "https://<fqdn>:443"
+                )
+            if raw in seen:
+                raise ValueError(
+                    "crawler.real_https_allowed_origins must not contain duplicates"
+                )
+            seen.add(raw)
+        return value
+
+    @field_validator("real_https_egress_network")
+    @classmethod
+    def _validate_real_https_egress_network(cls, value: str) -> str:
+        if value != "darkula-live-egress":
+            raise ValueError(
+                "crawler.real_https_egress_network is a fixed Darkula-owned name"
+            )
+        return value
+
+    @field_validator("real_https_gateway_image")
+    @classmethod
+    def _validate_real_https_gateway_image(cls, value: str) -> str:
+        if value != "localhost/darkula-https-egress:1":
+            raise ValueError(
+                "crawler.real_https_gateway_image is a fixed locally built tag"
+            )
+        return value
+
+    @field_validator("real_https_max_pages")
+    @classmethod
+    def _validate_real_https_max_pages(cls, value: int) -> int:
+        if value < 1 or value > 20:
+            raise ValueError("crawler.real_https_max_pages must be within [1, 20]")
+        return value
+
+    @field_validator("real_https_max_requests")
+    @classmethod
+    def _validate_real_https_max_requests(cls, value: int) -> int:
+        if value < 1 or value > 60:
+            raise ValueError("crawler.real_https_max_requests must be within [1, 60]")
+        return value
+
+    @field_validator("real_https_max_depth")
+    @classmethod
+    def _validate_real_https_max_depth(cls, value: int) -> int:
+        if value < 0 or value > 2:
+            raise ValueError("crawler.real_https_max_depth must be within [0, 2]")
+        return value
+
+    @field_validator("real_https_max_timeout_seconds")
+    @classmethod
+    def _validate_real_https_max_timeout_seconds(cls, value: float) -> float:
+        if value < 1.0 or value > 90.0:
+            raise ValueError(
+                "crawler.real_https_max_timeout_seconds must be within [1.0, 90.0]"
+            )
+        return value
 
     @field_validator("runtime_image")
     @classmethod
