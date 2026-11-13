@@ -7,7 +7,7 @@
 # resource, and it never scans broadly:
 #
 #   network:   darkula-intg              (internal bridge; label darkula.owned=true)
-#   image:     localhost/darkula-crawler-runtime:1.63.0 (pinned; never `latest`)
+#   image:     localhost/darkula-crawler-runtime:1.63.0-pr20 (pinned; never `latest`)
 #   image:     localhost/darkula-fakeworld-intg:1      (pinned; never `latest`)
 #   container: darkula-fake-world-intg   (on darkula-intg; label darkula.owned=true)
 #
@@ -33,7 +33,7 @@ NETWORK=darkula-intg
 NETWORK_SUBNET=10.177.42.0/24
 FAKEWORLD_CONTAINER=darkula-fake-world-intg
 FAKEWORLD_IMAGE=localhost/darkula-fakeworld-intg:1
-RUNTIME_IMAGE=localhost/darkula-crawler-runtime:1.63.0
+RUNTIME_IMAGE=localhost/darkula-crawler-runtime:1.63.0-pr20
 # Internal service port (never host-published; prefix-3 rules not needed).
 FAKEWORLD_PORT=8080
 

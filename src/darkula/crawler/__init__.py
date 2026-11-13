@@ -16,10 +16,12 @@ from darkula.crawler.contracts import (
     CrawlResult,
     CrawlStatus,
     InvalidCrawlRequest,
+    PublicHttpsGrant,
 )
 from darkula.crawler.controller import CrawlerController
 from darkula.crawler.runtime_protocol import (
     PROTOCOL_VERSION,
+    PUBLIC_HTTPS_PROTOCOL_VERSION,
     RuntimeCredentials,
     RuntimeInput,
     RuntimeOutput,
@@ -33,6 +35,7 @@ from darkula.crawler.runtime_protocol import (
 
 __all__ = [
     "PROTOCOL_VERSION",
+    "PUBLIC_HTTPS_PROTOCOL_VERSION",
     "AllowedOrigin",
     "CrawlCredentials",
     "CrawlPageObservation",
@@ -42,6 +45,7 @@ __all__ = [
     "Crawler",
     "CrawlerController",
     "InvalidCrawlRequest",
+    "PublicHttpsGrant",
     "RuntimeCredentials",
     "RuntimeInput",
     "RuntimeOutput",

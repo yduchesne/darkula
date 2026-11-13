@@ -11,3 +11,5 @@
 !src/darkula/testing/__init__.py
 !src/darkula/testing/fake_world/
 !src/darkula/crawler/runtime_protocol.py
+!src/darkula/crawler/public_https_policy.py
+!tests/integration/crawler/fixtures/

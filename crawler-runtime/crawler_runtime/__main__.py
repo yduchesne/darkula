@@ -20,8 +20,10 @@ construction.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
+from typing import Any, cast
 
 from crawler_runtime.engine import (
     TraversalCredentials,
@@ -29,11 +31,17 @@ from crawler_runtime.engine import (
     TraversalOutput,
     traverse,
 )
+from crawler_runtime.live_policy import (
+    LiveProxyConfig,
+    LiveRequestPolicy,
+    browser_context_options,
+)
 from crawler_runtime.playwright_adapter import PlaywrightPageAdapter
 
 sys.path.insert(0, "/app")
 from runtime_protocol import (
     PROTOCOL_VERSION,
+    PUBLIC_HTTPS_PROTOCOL_VERSION,
     RuntimeInput,
     RuntimeOutput,
     RuntimeOutputPage,
@@ -71,10 +79,12 @@ def _to_traversal_input(payload: RuntimeInput) -> TraversalInput:
         max_depth=payload.max_depth,
         timeout_seconds=payload.timeout_seconds,
         max_page_text_bytes=payload.max_page_text_bytes,
+        network_mode=payload.network_mode,
+        allowed_path_prefix=payload.allowed_path_prefix,
     )
 
 
-def _to_runtime_output(output: TraversalOutput) -> RuntimeOutput:
+def _to_runtime_output(output: TraversalOutput, *, version: int) -> RuntimeOutput:
     """Map the engine output onto the versioned protocol output document."""
     pages = tuple(
         RuntimeOutputPage(
@@ -88,7 +98,7 @@ def _to_runtime_output(output: TraversalOutput) -> RuntimeOutput:
         for page in output.pages
     )
     return RuntimeOutput(
-        version=PROTOCOL_VERSION,
+        version=version,
         execution_id=output.execution_id,
         request_id=output.request_id,
         status=output.status,
@@ -144,8 +154,8 @@ def _fit_output(output: RuntimeOutput, *, limit: int) -> RuntimeOutput:
     return candidate
 
 
-async def _run(payload: RuntimeInput) -> TraversalOutput:
-    """Launch Chromium, traverse, and return the engine output."""
+async def _run_isolated(payload: RuntimeInput) -> TraversalOutput:
+    """Legacy v1 path: unchanged launch/context, no proxy."""
     from playwright.async_api import async_playwright
 
     async with async_playwright() as playwright:
@@ -160,6 +170,47 @@ async def _run(payload: RuntimeInput) -> TraversalOutput:
                 await adapter.close()
         finally:
             await browser.close()
+
+
+async def _run_live(payload: RuntimeInput) -> TraversalOutput:
+    """PR 20 path: explicit proxy, full request interception, strict TLS."""
+    from playwright.async_api import async_playwright
+
+    proxy = LiveProxyConfig.from_environment(dict(os.environ))
+    policy = LiveRequestPolicy(
+        approved_host=payload.origin_host,
+        allowed_path_prefix=payload.allowed_path_prefix,
+        max_requests=payload.max_requests,
+    )
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            context = await browser.new_context(
+                **cast(Any, browser_context_options(proxy))
+            )
+            try:
+                # Register interception BEFORE the first page exists.
+                await context.route("**/*", policy.route_handler)
+                await context.route_web_socket("**/*", policy.websocket_handler)
+                page = await context.new_page()
+                adapter = PlaywrightPageAdapter(page, live_policy=policy)
+                try:
+                    return await traverse(adapter, _to_traversal_input(payload))
+                finally:
+                    await adapter.close()
+            finally:
+                await context.close()
+        finally:
+            await browser.close()
+
+
+async def _run(payload: RuntimeInput) -> TraversalOutput:
+    """Launch Chromium, traverse, and return the engine output."""
+    if payload.version == PUBLIC_HTTPS_PROTOCOL_VERSION:
+        return await _run_live(payload)
+    if payload.version == PROTOCOL_VERSION:
+        return await _run_isolated(payload)
+    raise RuntimeProtocolError("unsupported runtime protocol version")
 
 
 async def main() -> int:
@@ -188,7 +239,10 @@ async def main() -> int:
             reason="browser workload failed (bounded)",
         )
     encoded = encode_output(
-        _fit_output(_to_runtime_output(output), limit=_MAX_OUTPUT_BYTES)
+        _fit_output(
+            _to_runtime_output(output, version=payload.version),
+            limit=_MAX_OUTPUT_BYTES,
+        )
     )
     sys.stdout.buffer.write(encoded)
     sys.stdout.buffer.flush()

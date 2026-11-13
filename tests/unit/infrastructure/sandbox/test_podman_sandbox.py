@@ -14,15 +14,19 @@ import asyncio
 import json
 import shutil
 from types import SimpleNamespace
+from typing import TypeVar
 
 import pytest
 
+import darkula.infrastructure.sandbox.podman as podman_module
 from darkula.infrastructure.sandbox.podman import (
     PodmanSandbox,
     PodmanSandboxConfig,
+    _LiveResources,
 )
 from darkula.sandbox.contracts import (
     AllowedDestination,
+    EgressMode,
     NetworkPolicy,
     ResourceLimits,
     SandboxExecutionPolicy,
@@ -35,7 +39,7 @@ from darkula.sandbox.contracts import (
 )
 
 CONFIG = PodmanSandboxConfig(
-    image="localhost/darkula-crawler-runtime:1.63.0",
+    image="localhost/darkula-crawler-runtime:1.63.0-pr20",
     network="darkula-intg",
     binary="podman",
 )
@@ -55,8 +59,16 @@ def request(**overrides: object) -> SandboxExecutionRequest:
     return SandboxExecutionRequest(**base)  # type: ignore[arg-type]
 
 
-def state(name: str) -> list[bool]:
-    raise AssertionError("helper placeholder")  # pragma: no cover
+def container_metadata(*, owned: bool = True, status: object = "running") -> bytes:
+    labels = {"darkula.owned": "true"} if owned else {}
+    return json.dumps(
+        [{"Config": {"Labels": labels}, "State": {"Status": status}}]
+    ).encode()
+
+
+def network_metadata(*, owned: bool = True) -> bytes:
+    labels = {"darkula.owned": "true"} if owned else {}
+    return json.dumps([{"labels": labels, "internal": True}]).encode()
 
 
 class TestNaming:
@@ -94,7 +106,7 @@ class TestRunArgv:
         assert "darkula.execution=exec-abcd1234" in joined
         # Only the allow-listed runtime command may run inside.
         assert argv[-4:] == [
-            "localhost/darkula-crawler-runtime:1.63.0",
+            "localhost/darkula-crawler-runtime:1.63.0-pr20",
             "python3",
             "-m",
             "crawler_runtime",
@@ -185,49 +197,55 @@ class TestOwnershipVerification:
 
     @pytest.mark.asyncio
     async def test_remove_only_owned(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        calls: list[list[str]] = []
+        calls: list[tuple[list[str], float]] = []
         sandbox = PodmanSandbox(CONFIG)
-        states: list[tuple[bool, bool, str | None]] = [
-            (True, True, "running"),  # owned running: stop + rm
-            (False, False, None),  # then gone
-        ]
-
-        async def fake_state(name: str) -> tuple[bool, bool, str | None]:
-            return states.pop(0)
+        present = True
 
         async def fake_run(
             argv: list[str], *, command_timeout: float = 30.0
         ) -> tuple[int, bytes, bytes]:
-            calls.append(argv)
-            return 0, b"", b""
+            nonlocal present
+            calls.append((argv, command_timeout))
+            if argv[1] == "exists":
+                return (0 if present else 1), b"", b""
+            if argv[1] == "inspect":
+                return 0, container_metadata(), b""
+            if argv[0] == "stop":
+                return 0, b"", b""
+            if argv[0] == "rm":
+                present = False
+                return 0, b"", b""
+            raise AssertionError(f"unexpected cleanup command: {argv}")
 
-        monkeypatch.setattr(sandbox, "_container_state", fake_state)
         monkeypatch.setattr(sandbox, "_run_podman", fake_run)
 
         assert await sandbox._remove_owned_container("darkula-crawler-x-y") is True
-        assert calls[0][0] == "stop"
-        assert calls[1][0] == "rm"
+        commands = [argv for argv, _timeout in calls]
+        assert commands[0][:2] == ["container", "exists"]
+        assert any(argv[0] == "stop" for argv in commands)
+        assert any(argv[0] == "rm" for argv in commands)
+        assert all(timeout == 10.0 for _argv, timeout in calls)
 
     @pytest.mark.asyncio
     async def test_unowned_container_never_touched(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        calls: list[str] = []
+        calls: list[list[str]] = []
         sandbox = PodmanSandbox(CONFIG)
-
-        async def fake_state(name: str) -> tuple[bool, bool, str | None]:
-            return (True, False, None)
 
         async def fake_run(
             argv: list[str], *, command_timeout: float = 30.0
         ) -> tuple[int, bytes, bytes]:
-            calls.append(argv[0])
-            return 0, b"", b""
+            calls.append(argv)
+            if argv[1] == "exists":
+                return 0, b"", b""
+            if argv[1] == "inspect":
+                return 0, container_metadata(owned=False), b""
+            raise AssertionError(f"unexpected mutating command: {argv}")
 
-        monkeypatch.setattr(sandbox, "_container_state", fake_state)
         monkeypatch.setattr(sandbox, "_run_podman", fake_run)
         assert await sandbox._remove_owned_container("darkula-crawler-x-y") is False
-        assert calls == []
+        assert all(argv[0] not in {"stop", "rm"} for argv in calls)
 
 
 class FakeProc:
@@ -491,3 +509,1018 @@ class TestResultTypes:
             execution_id="exec-abcd1234", exit_reason=SandboxExitReason.COMPLETED
         )
         assert result.execution_id == "exec-abcd1234"
+
+
+# -- PR 20 public HTTPS topology (U20-42..U20-46) -------------------------
+
+
+def live_policy() -> SandboxExecutionPolicy:
+    return SandboxExecutionPolicy(
+        network=NetworkPolicy(
+            egress=EgressMode.PUBLIC_HTTPS_PROXY,
+            destinations=(AllowedDestination("approved.example.org", 443),),
+        )
+    )
+
+
+def live_request(**overrides: object) -> SandboxExecutionRequest:
+    base: dict[str, object] = {
+        "execution_id": "exec-live1234",
+        "policy": live_policy(),
+        "workload": SandboxWorkload(WorkloadKind.CRAWLER, b'{"version":2}'),
+    }
+    base.update(overrides)
+    return SandboxExecutionRequest(**base)  # type: ignore[arg-type]
+
+
+def live_resources() -> _LiveResources:
+    return _LiveResources(
+        execution_id="exec-live1234",
+        network="darkula-https-net-exec-live1234-deadbeef",
+        gateway="darkula-https-gw-exec-live1234-deadbeef",
+        crawler="darkula-crawler-exec-live1234-deadbeef",
+    )
+
+
+class TestLiveCrawlerArgv:
+    def test_u20_42_legacy_argv_is_unchanged(self) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        argv = sandbox._build_run_argv(request(), "darkula-crawler-x-y")
+        assert "--network" in argv
+        assert argv[argv.index("--network") + 1] == "darkula-intg"
+        assert "--dns" not in argv
+        assert "--http-proxy=false" not in argv
+
+    def test_u20_43_crawler_one_internal_network_dns_none(self) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        argv = sandbox._build_live_crawler_argv(
+            live_request(),
+            name="darkula-crawler-x-y",
+            network="darkula-https-net-x-y",
+            crawler_ip="10.89.1.11",
+            gateway_ip="10.89.1.10",
+            subnet="10.89.1.0/24",
+        )
+        joined = " ".join(argv)
+        assert argv.count("--network") == 1
+        assert (
+            argv[argv.index("--network") + 1] == "darkula-https-net-x-y:ip=10.89.1.11"
+        )
+        assert argv[argv.index("--dns") + 1] == "none"
+        assert "--http-proxy=false" in argv
+        assert "DARKULA_CRAWLER_HTTPS_PROXY=http://10.89.1.10:3128" in argv
+        assert "DARKULA_CRAWLER_INTERNAL_CIDR=10.89.1.0/24" in argv
+        assert "darkula-live-egress" not in joined
+        assert "--network host" not in joined
+        assert "--privileged" not in joined
+        assert "-p" not in argv and "--publish" not in argv
+        assert "-v" not in argv
+        forbidden = (
+            "HTTP_PROXY=",
+            "HTTPS_PROXY=",
+            "ALL_PROXY=",
+            "http_proxy=",
+            "https_proxy=",
+            "all_proxy=",
+        )
+        assert not any(argument.startswith(forbidden) for argument in argv)
+        assert argv[-4:] == [
+            "localhost/darkula-crawler-runtime:1.63.0-pr20",
+            "python3",
+            "-m",
+            "crawler_runtime",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_u20_43_gateway_two_networks_no_ports(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        recorded: list[list[str]] = []
+
+        async def fake_run(
+            argv: list[str], *, command_timeout: float = 30.0
+        ) -> tuple[int, bytes, bytes]:
+            recorded.append(argv)
+            return 0, b"", b""
+
+        monkeypatch.setattr(sandbox, "_run_podman", fake_run)
+        await sandbox._start_live_gateway(
+            live_request(), live_resources(), "approved.example.org", "10.89.1.10"
+        )
+        argv = recorded[0]
+        joined = " ".join(argv)
+        assert argv.count("--network") == 2
+        assert "darkula-https-net-exec-live1234-deadbeef:ip=10.89.1.10" in argv
+        assert "darkula-live-egress" in argv
+        assert "--http-proxy=false" in argv
+        assert argv[argv.index("--user") + 1] == "10002"
+        assert "--read-only" in argv
+        assert "--cap-drop" in argv and argv[argv.index("--cap-drop") + 1] == "all"
+        assert "--security-opt" in argv
+        assert "no-new-privileges" in argv
+        assert "DARKULA_EGRESS_HOST=approved.example.org" in argv
+        assert "DARKULA_EGRESS_BIND_IPV4=10.89.1.10" in argv
+        assert "DARKULA_EGRESS_LISTEN_PORT=3128" in argv
+        assert "-p" not in argv and "--publish" not in argv
+        assert "-v" not in argv and "--privileged" not in argv
+        assert "--network=host" not in joined
+        assert argv[-3:] == ["python3", "-m", "https_egress"]
+
+    @pytest.mark.asyncio
+    async def test_u20_44_missing_outer_network_is_typed_failure_no_create(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        calls: list[list[str]] = []
+
+        async def fake_run(
+            argv: list[str], *, command_timeout: float = 30.0
+        ) -> tuple[int, bytes, bytes]:
+            calls.append(argv)
+            return 0, b"", b""
+
+        async def no_network(name: str) -> dict[str, object] | None:
+            return None
+
+        async def ok_cleanup(self: object, resources: object) -> bool:
+            return True
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/podman")
+        monkeypatch.setattr(sandbox, "_run_podman", fake_run)
+        monkeypatch.setattr(sandbox, "_network_inspect", no_network)
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", ok_cleanup)
+        result = await sandbox.execute(live_request())
+        assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert not any(argv[:2] == ["network", "create"] for argv in calls)
+
+    @pytest.mark.asyncio
+    async def test_u20_44_foreign_outer_network_never_attached(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        calls: list[list[str]] = []
+
+        async def fake_run(
+            argv: list[str], *, command_timeout: float = 30.0
+        ) -> tuple[int, bytes, bytes]:
+            calls.append(argv)
+            return 0, b"", b""
+
+        async def unowned(name: str) -> dict[str, object] | None:
+            return {"labels": {}, "internal": False}
+
+        async def ok_cleanup(self: object, resources: object) -> bool:
+            return True
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/podman")
+        monkeypatch.setattr(sandbox, "_run_podman", fake_run)
+        monkeypatch.setattr(sandbox, "_network_inspect", unowned)
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", ok_cleanup)
+        result = await sandbox.execute(live_request())
+        assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_u20_45_gateway_verification_failure_launches_no_crawler(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        calls: list[list[str]] = []
+        cleanup_calls: list[str] = []
+
+        async def fake_run(
+            argv: list[str], *, command_timeout: float = 30.0
+        ) -> tuple[int, bytes, bytes]:
+            calls.append(argv)
+            return 0, b"", b""
+
+        async def network_doc(name: str) -> dict[str, object] | None:
+            return {
+                "labels": {"darkula.owned": "true"},
+                "internal": True,
+                "subnets": [{"subnet": "10.89.1.0/24"}],
+            }
+
+        async def no_preflight(resources: object) -> None:
+            return None
+
+        async def bad_container(name: str) -> dict[str, object] | None:
+            return {
+                "Config": {"Labels": {"darkula.owned": "true"}},
+                "State": {"Running": True},
+                "NetworkSettings": {
+                    "Networks": {"darkula-https-net-exec-live1234-deadbeef": {}}
+                },
+                "HostConfig": {},
+            }
+
+        async def no_ready(name: str) -> None:
+            return None
+
+        async def ok_cleanup(self: PodmanSandbox, resources: _LiveResources) -> bool:
+            cleanup_calls.append(resources.crawler)
+            return True
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/podman")
+        monkeypatch.setattr(sandbox, "_run_podman", fake_run)
+        monkeypatch.setattr(sandbox, "_network_inspect", network_doc)
+        monkeypatch.setattr(sandbox, "_preflight_public_https", no_preflight)
+        monkeypatch.setattr(sandbox, "_container_inspect", bad_container)
+        monkeypatch.setattr(sandbox, "_wait_live_gateway_ready", no_ready)
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", ok_cleanup)
+        result = await sandbox.execute(live_request())
+        assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert not any("crawler_runtime" in argv for argv in calls)
+        assert cleanup_calls
+
+    @pytest.mark.asyncio
+    async def test_u20_46_cleanup_order_crawler_gateway_network(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        order: list[str] = []
+
+        async def remove_container(self: object, name: str) -> bool:
+            order.append(f"container:{name}")
+            return True
+
+        async def remove_network(self: object, name: str) -> bool:
+            order.append(f"network:{name}")
+            return True
+
+        monkeypatch.setattr(PodmanSandbox, "_remove_owned_container", remove_container)
+        monkeypatch.setattr(PodmanSandbox, "_remove_owned_network", remove_network)
+        resources = live_resources()
+        assert await sandbox._cleanup_live(resources) is True
+        assert order == [
+            f"container:{resources.crawler}",
+            f"container:{resources.gateway}",
+            f"network:{resources.network}",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_u20_46_cleanup_failure_is_never_completed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+
+        async def payload(
+            self: object, request: object, resources: object
+        ) -> tuple[int | None, bytes, bool, bool]:
+            return 0, b"{}", False, False
+
+        async def failed_cleanup(self: object, resources: object) -> bool:
+            return False
+
+        monkeypatch.setattr(sandbox, "_run_public_https", payload.__get__(sandbox))
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", failed_cleanup)
+        result = await sandbox.execute(live_request())
+        assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert result.metrics.cleanup_succeeded is False
+        assert "cleanup" in (result.reason or "")
+
+    @pytest.mark.asyncio
+    async def test_u20_46_cancellation_propagates_after_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        cleaned: list[str] = []
+
+        async def hang(
+            self: object, request: object, resources: object
+        ) -> tuple[int | None, bytes, bool, bool]:
+            await asyncio.Event().wait()  # pragma: no cover - cancelled
+            return 0, b"", False, False
+
+        async def cleanup(self: object, resources: _LiveResources) -> bool:
+            cleaned.append(resources.network)
+            return True
+
+        monkeypatch.setattr(sandbox, "_run_public_https", hang.__get__(sandbox))
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", cleanup)
+        task = asyncio.create_task(sandbox.execute(live_request()))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cleaned
+
+
+# -- PR 20-F1 bounded cleanup and single terminal telemetry ---------------
+
+_T = TypeVar("_T")
+
+
+class ScriptedPodman:
+    """Deterministic fake for cleanup-related Podman invocations."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], float]] = []
+        self.exists: list[int] = []
+        self.inspect: list[tuple[int, bytes]] = []
+        self.stop: list[int] = []
+        self.rm: list[int] = []
+
+    @staticmethod
+    def _next(sequence: list[_T], default: _T) -> _T:
+        return sequence.pop(0) if sequence else default
+
+    async def run(
+        self, argv: list[str], *, command_timeout: float = 30.0
+    ) -> tuple[int, bytes, bytes]:
+        self.calls.append((argv, command_timeout))
+        if len(argv) > 1 and argv[0] in {"container", "network"}:
+            if argv[1] == "exists":
+                return self._next(self.exists, 1), b"", b""
+            if argv[1] == "inspect":
+                code, payload = self._next(self.inspect, (1, b""))
+                return code, payload, b""
+            if argv[1] == "rm":
+                return self._next(self.rm, 0), b"", b""
+        if argv and argv[0] == "stop":
+            return self._next(self.stop, 0), b"", b""
+        if argv and argv[0] == "rm":
+            return self._next(self.rm, 0), b"", b""
+        raise AssertionError(f"unexpected podman argv: {argv}")
+
+    def verbs(self, verb: str) -> list[list[str]]:
+        return [
+            argv
+            for argv, _timeout in self.calls
+            if (argv[0] == verb) or (len(argv) > 1 and argv[1] == verb)
+        ]
+
+
+class MetricSpy:
+    def __init__(self) -> None:
+        self.events: list[tuple[int, dict[str, object]]] = []
+
+    def add(self, amount: int, attributes: dict[str, object]) -> None:
+        self.events.append((amount, dict(attributes)))
+
+
+def install_metric_spy(monkeypatch: pytest.MonkeyPatch) -> MetricSpy:
+    spy = MetricSpy()
+    monkeypatch.setattr(podman_module, "get_counter", lambda name: spy)
+    return spy
+
+
+def execution_events(spy: MetricSpy) -> list[dict[str, object]]:
+    return [
+        attributes
+        for _amount, attributes in spy.events
+        if "darkula.sandbox.exit_reason" in attributes
+    ]
+
+
+def install_runner(
+    monkeypatch: pytest.MonkeyPatch, runner: ScriptedPodman
+) -> PodmanSandbox:
+    sandbox = PodmanSandbox(CONFIG)
+    monkeypatch.setattr(sandbox, "_run_podman", runner.run)
+    return sandbox
+
+
+class TestF1Presence:
+    @pytest.mark.asyncio
+    async def test_u20f1_01_container_presence_codes(self) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 1]
+        sandbox = PodmanSandbox(CONFIG)
+
+        async def fake(
+            argv: list[str], *, command_timeout: float = 30.0
+        ) -> tuple[int, bytes, bytes]:
+            return await runner.run(argv, command_timeout=command_timeout)
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(sandbox, "_run_podman", fake)
+        try:
+            assert await sandbox._cleanup_resource_exists("container", "c1") is True
+            assert await sandbox._cleanup_resource_exists("container", "c1") is False
+        finally:
+            monkeypatch.undo()
+        assert runner.calls[0][0] == ["container", "exists", "c1"]
+        assert runner.calls[0][1] == 10.0
+
+    @pytest.mark.asyncio
+    async def test_u20f1_02_network_codes_and_unknown_presence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 1, 125, 2, 127]
+        sandbox = install_runner(monkeypatch, runner)
+        assert await sandbox._cleanup_resource_exists("network", "n1") is True
+        assert await sandbox._cleanup_resource_exists("network", "n1") is False
+        for _ in range(3):
+            with pytest.raises(SandboxInfrastructureError):
+                await sandbox._cleanup_resource_exists("network", "n1")
+        calls_before = len(runner.calls)
+        with pytest.raises(SandboxInfrastructureError):
+            await sandbox._cleanup_resource_exists("pod", "p1")
+        assert len(runner.calls) == calls_before
+        assert runner.calls[0][0] == ["network", "exists", "n1"]
+        assert runner.calls[0][1] == 10.0
+
+    @pytest.mark.asyncio
+    async def test_u20f1_03_presence_error_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+
+        async def failing(
+            argv: list[str], *, command_timeout: float = 30.0
+        ) -> tuple[int, bytes, bytes]:
+            raise _PodmanCliErrorStub("timeout")
+
+        monkeypatch.setattr(sandbox, "_run_podman", failing)
+        assert (
+            await asyncio.wait_for(sandbox._remove_owned_container("c1"), timeout=2.0)
+            is False
+        )
+        assert (
+            await asyncio.wait_for(sandbox._remove_owned_network("n1"), timeout=2.0)
+            is False
+        )
+
+
+class _PodmanCliErrorStub(SandboxInfrastructureError):
+    pass
+
+
+class TestF1ContainerRemoval:
+    @pytest.mark.asyncio
+    async def test_u20f1_04_absent_container_no_mutation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [1]
+        sandbox = install_runner(monkeypatch, runner)
+        assert await sandbox._remove_owned_container("c1") is True
+        assert runner.verbs("stop") == []
+        assert runner.verbs("rm") == []
+        assert runner.verbs("inspect") == []
+
+    @pytest.mark.asyncio
+    async def test_u20f1_05_absent_network_no_mutation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [1]
+        sandbox = install_runner(monkeypatch, runner)
+        assert await sandbox._remove_owned_network("n1") is True
+        assert runner.verbs("inspect") == []
+        assert runner.verbs("rm") == []
+
+    @pytest.mark.asyncio
+    async def test_u20f1_06_container_inspect_failure_no_mutation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for inspect_result in ((1, b""), (0, b"not json")):
+            runner = ScriptedPodman()
+            runner.exists = [0]
+            runner.inspect = [inspect_result]
+            sandbox = install_runner(monkeypatch, runner)
+            assert await sandbox._remove_owned_container("c1") is False
+            assert runner.verbs("stop") == []
+            assert runner.verbs("rm") == []
+            monkeypatch.undo()
+
+    @pytest.mark.asyncio
+    async def test_u20f1_07_network_inspect_failure_no_mutation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for inspect_result in ((1, b""), (0, b"not json")):
+            runner = ScriptedPodman()
+            runner.exists = [0]
+            runner.inspect = [inspect_result]
+            sandbox = install_runner(monkeypatch, runner)
+            assert await sandbox._remove_owned_network("n1") is False
+            assert runner.verbs("rm") == []
+            monkeypatch.undo()
+
+    @pytest.mark.asyncio
+    async def test_u20f1_08_container_unowned_or_bad_status_no_mutation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        documents = [
+            container_metadata(owned=False),
+            container_metadata(status=123),
+            container_metadata(status=""),
+            json.dumps([{"Config": {"Labels": {"darkula.owned": "true"}}}]).encode(),
+        ]
+        runner = ScriptedPodman()
+        runner.exists = [0, 0, 0, 0]
+        runner.inspect = [(0, document) for document in documents]
+        sandbox = install_runner(monkeypatch, runner)
+        for _ in documents:
+            assert await sandbox._remove_owned_container("c1") is False
+        assert runner.verbs("stop") == []
+        assert runner.verbs("rm") == []
+
+    @pytest.mark.asyncio
+    async def test_u20f1_09_network_unowned_or_bad_labels_no_mutation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 0]
+        runner.inspect = [
+            (0, network_metadata(owned=False)),
+            (0, json.dumps([{"labels": "bad"}]).encode()),
+        ]
+        sandbox = install_runner(monkeypatch, runner)
+        assert await sandbox._remove_owned_network("n1") is False
+        assert await sandbox._remove_owned_network("n1") is False
+        assert runner.verbs("rm") == []
+
+    @pytest.mark.asyncio
+    async def test_u20f1_10_running_container_removed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 0, 1]
+        runner.inspect = [(0, container_metadata()), (0, container_metadata())]
+        runner.stop = [0]
+        runner.rm = [0]
+        sandbox = install_runner(monkeypatch, runner)
+        assert await sandbox._remove_owned_container("c1") is True
+        assert [argv[0] for argv in runner.verbs("stop")] == ["stop"]
+        assert [argv[0] for argv in runner.verbs("rm")] == ["rm"]
+        assert all(timeout == 10.0 for _argv, timeout in runner.calls)
+
+    @pytest.mark.asyncio
+    async def test_u20f1_11_persistent_stop_failure_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 0, 0, 0]
+        runner.inspect = [(0, container_metadata()), (0, container_metadata())]
+        runner.stop = [1, 1]
+        sandbox = install_runner(monkeypatch, runner)
+        assert (
+            await asyncio.wait_for(sandbox._remove_owned_container("c1"), timeout=2.0)
+            is False
+        )
+        assert len(runner.verbs("stop")) == 2
+        assert runner.verbs("rm") == []
+
+    @pytest.mark.asyncio
+    async def test_u20f1_12_persistent_rm_failure_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 0, 0, 0, 0, 0]
+        runner.inspect = [(0, container_metadata()) for _ in range(4)]
+        runner.stop = [0, 0]
+        runner.rm = [1, 1]
+        sandbox = install_runner(monkeypatch, runner)
+        assert (
+            await asyncio.wait_for(sandbox._remove_owned_container("c1"), timeout=2.0)
+            is False
+        )
+        assert len(runner.verbs("rm")) == 2
+
+    @pytest.mark.asyncio
+    async def test_u20f1_13_rm_zero_but_still_present_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 0, 0, 0, 0, 0]
+        runner.inspect = [(0, container_metadata()) for _ in range(4)]
+        runner.stop = [0, 0]
+        runner.rm = [0, 0]
+        sandbox = install_runner(monkeypatch, runner)
+        assert (
+            await asyncio.wait_for(sandbox._remove_owned_container("c1"), timeout=2.0)
+            is False
+        )
+        assert len(runner.verbs("rm")) == 2
+
+    @pytest.mark.asyncio
+    async def test_u20f1_14_rm_nonzero_but_absent_is_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 0, 1]
+        runner.inspect = [(0, container_metadata()), (0, container_metadata())]
+        runner.stop = [0]
+        runner.rm = [1]
+        sandbox = install_runner(monkeypatch, runner)
+        assert await sandbox._remove_owned_container("c1") is True
+        assert len(runner.verbs("rm")) == 1
+
+    @pytest.mark.asyncio
+    async def test_u20f1_15_network_persistent_rm_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for rm_code in (1, 0):
+            runner = ScriptedPodman()
+            runner.exists = [0, 0, 0, 0]
+            runner.inspect = [(0, network_metadata()) for _ in range(2)]
+            runner.rm = [rm_code, rm_code]
+            sandbox = install_runner(monkeypatch, runner)
+            assert (
+                await asyncio.wait_for(sandbox._remove_owned_network("n1"), timeout=2.0)
+                is False
+            )
+            assert len(runner.verbs("rm")) == 2
+            monkeypatch.undo()
+
+    @pytest.mark.asyncio
+    async def test_u20f1_16_network_rm_nonzero_but_absent_is_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 1]
+        runner.inspect = [(0, network_metadata())]
+        runner.rm = [1]
+        sandbox = install_runner(monkeypatch, runner)
+        assert await sandbox._remove_owned_network("n1") is True
+        assert len(runner.verbs("rm")) == 1
+
+
+class TestF1ContainmentAndResults:
+    @pytest.mark.asyncio
+    async def test_u20f1_17_network_only_after_both_containers_removed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        resources = live_resources()
+        outcomes = {
+            (True, True): True,
+            (False, True): False,
+            (True, False): False,
+            (False, False): False,
+        }
+        for (crawler, gateway), expected_network_calls in outcomes.items():
+            attempted: list[str] = []
+
+            async def remove_container(
+                name: str, *, _c: bool = crawler, _g: bool = gateway
+            ) -> bool:
+                return _c if name == resources.crawler else _g
+
+            async def remove_network(
+                name: str, *, _attempted: list[str] = attempted
+            ) -> bool:
+                _attempted.append(name)
+                return False
+
+            monkeypatch.setattr(sandbox, "_remove_owned_container", remove_container)
+            monkeypatch.setattr(sandbox, "_remove_owned_network", remove_network)
+            result = await sandbox._cleanup_live(resources)
+            if expected_network_calls:
+                assert attempted == [resources.network]
+                assert result is False
+            else:
+                assert attempted == []
+                assert result is False
+
+    def test_u20f1_18_build_result_cleanup_failure_precedence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spy = install_metric_spy(monkeypatch)
+        sandbox = PodmanSandbox(CONFIG)
+        result = sandbox._build_result(
+            request(), 0.0, 0, b"output", False, False, removed=False
+        )
+        assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert result.output is None
+        assert result.metrics.cleanup_succeeded is False
+        assert "cleanup" in (result.reason or "")
+        timeout_result = sandbox._build_result(
+            request(), 0.0, 0, b"", False, True, removed=False
+        )
+        assert timeout_result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert len(execution_events(spy)) == 2
+
+    def test_u20f1_19_recorded_result_explicit_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spy = install_metric_spy(monkeypatch)
+        sandbox = PodmanSandbox(CONFIG)
+        sandbox._recorded_result(
+            request(),
+            SandboxExitReason.INFRASTRUCTURE_FAILURE,
+            0.0,
+            reason="x",
+        )
+        sandbox._recorded_result(
+            request(),
+            SandboxExitReason.INFRASTRUCTURE_FAILURE,
+            0.0,
+            reason="x",
+            cleanup_succeeded=False,
+        )
+        events = execution_events(spy)
+        assert len(events) == 2
+        assert events[0]["darkula.sandbox.cleanup"] == "ok"
+        assert events[1]["darkula.sandbox.cleanup"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_u20f1_20_live_success_records_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spy = install_metric_spy(monkeypatch)
+        sandbox = PodmanSandbox(CONFIG)
+
+        async def payload(
+            self: object, request: object, resources: object
+        ) -> tuple[int | None, bytes, bool, bool]:
+            return 0, b"{}", False, False
+
+        async def cleanup(self: object, resources: object) -> bool:
+            return True
+
+        monkeypatch.setattr(sandbox, "_run_public_https", payload.__get__(sandbox))
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", cleanup)
+        result = await sandbox.execute(live_request())
+        assert result.exit_reason is SandboxExitReason.COMPLETED
+        events = execution_events(spy)
+        assert len(events) == 1
+        assert events[0]["darkula.sandbox.exit_reason"] == "completed"
+        assert events[0]["darkula.sandbox.cleanup"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_u20f1_21_live_success_cleanup_failure_records_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spy = install_metric_spy(monkeypatch)
+        sandbox = PodmanSandbox(CONFIG)
+
+        async def payload(
+            self: object, request: object, resources: object
+        ) -> tuple[int | None, bytes, bool, bool]:
+            return 0, b"{}", False, False
+
+        async def cleanup(self: object, resources: object) -> bool:
+            return False
+
+        monkeypatch.setattr(sandbox, "_run_public_https", payload.__get__(sandbox))
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", cleanup)
+        result = await sandbox.execute(live_request())
+        assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert result.output is None
+        events = execution_events(spy)
+        assert len(events) == 1
+        assert events[0]["darkula.sandbox.exit_reason"] == "infrastructure_failure"
+        assert events[0]["darkula.sandbox.cleanup"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_u20f1_22_live_provisioning_error_metric(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for cleanup_result, expected_cleanup in ((True, "ok"), (False, "failed")):
+            spy = install_metric_spy(monkeypatch)
+            sandbox = PodmanSandbox(CONFIG)
+
+            async def payload(
+                self: object, request: object, resources: object
+            ) -> tuple[int | None, bytes, bool, bool]:
+                raise _PodmanCliErrorStub("provisioning")
+
+            async def cleanup(
+                self: object, resources: object, *, _result: bool = cleanup_result
+            ) -> bool:
+                return _result
+
+            monkeypatch.setattr(sandbox, "_run_public_https", payload.__get__(sandbox))
+            monkeypatch.setattr(PodmanSandbox, "_cleanup_live", cleanup)
+            result = await sandbox.execute(live_request())
+            assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+            events = execution_events(spy)
+            assert len(events) == 1
+            assert events[0]["darkula.sandbox.cleanup"] == expected_cleanup
+            monkeypatch.undo()
+
+    @pytest.mark.asyncio
+    async def test_u20f1_23_cancellation_during_run_records_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for cleanup_result, expected_cleanup in ((True, "ok"), (False, "failed")):
+            spy = install_metric_spy(monkeypatch)
+            sandbox = PodmanSandbox(CONFIG)
+
+            async def payload(
+                self: object, request: object, resources: object
+            ) -> tuple[int | None, bytes, bool, bool]:
+                await asyncio.Event().wait()  # pragma: no cover - cancelled
+                raise AssertionError("cancelled")
+
+            async def cleanup(
+                self: object, resources: object, *, _result: bool = cleanup_result
+            ) -> bool:
+                return _result
+
+            monkeypatch.setattr(sandbox, "_run_public_https", payload.__get__(sandbox))
+            monkeypatch.setattr(PodmanSandbox, "_cleanup_live", cleanup)
+            task = asyncio.create_task(sandbox.execute(live_request()))
+            await asyncio.sleep(0.01)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            events = execution_events(spy)
+            assert len(events) == 1
+            assert events[0]["darkula.sandbox.exit_reason"] == "cancelled"
+            assert events[0]["darkula.sandbox.cleanup"] == expected_cleanup
+            monkeypatch.undo()
+
+    @pytest.mark.asyncio
+    async def test_u20f1_24_cancellation_during_cleanup_records_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spy = install_metric_spy(monkeypatch)
+        sandbox = PodmanSandbox(CONFIG)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def payload(
+            self: object, request: object, resources: object
+        ) -> tuple[int | None, bytes, bool, bool]:
+            raise _PodmanCliErrorStub("provisioning")
+
+        async def cleanup(self: object, resources: object) -> bool:
+            started.set()
+            await release.wait()
+            return True
+
+        monkeypatch.setattr(sandbox, "_run_public_https", payload.__get__(sandbox))
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", cleanup)
+        task = asyncio.create_task(sandbox.execute(live_request()))
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        events = execution_events(spy)
+        assert len(events) == 1
+        assert events[0]["darkula.sandbox.exit_reason"] == "cancelled"
+        assert events[0]["darkula.sandbox.cleanup"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_u20f1_25_unexpected_live_error_reraised_after_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spy = install_metric_spy(monkeypatch)
+        sandbox = PodmanSandbox(CONFIG)
+
+        async def payload(
+            self: object, request: object, resources: object
+        ) -> tuple[int | None, bytes, bool, bool]:
+            raise ValueError("boom")
+
+        async def cleanup(self: object, resources: object) -> bool:
+            return True
+
+        monkeypatch.setattr(sandbox, "_run_public_https", payload.__get__(sandbox))
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", cleanup)
+        with pytest.raises(ValueError, match="boom"):
+            await sandbox.execute(live_request())
+        events = execution_events(spy)
+        assert len(events) == 1
+        assert events[0]["darkula.sandbox.exit_reason"] == "infrastructure_failure"
+        assert events[0]["darkula.sandbox.cleanup"] == "ok"
+
+    def test_u20f1_26_legacy_cleanup_failure_precedence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spy = install_metric_spy(monkeypatch)
+        sandbox = PodmanSandbox(CONFIG)
+        failed = sandbox._build_result(
+            request(), 0.0, 0, b"{}", False, False, removed=False
+        )
+        completed = sandbox._build_result(
+            request(), 0.0, 0, b"{}", False, False, removed=True
+        )
+        assert failed.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+        assert completed.exit_reason is SandboxExitReason.COMPLETED
+        assert len(execution_events(spy)) == 2
+
+    @pytest.mark.asyncio
+    async def test_u20f1_27_ownership_change_between_stop_and_rm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 0]
+        runner.inspect = [
+            (0, container_metadata()),
+            (0, container_metadata(owned=False)),
+        ]
+        runner.stop = [0]
+        sandbox = install_runner(monkeypatch, runner)
+        assert await sandbox._remove_owned_container("c1") is False
+        assert runner.verbs("rm") == []
+
+    @pytest.mark.asyncio
+    async def test_u20f1_28_unknown_presence_after_rm_is_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 0, 125]
+        runner.inspect = [(0, container_metadata()), (0, container_metadata())]
+        runner.stop = [0]
+        runner.rm = [0]
+        sandbox = install_runner(monkeypatch, runner)
+        assert (
+            await asyncio.wait_for(sandbox._remove_owned_container("c1"), timeout=2.0)
+            is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_u20f1_29_cancelled_cleanup_worker_is_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = PodmanSandbox(CONFIG)
+        resources = live_resources()
+
+        async def cancelled_cleanup(self: object, resources: object) -> bool:
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(PodmanSandbox, "_cleanup_live", cancelled_cleanup)
+        assert await asyncio.wait_for(
+            sandbox._cleanup_live_shielded(resources), timeout=2.0
+        ) == (False, True)
+
+    @pytest.mark.asyncio
+    async def test_u20f1_30_existing_owned_unowned_protections(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 0, 1]
+        runner.inspect = [(0, container_metadata()), (0, container_metadata())]
+        runner.stop = [0]
+        runner.rm = [0]
+        sandbox = install_runner(monkeypatch, runner)
+        assert await sandbox._remove_owned_container("c1") is True
+
+        unowned = ScriptedPodman()
+        unowned.exists = [0]
+        unowned.inspect = [(0, container_metadata(owned=False))]
+        sandbox = install_runner(monkeypatch, unowned)
+        assert await sandbox._remove_owned_container("c1") is False
+        assert unowned.verbs("rm") == []
+
+    @pytest.mark.asyncio
+    async def test_u20f1_31_legacy_exception_after_launch_cleanup_truth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for removal_result, expected_cleanup in ((False, "failed"), (True, "ok")):
+            spy = install_metric_spy(monkeypatch)
+            proc = FakeProc(0)
+            _patch_execute_harness(monkeypatch, proc=proc, collected=(b"{}", False))
+
+            async def failing_collect(
+                self: object, the_proc: object, max_output_bytes: int
+            ) -> tuple[bytes, bool]:
+                raise _PodmanCliErrorStub("collection failed")
+
+            async def remove(
+                self: object, name: str, *, _result: bool = removal_result
+            ) -> bool:
+                return _result
+
+            monkeypatch.setattr(PodmanSandbox, "_collect_outputs", failing_collect)
+            monkeypatch.setattr(PodmanSandbox, "_remove_owned_container", remove)
+            sandbox = PodmanSandbox(CONFIG)
+            result = await sandbox.execute(request())
+            assert result.exit_reason is SandboxExitReason.INFRASTRUCTURE_FAILURE
+            events = execution_events(spy)
+            assert len(events) == 1
+            assert events[0]["darkula.sandbox.cleanup"] == expected_cleanup
+            if expected_cleanup == "failed":
+                assert "cleanup unverified" in (result.reason or "")
+            monkeypatch.undo()
+
+    @pytest.mark.asyncio
+    async def test_u20f1_32_cleanup_inspect_timeouts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = ScriptedPodman()
+        runner.exists = [0, 0, 1]
+        runner.inspect = [(0, container_metadata()), (0, container_metadata())]
+        runner.stop = [0]
+        runner.rm = [0]
+        sandbox = install_runner(monkeypatch, runner)
+
+        await sandbox._container_inspect("c1")
+        await sandbox._container_inspect("c1", command_timeout=10.0)
+        await sandbox._network_inspect("n1")
+        await sandbox._network_inspect("n1", command_timeout=10.0)
+        timeouts = [timeout for _argv, timeout in runner.calls]
+        assert timeouts[0] == 30.0
+        assert timeouts[1] == 10.0
+        assert timeouts[2] == 30.0
+        assert timeouts[3] == 10.0
+
+        removal_runner = ScriptedPodman()
+        removal_runner.exists = [0, 0, 1]
+        removal_runner.inspect = [
+            (0, container_metadata()),
+            (0, container_metadata()),
+        ]
+        removal_runner.stop = [0]
+        removal_runner.rm = [0]
+        removal_sandbox = install_runner(monkeypatch, removal_runner)
+        assert await removal_sandbox._remove_owned_container("c1") is True
+        assert all(timeout == 10.0 for _argv, timeout in removal_runner.calls)

@@ -25,6 +25,8 @@ from crawler_runtime.engine import AuthDecision, NavigateResult
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
+    from crawler_runtime.live_policy import LiveRequestPolicy
+
 #: Bounded excerpt length taken from ``innerText`` before the engine bounds it.
 _MAX_ADAPTER_TEXT_CHARS = 20000
 
@@ -39,12 +41,34 @@ _DOWNLOAD_POLL_INTERVAL = 0.05
 class PlaywrightPageAdapter:
     """Playwright-backed :class:`PageAdapter` for one navigation context."""
 
-    def __init__(self, page: Page) -> None:
+    def __init__(
+        self, page: Page, *, live_policy: LiveRequestPolicy | None = None
+    ) -> None:
         self._page = page
+        self._live_policy = live_policy
         self._redirects: int = 0
         self._pending_download: Any = None
         page.on("response", self._on_response)
         page.on("download", self._on_download)
+
+    @property
+    def redirected(self) -> bool:
+        """Whether a live-only request policy is attached."""
+        return self._live_policy is not None
+
+    @property
+    def intercepted_requests(self) -> int:
+        """Total intercepted live browser requests (0 in the v1 path)."""
+        if self._live_policy is None:
+            return 0
+        return self._live_policy.request_count
+
+    @property
+    def live_violation(self) -> str | None:
+        """Sticky live-policy violation reason (``None`` in the v1 path)."""
+        if self._live_policy is None:
+            return None
+        return self._live_policy.violation
 
     @property
     def redirects_observed(self) -> int:
@@ -55,6 +79,8 @@ class PlaywrightPageAdapter:
         status = getattr(response, "status", None)
         if isinstance(status, int) and status in (301, 302, 303, 307, 308):
             self._redirects += 1
+            if self._live_policy is not None:
+                self._live_policy.record_redirect()
 
     def _on_download(self, download: Any) -> None:
         """Grab the latest Content-Disposition download for this execution."""
@@ -138,6 +164,10 @@ class PlaywrightPageAdapter:
                 if download is not None:
                     break
         if download is not None:
+            if self._live_policy is not None:
+                # Downloads are disabled in the live context; never sample one.
+                self._live_policy.flag("download_denied")
+                return None
             try:
                 failed = await download.failure()
             except Exception:
@@ -151,7 +181,8 @@ class PlaywrightPageAdapter:
                 url=url, http_status=None, title="", text="", links=()
             )
         try:
-            observation = await self._current_observation(url)
+            final_url = self._page.url if self._live_policy is not None else url
+            observation = await self._current_observation(final_url)
         except Exception:
             return None
         status: int | None = None
@@ -167,7 +198,7 @@ class PlaywrightPageAdapter:
                 if isinstance(raw_retry, str) and raw_retry.isdigit():
                     retry_after = float(raw_retry)
         return NavigateResult(
-            url=url,
+            url=self._page.url if self._live_policy is not None else url,
             http_status=status,
             title=observation.title,
             text=observation.text,
@@ -184,6 +215,8 @@ class PlaywrightPageAdapter:
         timeout_ms: int,
     ) -> AuthDecision:
         """Fill and submit the current page's login form (if present)."""
+        if self._live_policy is not None:
+            return AuthDecision(attempted=False)
         try:
             form = self._page.locator("form").filter(
                 has=self._page.locator("input[type=password]")

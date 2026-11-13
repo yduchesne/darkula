@@ -4,6 +4,9 @@
 .env.bak
 out/
 
+# Local benchmark artifacts (never committed)
+.benchmarks/
+
 # Local configuration override (PR 3) and local artifact root
 config/local.toml
 var/
