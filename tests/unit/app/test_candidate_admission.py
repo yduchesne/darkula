@@ -555,3 +555,115 @@ def _unused() -> None:
         EndpointType,
         MemAdmissionUnitOfWork,
     )
+
+
+# ---------------------------------------------------------------------------
+# PR 19-F1 — approved-ingestion marker semantics (U19F-07 .. U19F-11).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestVerifiedMarkerRepository:
+    async def test_u19f_07_marker_requires_existing_observation(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        from darkula.domain.identifiers import DiscoveryObservationId
+
+        with pytest.raises(NotFoundError):
+            async with spi.unit_of_work() as uow:
+                await uow.admission.record_verified_registry_observation(
+                    DiscoveryObservationId.generate(), verified_at=T0
+                )
+
+    async def test_u19f_08_marker_rejects_wrong_provider_or_class(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        observation = build_observation(
+            provider_id="internal",
+            record_id="manual:1",
+            detection_method=DiscoveryDetectionMethod.MANUAL,
+        )
+        await seed_observation(spi, observation)
+        with pytest.raises(AdmissionInvariantError):
+            async with spi.unit_of_work() as uow:
+                await uow.admission.record_verified_registry_observation(
+                    observation.observation_id, verified_at=T0
+                )
+        assert spi.admission.verified == {}
+
+    async def test_u19f_09_marker_replay_retains_first_timestamp(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        observation = build_observation()
+        await seed_observation(spi, observation)
+        async with spi.unit_of_work() as uow:
+            await uow.admission.record_verified_registry_observation(
+                observation.observation_id, verified_at=T0
+            )
+            await uow.commit()
+        later = T0 + timedelta(hours=1)
+        async with spi.unit_of_work() as uow:
+            await uow.admission.record_verified_registry_observation(
+                observation.observation_id, verified_at=later
+            )
+            await uow.commit()
+        assert spi.admission.verified == {observation.observation_id: T0}
+        assert len(spi.discovery.observations_by_id) == 1
+
+    async def test_u19f_10_marker_failure_leaves_no_observation(
+        self, spi: MemAdmissionSpi, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from darkula.app.source_discovery import SourceDiscoveryService
+        from darkula.domain.discovery import DiscoveryInput
+
+        async def _fail(*args: Any, **kwargs: Any) -> None:
+            raise AdmissionInvariantError("injected marker failure")
+
+        monkeypatch.setattr(
+            MemAdmissionRepository,
+            "record_verified_registry_observation",
+            _fail,
+        )
+        service = SourceDiscoveryService(persistence=spi, clock=lambda: T0)
+        claim = DiscoveryInput(
+            provider_id="ransomlook",
+            provider_record_id="location:" + "a" * 64,
+            provider_record_version="v1",
+            detection_method=DiscoveryDetectionMethod.REGISTRY,
+            reference_kind=DiscoveryReferenceKind.LOCATOR,
+            asserted_reference="http://atomic.onion/",
+            observed_at=T0,
+            evidence_reference="registry://ransomlook/location/a",
+            origin_reference="https://www.ransomlook.io/api/group/x",
+        )
+        with pytest.raises(AdmissionInvariantError):
+            await service._ingest_verified_registry_claim(claim)
+        assert spi.discovery.observations_by_id == {}
+        assert spi.admission.verified == {}
+
+    async def test_u19f_11_cancellation_commits_nothing(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        from darkula.app.source_discovery import SourceDiscoveryService
+        from darkula.domain.discovery import DiscoveryInput
+
+        cancelling = _CancellingSpi()
+        cancelling.discovery = spi.discovery
+        cancelling.candidates = spi.candidates
+        cancelling.admission = spi.admission
+        service = SourceDiscoveryService(persistence=cancelling, clock=lambda: T0)
+        claim = DiscoveryInput(
+            provider_id="ransomlook",
+            provider_record_id="location:" + "a" * 64,
+            provider_record_version="v1",
+            detection_method=DiscoveryDetectionMethod.REGISTRY,
+            reference_kind=DiscoveryReferenceKind.LOCATOR,
+            asserted_reference="http://cancelled.onion/",
+            observed_at=T0,
+            evidence_reference="registry://ransomlook/location/a",
+            origin_reference="https://www.ransomlook.io/api/group/x",
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await service._ingest_verified_registry_claim(claim)
+        assert spi.discovery.observations_by_id == {}
+        assert spi.admission.verified == {}

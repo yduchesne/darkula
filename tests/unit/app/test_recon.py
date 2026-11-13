@@ -1588,3 +1588,98 @@ class TestPr19ProvenanceAwareRecon:
             CandidateEventType.RECONNAISSANCE_STARTED,
             CandidateEventType.QUALIFIED,
         ]
+
+
+@pytest.mark.asyncio
+class TestPr19FixupRecon:
+    """U19F-31/U19F-32: bounded access probe and legacy compatibility."""
+
+    async def test_u19f_31_context_check_uses_bounded_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.support.admission_fakes import (
+            MemAdmissionSpi,
+            build_observation,
+            seed_observation,
+        )
+        from tests.support.discovery_fakes import MemAccessRepository
+
+        from darkula.app.candidate_admission import CandidateAdmissionService
+        from darkula.app.recon import (
+            ReconCandidateNotEligibleError,
+            ReconQualificationContext,
+        )
+
+        async def _forbidden(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("list_for_candidate must not be used")
+
+        monkeypatch.setattr(MemAccessRepository, "list_for_candidate", _forbidden)
+        spi = MemAdmissionSpi()
+        observation = build_observation(url=_ENTRYPOINT)
+        await seed_observation(spi, observation)
+        admitted = await CandidateAdmissionService(
+            persistence=spi, clock=lambda: _T0
+        ).admit_observation(observation.observation_id)
+        assert admitted.candidate_id is not None
+        context = ReconQualificationContext(
+            candidate_id=admitted.candidate_id,
+            policy_id="candidate-qualification",
+            policy_version="v1",
+            evidence_observation_ids=(observation.observation_id,),
+        )
+        coordinator = ReconCoordinator(
+            spi=spi,
+            agent=_agent(FakeLlmClient(), _settings()),
+            crawler=FakeCrawler(),
+            settings=_settings(),
+            clock=lambda: _T0,
+            execution_id_factory=lambda: _EXECUTION_ID,
+        )
+        async with spi.unit_of_work() as uow:
+            await coordinator._assert_qualification_context(
+                uow, admitted.candidate_id, context
+            )
+
+        # A credential-pending observation blocks before any agent work.
+        pending_observation = build_observation(
+            url="http://auth-pending.example.test/",
+            record_id="location:" + "b" * 64,
+            requires_auth_claim=True,
+        )
+        await seed_observation(spi, pending_observation)
+        pending = await CandidateAdmissionService(
+            persistence=spi, clock=lambda: _T0
+        ).admit_observation(pending_observation.observation_id)
+        assert pending.candidate_id is not None
+        pending_context = ReconQualificationContext(
+            candidate_id=pending.candidate_id,
+            policy_id="candidate-qualification",
+            policy_version="v1",
+            evidence_observation_ids=(pending_observation.observation_id,),
+        )
+        with pytest.raises(ReconCandidateNotEligibleError):
+            async with spi.unit_of_work() as uow:
+                await coordinator._assert_qualification_context(
+                    uow, pending.candidate_id, pending_context
+                )
+
+    async def test_u19f_32_legacy_recon_uses_no_access_reads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.support.discovery_fakes import MemAccessRepository
+
+        async def _forbidden(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("legacy recon must not read access evidence")
+
+        monkeypatch.setattr(
+            MemAccessRepository,
+            "has_credentials_pending_for_candidate",
+            _forbidden,
+        )
+        spi = MemCandidateSpi()
+        candidate = await _seed(spi)
+        llm = FakeLlmClient(expected_response_model=ReconAgentDecision)
+        llm.enqueue(_complete(disposition=ReconDisposition.QUALIFY))
+        coordinator = _coordinator(spi, llm=llm)
+        result = await coordinator.reconnoiter(candidate.candidate_id)
+        assert result.final_status is CandidateStatus.QUALIFIED

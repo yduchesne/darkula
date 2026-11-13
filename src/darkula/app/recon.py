@@ -84,7 +84,6 @@ from darkula.crawler.contracts import (
 )
 from darkula.domain.discovery import (
     MAX_EVIDENCE_OBSERVATIONS,
-    AccessStatus,
     QualificationDecision,
     QualificationMethod,
     QualificationOutcome,
@@ -1005,10 +1004,10 @@ class ReconCoordinator:
                 "an evidence observation is not linked to the candidate "
                 "through the admission ledger"
             )
-        access = await uow.access.list_for_candidate(candidate_id)
-        if any(
-            evidence.status is AccessStatus.CREDENTIALS_PENDING for evidence in access
-        ):
+        has_pending = await uow.access.has_credentials_pending_for_candidate(
+            candidate_id
+        )
+        if has_pending:
             raise ReconCandidateNotEligibleError(
                 "the candidate has credential-pending access evidence; "
                 "unauthenticated reconnaissance is not started"

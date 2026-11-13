@@ -944,6 +944,43 @@ class AdmissionRepository(ABC):
         candidate as another, or imply trust.
         """
 
+    @abstractmethod
+    async def record_verified_registry_observation(
+        self, observation_id: DiscoveryObservationId, *, verified_at: datetime
+    ) -> None:
+        """Write or replay the immutable approved-pipeline marker.
+
+        Only trusted application code that observed the claim through the
+        concrete fixed-origin RansomLook poller/transport may invoke this.
+        The marker records *which application ingestion path was used*; it is
+        never a cryptographic attestation from the remote registry.
+
+        :raises NotFoundError: if the observation does not exist.
+        :raises AdmissionInvariantError: if the stored observation is not a
+            RansomLook ``REGISTRY`` claim.
+        """
+
+    @abstractmethod
+    async def verified_registry_observation_ids_for_candidate(
+        self, candidate_id: SourceCandidateId, *, limit: int = 65
+    ) -> tuple[DiscoveryObservationId, ...]:
+        """Return at most 65 admitted observation IDs with approved markers.
+
+        Deterministic ``(ingested_at, observation_id)`` order; ``limit`` is
+        bounded to ``1..65`` so callers detect an over-64 evidence set.
+        """
+
+    @abstractmethod
+    async def current_endpoint_match(
+        self, candidate_id: SourceCandidateId
+    ) -> tuple[bool, bool]:
+        """Return ``(locator_slot_present, any_exact_managed_endpoint)``.
+
+        A missing locator slot is an unsafe state, never "zero endpoints".
+        The exact-match check concerns existing managed ownership only; it
+        never mutates or infers Source identity.
+        """
+
 
 class AccessRepository(ABC):
     """Immutable access-evidence persistence contract (PR 17).
@@ -992,6 +1029,17 @@ class AccessRepository(ABC):
         self, endpoint_id: SourceEndpointId
     ) -> AccessEvidence | None:
         """Return the deterministic latest endpoint evidence or ``None``."""
+
+    @abstractmethod
+    async def has_credentials_pending_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> bool:
+        """Bounded existence check; do not materialize access-evidence history.
+
+        Any historical ``CREDENTIALS_PENDING`` row for the candidate returns
+        ``True`` in PR 19. This is not an assertion that access is ``READY``
+        or that credentials were provisioned.
+        """
 
 
 class QualificationRepository(ABC):

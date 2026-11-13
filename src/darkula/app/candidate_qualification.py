@@ -33,6 +33,7 @@ from enum import StrEnum
 from urllib.parse import urlsplit
 
 from darkula.app.persistence import (
+    AdmissionInvariantError,
     ConflictError,
     DarkulaSpi,
     NotFoundError,
@@ -50,8 +51,6 @@ from darkula.domain.candidate_admission import (
 )
 from darkula.domain.discovery import (
     MAX_EVIDENCE_OBSERVATIONS,
-    AccessEvidence,
-    AccessStatus,
     DiscoveryDetectionMethod,
     DiscoveryObservation,
     DiscoveryReferenceKind,
@@ -138,6 +137,9 @@ class QualificationRuleCode(StrEnum):
     INVALID_ORIGIN_REFERENCE = "INVALID_ORIGIN_REFERENCE"
     KNOWN_ENDPOINT_CONFLICT = "KNOWN_ENDPOINT_CONFLICT"
     PRIOR_REVIEW_REQUIRED = "PRIOR_REVIEW_REQUIRED"
+    UNVERIFIED_REGISTRY_INGESTION = "UNVERIFIED_REGISTRY_INGESTION"
+    CURRENT_MANAGED_ENDPOINT_CONFLICT = "CURRENT_MANAGED_ENDPOINT_CONFLICT"
+    MISSING_LOCATOR_SLOT = "MISSING_LOCATOR_SLOT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,9 +230,22 @@ class CandidateQualificationPolicy:
         operator_settings: QualificationSettings,
         *,
         admission_results: Sequence[AdmissionResult] = (),
-        access_evidence: Sequence[AccessEvidence] = (),
+        verified_observation_ids: frozenset[DiscoveryObservationId] = frozenset(),
+        current_endpoint_match: tuple[bool, bool] = (False, False),
+        has_credentials_pending: bool = False,
     ) -> QualificationEvaluation:
-        """Return the deterministic v1 evaluation for one candidate."""
+        """Return the deterministic v1 evaluation for one candidate.
+
+        Inputs describing trusted persisted evidence are validated before
+        evaluation; malformed values raise a bounded ``ValueError`` rather
+        than being coerced into a permissive state.
+        """
+        _validate_policy_inputs(
+            admitted_claims=admitted_claims,
+            verified_observation_ids=verified_observation_ids,
+            current_endpoint_match=current_endpoint_match,
+            has_credentials_pending=has_credentials_pending,
+        )
         if candidate.status in _TERMINAL_OR_BUSY:
             return _blocked(
                 QualificationRoute.ALREADY_TERMINAL_OR_BUSY,
@@ -246,10 +261,7 @@ class CandidateQualificationPolicy:
                 QualificationRoute.PENDING_RECON_POLICY_NOT_ELIGIBLE,
                 QualificationRuleCode.TRUST_DISABLED,
             )
-        if any(
-            evidence.status is AccessStatus.CREDENTIALS_PENDING
-            for evidence in access_evidence
-        ):
+        if has_credentials_pending:
             return _blocked(
                 QualificationRoute.PENDING_RECON_AUTH_REQUIRED,
                 QualificationRuleCode.AUTH_CLAIM_PRESENT,
@@ -280,6 +292,29 @@ class CandidateQualificationPolicy:
             return _blocked(
                 QualificationRoute.PENDING_RECON_AMBIGUOUS,
                 QualificationRuleCode.CLAIM_COUNT_OUT_OF_BOUNDS,
+            )
+        slot_found, endpoint_present = current_endpoint_match
+        if slot_found is False:
+            return _blocked(
+                QualificationRoute.PENDING_RECON_AMBIGUOUS,
+                QualificationRuleCode.MISSING_LOCATOR_SLOT,
+            )
+        if endpoint_present is True:
+            return _blocked(
+                QualificationRoute.PENDING_RECON_AMBIGUOUS,
+                QualificationRuleCode.CURRENT_MANAGED_ENDPOINT_CONFLICT,
+            )
+        claim_ids = {claim.observation_id for claim in claims}
+        if not all(
+            claim.observation_id in verified_observation_ids for claim in claims
+        ):
+            return _blocked(
+                QualificationRoute.PENDING_RECON_POLICY_NOT_ELIGIBLE,
+                QualificationRuleCode.UNVERIFIED_REGISTRY_INGESTION,
+            )
+        if not verified_observation_ids.issubset(claim_ids):
+            raise ValueError(
+                "verified_observation_ids must belong to the admitted claims"
             )
 
         reference = claims[0]
@@ -366,6 +401,83 @@ class CandidateQualificationPolicy:
         )
 
 
+def _pending_reason_code(route: QualificationRoute) -> str:
+    """Return one bounded, content-free pending-event reason code.
+
+    Rule codes are intentionally not persisted verbatim: some contain
+    credential-like substrings that the shared event-context validator
+    rejects (and that must never enter durable metadata). The route is the
+    nonpersistent, precise diagnostic.
+    """
+    if route is QualificationRoute.PENDING_RECON_AMBIGUOUS:
+        return "PROVENANCE_AMBIGUOUS"
+    if route is QualificationRoute.PENDING_RECON_AUTH_REQUIRED:
+        return "ACCESS_PENDING"
+    return "POLICY_NOT_ELIGIBLE"
+
+
+def _registry_decision_replay_result(
+    candidate: SourceCandidate,
+    decision: QualificationDecision,
+) -> QualificationResult:
+    """Return an accurate replay result for one historical decision.
+
+    Historical decision identity/metadata is preserved; the reported
+    ``status`` is the candidate's *current* persisted status. Impossible
+    combinations raise a typed invariant error instead of a false success,
+    and never write a new decision or event.
+    """
+    if decision.candidate_id != candidate.candidate_id:
+        raise AdmissionInvariantError("registry decision belongs to another candidate")
+    if (
+        decision.method is not QualificationMethod.REGISTRY_POLICY
+        or decision.outcome is not QualificationOutcome.QUALIFIED
+    ):
+        raise AdmissionInvariantError(
+            "stored registry decision has invalid method/outcome"
+        )
+    if candidate.status not in (CandidateStatus.QUALIFIED, CandidateStatus.PROMOTED):
+        raise AdmissionInvariantError(
+            "stored registry qualification conflicts with current candidate state"
+        )
+    return QualificationResult(
+        candidate_id=candidate.candidate_id,
+        route=QualificationRoute.REGISTRY_QUALIFIED,
+        rule_code=QualificationRuleCode.RANSOMLOOK_LOCATION_V1,
+        status=candidate.status,
+        decision_id=decision.decision_id,
+        replayed=True,
+    )
+
+
+def _validate_policy_inputs(
+    *,
+    admitted_claims: Sequence[DiscoveryObservation],
+    verified_observation_ids: frozenset[DiscoveryObservationId],
+    current_endpoint_match: tuple[bool, bool],
+    has_credentials_pending: bool,
+) -> None:
+    """Reject malformed trusted-evidence inputs before evaluation."""
+    if not isinstance(verified_observation_ids, frozenset):
+        raise ValueError("verified_observation_ids must be a frozenset")
+    for item in verified_observation_ids:
+        if not isinstance(item, DiscoveryObservationId):
+            raise ValueError(
+                "verified_observation_ids must contain DiscoveryObservationId values"
+            )
+    if not isinstance(has_credentials_pending, bool):
+        raise ValueError("has_credentials_pending must be a bool")
+    if (
+        not isinstance(current_endpoint_match, tuple)
+        or len(current_endpoint_match) != 2
+        or not all(isinstance(value, bool) for value in current_endpoint_match)
+    ):
+        raise ValueError("current_endpoint_match must be two booleans")
+    for claim in admitted_claims:
+        if not isinstance(claim, DiscoveryObservation):
+            raise ValueError("admitted_claims must contain DiscoveryObservation values")
+
+
 def _blocked(
     route: QualificationRoute, rule_code: QualificationRuleCode
 ) -> QualificationEvaluation:
@@ -444,13 +556,23 @@ class CandidateQualificationService:
             stored = await uow.admission.get(claim.observation_id)
             if stored is not None:
                 results.append(stored)
-        access = await uow.access.list_for_candidate(candidate_id)
+        verified_ids = (
+            await uow.admission.verified_registry_observation_ids_for_candidate(
+                candidate_id, limit=65
+            )
+        )
+        current_endpoint = await uow.admission.current_endpoint_match(candidate_id)
+        has_pending = await uow.access.has_credentials_pending_for_candidate(
+            candidate_id
+        )
         evaluation = CandidateQualificationPolicy.evaluate(
             candidate,
             claims,
             self._settings,
             admission_results=tuple(results),
-            access_evidence=access,
+            verified_observation_ids=frozenset(verified_ids),
+            current_endpoint_match=current_endpoint,
+            has_credentials_pending=has_pending,
         )
         return candidate, claims, evaluation
 
@@ -544,28 +666,14 @@ class CandidateQualificationService:
             )
             if replay is not None:
                 await uow.commit()
-                return QualificationResult(
-                    candidate_id=candidate_id,
-                    route=QualificationRoute.REGISTRY_QUALIFIED,
-                    rule_code=QualificationRuleCode.RANSOMLOOK_LOCATION_V1,
-                    status=CandidateStatus.QUALIFIED,
-                    decision_id=replay.decision_id,
-                    replayed=True,
-                )
+                return _registry_decision_replay_result(stored_candidate, replay)
             candidate, _claims, evaluation = await self._load(uow, candidate_id)
             if evaluation.eligible:
                 decision, event = self._build_decision(candidate, evaluation)
                 existing = await uow.qualification.get_by_key(decision.decision_key)
                 if existing is not None:
                     await uow.commit()
-                    return QualificationResult(
-                        candidate_id=candidate_id,
-                        route=QualificationRoute.REGISTRY_QUALIFIED,
-                        rule_code=evaluation.rule_code,
-                        status=CandidateStatus.QUALIFIED,
-                        decision_id=existing.decision_id,
-                        replayed=True,
-                    )
+                    return _registry_decision_replay_result(candidate, existing)
                 stored = await uow.qualification.decide_and_transition(decision, event)
                 await uow.commit()
                 return QualificationResult(
@@ -585,7 +693,7 @@ class CandidateQualificationService:
                         "policy_id": QUALIFICATION_POLICY_ID,
                         "policy_version": QUALIFICATION_POLICY_VERSION,
                         "rule_id": QUALIFICATION_RULE_ID,
-                        "reason_code": evaluation.rule_code.value,
+                        "reason_code": _pending_reason_code(evaluation.route),
                     },
                     reason="POLICY_NOT_ELIGIBLE",
                 )
@@ -626,28 +734,14 @@ class CandidateQualificationService:
             )
             if replay is not None:
                 await uow.commit()
-                return QualificationResult(
-                    candidate_id=candidate_id,
-                    route=QualificationRoute.REGISTRY_QUALIFIED,
-                    rule_code=QualificationRuleCode.RANSOMLOOK_LOCATION_V1,
-                    status=CandidateStatus.QUALIFIED,
-                    decision_id=replay.decision_id,
-                    replayed=True,
-                )
+                return _registry_decision_replay_result(stored_candidate, replay)
             candidate, _claims, evaluation = await self._load(uow, candidate_id)
             if evaluation.eligible:
                 decision, _event = self._build_decision(candidate, evaluation)
                 existing = await uow.qualification.get_by_key(decision.decision_key)
                 if existing is not None:
                     await uow.commit()
-                    return QualificationResult(
-                        candidate_id=candidate_id,
-                        route=QualificationRoute.REGISTRY_QUALIFIED,
-                        rule_code=evaluation.rule_code,
-                        status=CandidateStatus.QUALIFIED,
-                        decision_id=existing.decision_id,
-                        replayed=True,
-                    )
+                    return _registry_decision_replay_result(candidate, existing)
             await uow.commit()
             return QualificationResult(
                 candidate_id=candidate_id,
@@ -677,7 +771,9 @@ class CandidateQualificationService:
             if candidate is None:
                 raise NotFoundError("the candidate does not exist")
             claims = await uow.admission.claims_for_candidate(candidate_id, limit=65)
-            access = await uow.access.list_for_candidate(candidate_id)
+            has_pending = await uow.access.has_credentials_pending_for_candidate(
+                candidate_id
+            )
             await uow.commit()
         if candidate.status not in _ELIGIBLE_STATUSES:
             return ReconDispatchResult(
@@ -689,9 +785,7 @@ class CandidateQualificationService:
                 dispatched=False,
                 blocked_route=QualificationRoute.CHECKPOINT_OR_STATE_RACE,
             )
-        if any(
-            evidence.status is AccessStatus.CREDENTIALS_PENDING for evidence in access
-        ):
+        if has_pending:
             return ReconDispatchResult(
                 dispatched=False,
                 blocked_route=QualificationRoute.PENDING_RECON_AUTH_REQUIRED,

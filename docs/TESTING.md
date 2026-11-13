@@ -1348,3 +1348,78 @@ appended to `tests/unit/app/test_recon.py`.
 Real-PostgreSQL tests run under `./build.sh --intg` and reset only Darkula
 tables. Multi-connection race proofs use two independent
 `PostgresDarkulaSpi` instances, not a fake `ConflictError`.
+
+## PR 19-F1 testing status — trusted provenance, endpoint guard, replay, bounded access
+
+This narrow fixup keeps every trust boundary fake and the production logic
+real. No test contacts RansomLook, Tor, or the Internet. The positive
+approved-pipeline test instantiates the **actual**
+`RansomLookDiscoveryAdapter` + actual `StdlibRegistryHttpTransport` + actual
+`RegistryPoller`, and replaces only the private
+`darkula.infrastructure.discovery.http._async_get_url` execution seam with a
+deterministic synthetic-JSON function that asserts the pinned
+`https://www.ransomlook.io:443/` origin. This preserves exact production class
+identity while eliminating network I/O.
+
+### Unit matrix (U19F-01 .. U19F-36)
+
+| ID | File | Assertion |
+| --- | --- | --- |
+| U19F-01 | `tests/unit/app/test_registry_polling.py` | generic ingest stores the observation and writes **no** marker |
+| U19F-02 | same | duck-typed adapter advertising `ransomlook` cannot mark |
+| U19F-03 | same | `RansomLookDiscoveryAdapter(FakeSourceRegistry)` is unverified |
+| U19F-04 | same | exact adapter + fixed-origin transport marks and qualifies with no live request |
+| U19F-05/U19F-06 | same | adapter subclass / transport subclass cannot mark |
+| U19F-07..11 | `tests/unit/app/test_candidate_admission.py` | marker unknown-observation, invalid-provenance, replay timestamp, atomic rollback, cancellation |
+| U19F-12..27 | `tests/unit/app/test_candidate_qualification.py` | unverified/mixed provenance, trust-off, post-admission endpoint, missing slot, near-match, pending auth, malformed inputs, over-64 claims, replay/current status, impossible-state invariant, race replay |
+| U19F-28..30, U19F-33..36 | same | bounded access probe (0/1/64/512), `_load`/dispatch never call the history list, disabled-after-history, one endpoint probe, limit validation, boolean return |
+| U19F-31/U19F-32 | `tests/unit/app/test_recon.py` | context check uses the boolean probe; legacy no-context recon reads no access evidence |
+
+### Real-PostgreSQL vertical slices (I19F-01 .. I19F-16)
+
+`tests/integration/persistence/test_candidate_admission.py` adds:
+migration/schema contract; forged generic provenance; fake-adapter
+non-attestation; full approved-transport slice (patched HTTPX execution ->
+real adapter/poller/service/marker function -> admission -> PR 17 atomic
+decision); retroactive verification on exact replay; marker rollback;
+post-admission exact endpoint guard; endpoint exactness; missing-slot
+invariant; bounded access probe with 0/1/64/512 synthetic rows; legacy recon
+preserved; qualified replay after `PROMOTED`; concurrent marked qualification
+(two independent SPIs); credential-pending dispatch guard; restart
+durability; cancellation/marker immutability. Existing I19-08/I19-10 now seed
+the marker precondition while keeping their qualification/concurrency
+assertions.
+
+### Local performance benchmark
+
+`tests/performance/bench_pr19_fixup.py` is a standalone program (never
+pytest-collected). It seeds synthetic candidates with 0/1/64/512
+`CREDENTIALS_PENDING` rows, 0/1/33 exact endpoints, and 1/65 verified IDs
+inside one transaction, compares
+`access_evidence_list_for_candidate_v1` with
+`access_evidence_has_pending_v1` (40 warmup + 200 samples, P50/P95),
+measures `candidate_current_endpoint_match_v1` and
+`trusted_registry_candidate_ids_v1`, records `EXPLAIN (ANALYZE, BUFFERS,
+TIMING OFF, SUMMARY ON)` plans (including the inner `EXISTS` plan proving the
+partial index is used), rolls the transaction back, verifies the tables are
+empty from a fresh connection, and writes `.benchmarks/pr19f1-local.json`
+(untracked). There is no fixed absolute latency target; the only fixed stop is
+a P50 regression above 2x the old full-history read at N=512, which is
+repeated once before any stop decision.
+
+```bash
+./build.sh --qa
+./build.sh --sec
+./build.sh --intg
+./scripts/darkula_postgres.sh start
+./scripts/darkula_postgres.sh migrate --apply
+mkdir -p .benchmarks
+uv run python tests/performance/bench_pr19_fixup.py \
+  --warmup 40 --samples 200 --output .benchmarks/pr19f1-local.json
+./scripts/darkula_postgres.sh clean
+```
+
+Known limits: the marker is application-attested (no cryptographic upstream
+signature); the current endpoint guard is a committed-state read and does not
+serialize a concurrently committing `SourceEndpoint` insert; the live
+RansomLook response contract is not validated in CI.

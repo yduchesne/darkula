@@ -395,6 +395,24 @@ class MemAccessRepository(AccessRepository):
             )
         )
 
+    async def has_credentials_pending_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> bool:
+        """Constant-shape probe; never materializes the evidence list API."""
+        for evidence in self._state.access.values():
+            if (
+                evidence.candidate_id == candidate_id
+                and evidence.status is AccessStatus.CREDENTIALS_PENDING
+            ):
+                return True
+        for evidence in self._pending.access:
+            if (
+                evidence.candidate_id == candidate_id
+                and evidence.status is AccessStatus.CREDENTIALS_PENDING
+            ):
+                return True
+        return False
+
     async def latest_for_candidate(
         self, candidate_id: SourceCandidateId
     ) -> AccessEvidence | None:

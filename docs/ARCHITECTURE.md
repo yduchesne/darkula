@@ -45,6 +45,28 @@ Delivered by PR 17: `SourceDiscoveryService.ingest` validates and persists one o
 
 **Delivered by PR 19:** `CandidateAdmissionService` is the explicit, bounded post-ingest batch/one-shot step (`DiscoveryObservation -> bounded reconciliation -> admission ledger outcome`). It is transactional: the durable admission-ledger row, the candidate + single `DISCOVERED` event (when required), the normalized-locator slot, exact endpoint-match evidence, and optional `CREDENTIALS_PENDING` evidence commit or roll back together. Matching is exact-string only (`source_endpoint.uri`, `source_candidate.entrypoint` against the persisted normalized locator); no case folding, slash guessing, DNS, fuzzy matching, ILIKE, or shortener expansion. More than 32 exact endpoint matches or more than one exact legacy candidate stay `REVIEW_REQUIRED` rather than choosing an apparently definitive winner. A locator slot is a **lookup key only**: `sha256(normalized_locator)` suppresses duplicate candidates for the same exact locator and never establishes logical Source equivalence; a digest/locator mismatch is a fatal `HASH_COLLISION` (rolled back), never aliasing. Possible mirrors/aliases are returned as bounded read-only claims (`SHARED_PROVIDER_ORIGIN`) and never merge Sources. No admission path performs HTTP, DNS, Tor, browser, crawler, LLM, or sandbox work, and none creates a `Source`, `SourceEndpoint`, `CollectionPolicy`, run, outbox record, promotion, or credential.
 
+**Delivered by PR 19-F1 (trust-boundary hardening):** generic
+`SourceDiscoveryService.ingest` is **unverified** and never records trusted
+adapter provenance, regardless of provider fields. Only the *concrete*
+fixed-origin RansomLook poller path (exact `RansomLookDiscoveryAdapter` type
+plus exact `StdlibRegistryHttpTransport`, each checked with `type(...) is`,
+never `isinstance`) may write the separate immutable
+`trusted_registry_observation` marker in the **same unit of work** as the
+observation. The marker records which application ingestion path was used; it
+is not a cryptographic upstream attestation and grants no candidate,
+Source, access, or collection authorization. Automatic `REGISTRY_POLICY`
+qualification now additionally requires: operator trust ON, **every**
+admission-linked claim to carry a marker (mixed verified/unverified evidence
+fails closed), an existing normalized-locator slot, and **no** currently
+committed exact managed `SourceEndpoint` for that slot. The endpoint guard is
+a committed-state check: it does not serialize against a concurrently
+committing `SourceEndpoint` insert. Historical registry-decision replay
+preserves the original immutable decision identity while reporting the
+candidate's *current* status (`QUALIFIED` or `PROMOTED`); an incompatible
+status is a typed invariant error. `CREDENTIALS_PENDING` readiness and recon
+dispatch use an indexed, constant-shape SQL `EXISTS` probe instead of
+retrieving access-evidence history.
+
 The existing `SourceCandidate` identity and lifecycle remain authoritative. **v0.2 adds policy-routed qualification:** a trusted, versioned `CandidateQualificationPolicy` can qualify a complete, non-conflicting record from an explicitly approved registry adapter *without* ReconAgent or an LLM; incomplete/ambiguous records go through the existing `ReconCoordinator` (when authorized) or remain pending. The `ReconAgent` does not gain network tooling or persistence access. `QUALIFIED` remains distinct from `PROMOTED`. Discovery cannot silently promote Sources or manufacture CollectionPolicies.
 
 Do not equate URI equality with logical Source identity. Repeated observations of one locator can converge while preserving every provider/evidence record. A claimed alias or mirror is only a proposed relationship pending verification/approval; source merging cannot be inferred solely from text, redirects, or provider claims. A `WebSearchProvider` may later contribute observations, but the initial v0.2 adapter is structured registry ingestion, not unrestricted agent search.

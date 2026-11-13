@@ -53,6 +53,9 @@ _ENDPOINTS_FN = "SELECT * FROM discovery_admission_endpoints_v1(%s)"
 _CLAIMS_FN = "SELECT * FROM discovery_admission_claims_for_candidate_v1(%s, %s)"
 _ALIASES_FN = "SELECT * FROM discovery_possible_aliases_v1(%s, %s)"
 _ADMIT_FN = "SELECT * FROM discovery_admit_observation_v1(%s, %s, %s, %s)"
+_VERIFY_FN = "SELECT * FROM trusted_registry_observation_record_v1(%s, %s)"
+_VERIFIED_IDS_FN = "SELECT * FROM trusted_registry_candidate_ids_v1(%s, %s)"
+_CURRENT_ENDPOINT_FN = "SELECT * FROM candidate_current_endpoint_match_v1(%s)"
 
 _MAX_PENDING_LIMIT = 50
 _MAX_CLAIMS_LIMIT = 65
@@ -202,6 +205,40 @@ class PostgresAdmissionRepository(AdmissionRepository):
             )
             for row in rows
         )
+
+    async def record_verified_registry_observation(
+        self, observation_id: DiscoveryObservationId, *, verified_at: datetime
+    ) -> None:
+        row = await self._fetch_one(_VERIFY_FN, (str(observation_id), verified_at))
+        outcome = None if row is None else row[0]
+        if outcome == "unknown_observation":
+            raise NotFoundError("the discovery observation does not exist")
+        if outcome == "invalid_provenance":
+            raise AdmissionInvariantError(
+                "the stored observation is not a RansomLook REGISTRY claim; "
+                "no verified marker was written"
+            )
+        if outcome not in ("added", "replayed"):
+            raise MappingError("unexpected verified-ingestion outcome")
+
+    async def verified_registry_observation_ids_for_candidate(
+        self, candidate_id: SourceCandidateId, *, limit: int = 65
+    ) -> tuple[DiscoveryObservationId, ...]:
+        if limit < 1 or limit > _MAX_CLAIMS_LIMIT:
+            raise ValueError(f"limit must be within 1..{_MAX_CLAIMS_LIMIT}")
+        rows = await self._fetch_all(_VERIFIED_IDS_FN, (str(candidate_id), limit))
+        return tuple(DiscoveryObservationId.from_str(str(row[0])) for row in rows)
+
+    async def current_endpoint_match(
+        self, candidate_id: SourceCandidateId
+    ) -> tuple[bool, bool]:
+        row = await self._fetch_one(_CURRENT_ENDPOINT_FN, (str(candidate_id),))
+        if row is None or len(row) != 2:
+            raise MappingError("the current endpoint match result is malformed")
+        slot_found, endpoint_present = row
+        if not isinstance(slot_found, bool) or not isinstance(endpoint_present, bool):
+            raise MappingError("the current endpoint match result is not boolean")
+        return slot_found, endpoint_present
 
     async def possible_aliases(
         self, candidate_id: SourceCandidateId, *, limit: int = 16

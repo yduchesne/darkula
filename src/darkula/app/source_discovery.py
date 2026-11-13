@@ -80,10 +80,29 @@ class SourceDiscoveryService:
     async def ingest(self, source: DiscoveryInput) -> DiscoveryObservation:
         """Validate, normalize and durably record one discovery observation.
 
+        This generic public entry point is **unverified**: no trusted-pipeline
+        provenance marker is written, regardless of provider fields.
+
         Validation/normalization happens before any persistence work.
         :class:`asyncio.CancelledError` propagates and rolls the transaction
         back; no observation is reported as persisted.
         """
+        return await self._persist_observation(source, verified_registry=False)
+
+    async def _ingest_verified_registry_claim(
+        self, source: DiscoveryInput
+    ) -> DiscoveryObservation:
+        """Trusted poller internal path; never an operator/generic public API.
+
+        The immutable observation and its approved-ingestion marker commit in
+        the same unit of work. Only the concrete fixed-origin RansomLook
+        poller path may select this entry point.
+        """
+        return await self._persist_observation(source, verified_registry=True)
+
+    async def _persist_observation(
+        self, source: DiscoveryInput, *, verified_registry: bool
+    ) -> DiscoveryObservation:
         attempt = observation_from_input(
             source,
             observation_id=DiscoveryObservationId.generate(),
@@ -91,6 +110,11 @@ class SourceDiscoveryService:
         )
         async with self._persistence.unit_of_work() as uow:
             persisted = await uow.discovery.insert_or_get_exact(attempt)
+            if verified_registry:
+                await uow.admission.record_verified_registry_observation(
+                    persisted.observation_id,
+                    verified_at=self._clock(),
+                )
             await uow.commit()
             return persisted
 

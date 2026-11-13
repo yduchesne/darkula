@@ -44,6 +44,7 @@ def row_values(
 
 
 TABLE_NAMES = (
+    "trusted_registry_observation",
     "discovery_endpoint_match",
     "discovery_candidate_admission",
     "candidate_locator_slot",

@@ -15,6 +15,7 @@ pytestmark = pytest.mark.integration
 
 
 EXPECTED_TABLES = {
+    "trusted_registry_observation",
     "candidate_locator_slot",
     "discovery_candidate_admission",
     "discovery_endpoint_match",
@@ -127,6 +128,10 @@ EXPECTED_FUNCTIONS = {
     "discovery_admission_claims_for_candidate_v1",
     "discovery_possible_aliases_v1",
     "discovery_admit_observation_v1",
+    "trusted_registry_observation_record_v1",
+    "trusted_registry_candidate_ids_v1",
+    "candidate_current_endpoint_match_v1",
+    "access_evidence_has_pending_v1",
 }
 
 
@@ -167,8 +172,8 @@ class TestMigrations:
                 ledger = [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
-        # The ledger head is the newest shipped artifact (PR 19 added 0011).
-        assert ledger[-1].startswith("0011_candidate_admission.sql")
+        # The ledger head is the newest shipped artifact (PR 19-F1 added 0012).
+        assert ledger[-1].startswith("0012_candidate_qualification_fixup.sql")
 
     def test_expected_tables_exist(self, database_settings: DatabaseSettings) -> None:
         conn = _raw_connect(database_settings)
@@ -227,6 +232,9 @@ class TestMigrations:
         assert "discovery_candidate_admission_shape" in constraints
         assert "discovery_candidate_admission_outcome_check" in constraints
         assert "discovery_endpoint_match_match_reason_check" in constraints
+        assert "trusted_registry_observation_pkey" in constraints
+        assert "trusted_registry_observation_observation_id_fkey" in constraints
+        assert "trusted_registry_observation_adapter_code_check" in constraints
 
     def test_host_exposure_is_35432_to_5432(
         self, database_settings: DatabaseSettings
@@ -259,10 +267,25 @@ class TestSchemaContinuity:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT count(*) FROM darkula_schema_migrations "
-                    "WHERE version = '0001_initial.sql'"
+                    "SELECT version, count(*) FROM darkula_schema_migrations "
+                    "GROUP BY version ORDER BY version"
                 )
-                count = row_values(cur, cur.fetchone())[0]
+                rows = [(row[0], int(row[1])) for row in cur.fetchall()]
         finally:
             conn.close()
-        assert count == 1
+        expected = [
+            "0001_initial.sql",
+            "0002_message_outbox.sql",
+            "0003_content.sql",
+            "0004_collection.sql",
+            "0005_extraction.sql",
+            "0006_semantic_geography.sql",
+            "0007_relationships.sql",
+            "0008_source_analysis.sql",
+            "0009_discovery_foundation.sql",
+            "0010_registry_polling.sql",
+            "0011_candidate_admission.sql",
+            "0012_candidate_qualification_fixup.sql",
+        ]
+        assert [version for version, _count in rows] == expected
+        assert all(count == 1 for _version, count in rows)

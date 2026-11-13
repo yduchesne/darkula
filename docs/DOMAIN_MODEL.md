@@ -538,6 +538,23 @@ existing `NEEDS_MORE_RECON` event and no fabricated decision. `AGENT_RECON`
 decisions are only produced by the existing `ReconCoordinator` when a trusted
 `ReconQualificationContext` links the genuine same-candidate assessment.
 
+**Trusted registry provenance (PR 19-F1).** `trusted_registry_observation`
+records that trusted application code observed one claim through the *exact*
+concrete fixed-origin RansomLook poller/transport path. It is keyed to the
+immutable `DiscoveryObservationId`, is append-only (an exact replay returns
+the original `verified_at`), and is deliberately not a new Source,
+`CandidateStatus`, or `AccessStatus`; it cannot authorize crawling. It is not
+fabricated from provider strings: generic `SourceDiscoveryService.ingest`,
+duck-typed adapters, `FakeSourceRegistry`, and adapter/transport subclasses
+never create it. The marker is a trusted-pipeline provenance record, not a
+cryptographic attestation from the remote registry. Deterministic
+qualification requires **every** admission-linked claim to carry a marker; a
+mixed verified/unverified evidence set fails closed. The admission locator
+slot remains an identity-preserving dedup lookup, not Source identity, and the
+current managed-endpoint check is exact and read-only. Historical registry
+replay may report `PROMOTED` when that is the candidate's current lifecycle
+status; it never rewrites the original `QUALIFIED` decision.
+
 ### MonitoringProfile (v0.2, planned — owned by PR 24/25)
 
 Caller-defined monitoring interest, **not** a tenant or account:

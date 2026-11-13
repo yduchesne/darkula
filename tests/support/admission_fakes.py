@@ -96,12 +96,14 @@ class MemAdmissionState:
     slots: dict[str, SlotKey] = field(default_factory=dict)
     ledger: dict[DiscoveryObservationId, AdmissionResult] = field(default_factory=dict)
     endpoints: list[tuple[SourceEndpointId, str]] = field(default_factory=list)
+    verified: dict[DiscoveryObservationId, datetime] = field(default_factory=dict)
 
 
 @dataclass
 class _PendingAdmission:
     slots: dict[str, SlotKey] = field(default_factory=dict)
     ledger: dict[DiscoveryObservationId, AdmissionResult] = field(default_factory=dict)
+    verified: dict[DiscoveryObservationId, datetime] = field(default_factory=dict)
 
 
 class MemAdmissionRepository(AdmissionRepository):
@@ -390,6 +392,64 @@ class MemAdmissionRepository(AdmissionRepository):
         selected.sort(key=lambda item: (item.ingested_at, str(item.observation_id)))
         return tuple(selected[:limit])
 
+    def _slot_for_candidate(self, candidate_id: SourceCandidateId) -> SlotKey | None:
+        for slot in (*self._state.slots.values(), *self._pending.slots.values()):
+            if slot[1] == candidate_id:
+                return slot
+        return None
+
+    def _verified_at(self, observation_id: DiscoveryObservationId) -> datetime | None:
+        staged = self._pending.verified.get(observation_id)
+        if staged is not None:
+            return staged
+        return self._state.verified.get(observation_id)
+
+    async def record_verified_registry_observation(
+        self, observation_id: DiscoveryObservationId, *, verified_at: datetime
+    ) -> None:
+        from darkula.app.persistence import NotFoundError
+        from darkula.domain.discovery import DiscoveryDetectionMethod
+
+        observation = await self._discovery.get(observation_id)
+        if observation is None:
+            raise NotFoundError("the discovery observation does not exist")
+        if (
+            observation.provider_id != "ransomlook"
+            or observation.detection_method is not DiscoveryDetectionMethod.REGISTRY
+        ):
+            raise AdmissionInvariantError(
+                "the stored observation is not a RansomLook REGISTRY claim; "
+                "no verified marker was written"
+            )
+        if self._verified_at(observation_id) is not None:
+            return
+        self._pending.verified[observation_id] = verified_at
+
+    async def verified_registry_observation_ids_for_candidate(
+        self, candidate_id: SourceCandidateId, *, limit: int = 65
+    ) -> tuple[DiscoveryObservationId, ...]:
+        if limit < 1 or limit > _MAX_CLAIMS_LIMIT:
+            raise ValueError(f"limit must be within 1..{_MAX_CLAIMS_LIMIT}")
+        selected: list[DiscoveryObservation] = []
+        for observation, owner in self._admitted_observations():
+            if owner != candidate_id:
+                continue
+            if self._verified_at(observation.observation_id) is None:
+                continue
+            selected.append(observation)
+        selected.sort(key=lambda item: (item.ingested_at, str(item.observation_id)))
+        return tuple(item.observation_id for item in selected[:limit])
+
+    async def current_endpoint_match(
+        self, candidate_id: SourceCandidateId
+    ) -> tuple[bool, bool]:
+        slot = self._slot_for_candidate(candidate_id)
+        if slot is None:
+            return False, False
+        locator = slot[0]
+        present = any(uri == locator for _endpoint_id, uri in self._state.endpoints)
+        return True, present
+
     async def possible_aliases(
         self, candidate_id: SourceCandidateId, *, limit: int = 16
     ) -> AliasSuggestionsResult:
@@ -508,6 +568,17 @@ class MemAdmissionUnitOfWork(UnitOfWork):
             self._spi.admission.slots[key] = slot
         for observation_id, result in self._admission_pending.ledger.items():
             self._spi.admission.ledger[observation_id] = result
+        for observation_id, verified_at in self._admission_pending.verified.items():
+            self._spi.admission.verified.setdefault(observation_id, verified_at)
+        # Qualification decisions live in the discovery fake; mirror their
+        # resulting status onto the shared candidate records so a subsequent
+        # candidate read observes the committed lifecycle state.
+        for qualification, _event in self._discovery_pending.decisions:
+            stored = self._spi.candidates.candidates.get(qualification.candidate_id)
+            if stored is not None:
+                self._spi.candidates.candidates[qualification.candidate_id] = replace(
+                    stored, status=qualification.new_status
+                )
         apply_pending_discovery(self._spi.discovery, self._discovery_pending)
         self._reset_pending()
         self.commits += 1
@@ -616,6 +687,15 @@ async def seed_endpoint(
     spi.admission.endpoints.append((endpoint_id, uri))
 
 
+def seed_verified_observation(
+    spi: MemAdmissionSpi,
+    observation_id: DiscoveryObservationId,
+    verified_at: datetime | None = None,
+) -> None:
+    """Seed one committed approved-ingestion marker in the parity fake."""
+    spi.admission.verified.setdefault(observation_id, verified_at or T0)
+
+
 def seed_slot(
     spi: MemAdmissionSpi,
     normalized_locator: str,
@@ -655,6 +735,7 @@ __all__ = [
     "seed_observation",
     "seed_recon_assessment",
     "seed_slot",
+    "seed_verified_observation",
 ]
 
 

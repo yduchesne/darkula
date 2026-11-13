@@ -80,6 +80,7 @@ _ACCESS_LATEST_FOR_CANDIDATE_FN = (
 _ACCESS_LATEST_FOR_ENDPOINT_FN = (
     "SELECT * FROM access_evidence_latest_for_endpoint_v1(%s)"
 )
+_ACCESS_HAS_PENDING_FN = "SELECT * FROM access_evidence_has_pending_v1(%s)"
 
 
 class PostgresDiscoveryRepository(DiscoveryRepository):
@@ -390,6 +391,14 @@ class PostgresAccessRepository(AccessRepository):
     ) -> AccessEvidence | None:
         row = await self._fetch_one(_ACCESS_LATEST_FOR_ENDPOINT_FN, (str(endpoint_id),))
         return None if row is None else map_access_evidence(row)
+
+    async def has_credentials_pending_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> bool:
+        row = await self._fetch_one(_ACCESS_HAS_PENDING_FN, (str(candidate_id),))
+        if row is None or len(row) != 1 or not isinstance(row[0], bool):
+            raise MappingError("the access readiness probe result is malformed")
+        return row[0]
 
 
 __all__ = [
