@@ -75,12 +75,31 @@ _GATEWAY_TMPFS = "/tmp:rw,size=16m,mode=1777"  # nosec B108 - sandbox tmpfs
 #: Bounded readiness wait for the gateway's own internal listener.
 _GATEWAY_READY_TIMEOUT_SECONDS = 10.0
 
+#: Fixed cleanup budget: no unbounded removal attempts, ever.
+_CLEANUP_MAX_ATTEMPTS = 2
+_CLEANUP_COMMAND_TIMEOUT_SECONDS = 10.0
+
 #: Bounded execution identity length embedded in container names.
 _MAX_EXECUTION_ID_IN_NAME = 40
 
 
 class _PodmanCliError(SandboxInfrastructureError):
     """A bounded Podman CLI failure (never echoes command output)."""
+
+
+def _validated_container_status(document: dict[str, object]) -> str | None:
+    """Return a container's status only when it is exact-owned and readable."""
+    config = document.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    if not isinstance(labels, dict) or labels.get("darkula.owned") != "true":
+        return None
+    state = document.get("State")
+    if not isinstance(state, dict):
+        return None
+    status = state.get("Status")
+    if not isinstance(status, str) or not status:
+        return None
+    return status
 
 
 @dataclass(slots=True)
@@ -209,33 +228,100 @@ class PodmanSandbox(Sandbox):
         state = documents[0].get("State", {}).get("Status")
         return True, owned, state
 
-    async def _remove_owned_container(self, name: str) -> bool:
-        """Stop and remove one container **only** when positively owned.
+    async def _cleanup_resource_exists(self, kind: str, name: str) -> bool:
+        """Prove exact resource presence using only the documented 0/1 codes.
 
-        Returns ``True`` when the container is gone afterwards; a
-        non-existent container is a safe no-op; an unowned/unverifiable
-        container is never touched (returns ``False``).
+        ``0`` means present, ``1`` means absent. Every other code (including
+        125 operational failure) is unknown and must never be read as absent.
         """
-        while True:
+        if kind not in {"container", "network"}:
+            raise _PodmanCliError("unsupported cleanup resource kind")
+        code, _, _ = await self._run_podman(
+            [kind, "exists", name],
+            command_timeout=_CLEANUP_COMMAND_TIMEOUT_SECONDS,
+        )
+        if code == 0:
+            return True
+        if code == 1:
+            return False
+        raise _PodmanCliError("cleanup resource presence could not be verified")
+
+    async def _remove_owned_container(self, name: str) -> bool:
+        """Remove one exact-owned container within a fixed two-attempt budget.
+
+        A nonzero ``stop`` never proceeds to ``rm`` in the same attempt, and
+        only ``container exists`` code ``1`` proves disappearance. Unknown
+        presence, unreadable metadata and unowned resources fail closed.
+        """
+        for _attempt in range(_CLEANUP_MAX_ATTEMPTS):
             try:
-                exists, owned, state = await self._container_state(name)
+                exists = await self._cleanup_resource_exists("container", name)
             except SandboxInfrastructureError:
-                _LOGGER.error("podman cleanup failed for %s", name)
+                _LOGGER.error("podman cleanup presence check failed for %s", name)
                 return False
             if not exists:
                 return True
-            if not owned:
+            try:
+                document = await self._container_inspect(
+                    name, command_timeout=_CLEANUP_COMMAND_TIMEOUT_SECONDS
+                )
+            except SandboxInfrastructureError:
+                _LOGGER.error("podman cleanup inspect failed for %s", name)
+                return False
+            status = (
+                _validated_container_status(document) if document is not None else None
+            )
+            if status is None:
+                _LOGGER.error("refusing to remove unverified container %s", name)
+                return False
+            if status == "running":
+                try:
+                    stop_code, _, _ = await self._run_podman(
+                        ["stop", "-t", "2", name],
+                        command_timeout=_CLEANUP_COMMAND_TIMEOUT_SECONDS,
+                    )
+                except SandboxInfrastructureError:
+                    _LOGGER.error("podman cleanup stop failed for %s", name)
+                    return False
+                if stop_code != 0:
+                    try:
+                        exists = await self._cleanup_resource_exists("container", name)
+                    except SandboxInfrastructureError:
+                        return False
+                    if not exists:
+                        return True
+                    continue
+            # Revalidate exact presence and ownership immediately before rm.
+            try:
+                exists = await self._cleanup_resource_exists("container", name)
+            except SandboxInfrastructureError:
+                return False
+            if not exists:
+                return True
+            try:
+                document = await self._container_inspect(
+                    name, command_timeout=_CLEANUP_COMMAND_TIMEOUT_SECONDS
+                )
+            except SandboxInfrastructureError:
+                return False
+            if document is None or _validated_container_status(document) is None:
                 _LOGGER.error("refusing to remove unverified container %s", name)
                 return False
             try:
-                if state == "running":
-                    await self._run_podman(
-                        ["stop", "-t", "2", name], command_timeout=60
-                    )
-                await self._run_podman(["rm", "-f", name], command_timeout=60)
+                await self._run_podman(
+                    ["rm", "-f", name],
+                    command_timeout=_CLEANUP_COMMAND_TIMEOUT_SECONDS,
+                )
             except SandboxInfrastructureError:
-                _LOGGER.error("podman cleanup failed for %s", name)
+                _LOGGER.error("podman cleanup rm failed for %s", name)
                 return False
+            try:
+                exists = await self._cleanup_resource_exists("container", name)
+            except SandboxInfrastructureError:
+                return False
+            if not exists:
+                return True
+        return False
 
     def _build_run_argv(self, request: SandboxExecutionRequest, name: str) -> list[str]:
         """Build the exact ``podman run`` argument vector (no shell).
@@ -321,6 +407,7 @@ class PodmanSandbox(Sandbox):
         oversized = False
         timed_out = False
         cancelled = False
+        infrastructure_failure_reason: str | None = None
         try:
             argv = self._build_run_argv(request, name)
             proc = await asyncio.create_subprocess_exec(
@@ -356,12 +443,7 @@ class PodmanSandbox(Sandbox):
                 raise
             exit_code = proc.returncode
         except SandboxInfrastructureError as exc:
-            return self._recorded_result(
-                request,
-                SandboxExitReason.INFRASTRUCTURE_FAILURE,
-                started,
-                reason=f"podman execution failed: {exc}",
-            )
+            infrastructure_failure_reason = f"podman execution failed: {exc}"
         finally:
             if proc is not None and proc.returncode is None:
                 proc.kill()
@@ -372,6 +454,19 @@ class PodmanSandbox(Sandbox):
                 get_counter("darkula.sandbox.cleanup_failures").add(
                     1, {"darkula.sandbox.execution": request.execution_id}
                 )
+
+        if infrastructure_failure_reason is not None:
+            return self._recorded_result(
+                request,
+                SandboxExitReason.INFRASTRUCTURE_FAILURE,
+                started,
+                reason=(
+                    infrastructure_failure_reason
+                    if removed
+                    else "sandbox execution failed; cleanup unverified"
+                ),
+                cleanup_succeeded=removed,
+            )
 
         if cancelled:
             # Cancellation propagated; this line is unreachable because the
@@ -413,60 +508,73 @@ class PodmanSandbox(Sandbox):
         )
         failure: str | None = None
         payload_result: tuple[int | None, bytes, bool, bool] | None = None
+        unexpected_error: BaseException | None = None
+        cancelled_during_run = False
         try:
             payload_result = await self._run_public_https(request, resources)
         except asyncio.CancelledError:
-            await self._cleanup_live_shielded(resources)
-            raise
+            cancelled_during_run = True
         except SandboxInfrastructureError as exc:
             failure = f"public HTTPS infrastructure failed: {exc}"
-        except BaseException:
-            # An unexpected failure must still remove every owned resource
-            # before propagating; never leak the gateway or ephemeral network.
-            await self._cleanup_live(resources)
-            raise
-        cleanup_ok = await self._cleanup_live(resources)
-        if failure is not None:
-            result = self._recorded_result(
+        except BaseException as exc:
+            unexpected_error = exc
+
+        cleanup_verified, cancelled_during_cleanup = await self._cleanup_live_shielded(
+            resources
+        )
+
+        if cancelled_during_run or cancelled_during_cleanup:
+            self._recorded_result(
+                request,
+                SandboxExitReason.CANCELLED,
+                started,
+                reason="execution cancelled",
+                cleanup_succeeded=cleanup_verified,
+            )
+            raise asyncio.CancelledError
+
+        if unexpected_error is not None:
+            self._recorded_result(
                 request,
                 SandboxExitReason.INFRASTRUCTURE_FAILURE,
                 started,
-                reason=failure,
+                reason="public HTTPS execution raised an unexpected error",
+                cleanup_succeeded=cleanup_verified,
             )
-            if not cleanup_ok:
-                _LOGGER.error("live cleanup could not be verified")
-            return result
-        if payload_result is None:  # pragma: no cover - defensive invariant
+            raise unexpected_error
+
+        if failure is not None:
+            return self._recorded_result(
+                request,
+                SandboxExitReason.INFRASTRUCTURE_FAILURE,
+                started,
+                reason=(
+                    failure
+                    if cleanup_verified
+                    else "public HTTPS infrastructure failed; cleanup unverified"
+                ),
+                cleanup_succeeded=cleanup_verified,
+            )
+
+        if payload_result is None:
             return self._recorded_result(
                 request,
                 SandboxExitReason.INFRASTRUCTURE_FAILURE,
                 started,
                 reason="public HTTPS execution produced no outcome",
+                cleanup_succeeded=cleanup_verified,
             )
+
         exit_code, stdout, oversized, timed_out = payload_result
-        result = self._build_result(
+        return self._build_result(
             request,
             started,
             exit_code,
             stdout,
             oversized,
             timed_out,
-            removed=cleanup_ok,
+            removed=cleanup_verified,
         )
-        if not cleanup_ok:
-            result = SandboxExecutionResult(
-                execution_id=request.execution_id,
-                exit_reason=SandboxExitReason.INFRASTRUCTURE_FAILURE,
-                metrics=SandboxExecutionMetrics(
-                    duration_seconds=time.perf_counter() - started,
-                    exit_code=exit_code,
-                    output_bytes=len(stdout),
-                    cleanup_succeeded=False,
-                ),
-                reason="public HTTPS cleanup could not be verified",
-            )
-            self._record(result)
-        return result
 
     async def _run_public_https(
         self,
@@ -746,27 +854,45 @@ class PodmanSandbox(Sandbox):
                 await proc.wait()
         return exit_code, stdout, oversized, timed_out
 
-    async def _cleanup_live_shielded(self, resources: _LiveResources) -> bool:
-        """Complete owned-resource cleanup despite caller cancellation."""
+    async def _cleanup_live_shielded(
+        self, resources: _LiveResources
+    ) -> tuple[bool, bool]:
+        """Complete one cleanup task despite caller cancellation.
+
+        Returns ``(cleanup_verified, caller_cancelled_during_cleanup)``. The
+        loop only awaits the one bounded cleanup worker; it never creates a
+        second worker or retries removals.
+        """
         task = asyncio.create_task(self._cleanup_live(resources))
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
+        caller_cancelled = False
+        while True:
             try:
-                return await task
+                return bool(await asyncio.shield(task)), caller_cancelled
+            except asyncio.CancelledError:
+                caller_cancelled = True
+                if task.done():
+                    try:
+                        return bool(task.result()), True
+                    except BaseException:
+                        return False, True
             except Exception:
-                return False
+                return False, caller_cancelled
 
     async def _cleanup_live(self, resources: _LiveResources) -> bool:
-        """Remove crawler, then gateway, then the ephemeral network."""
+        """Remove both containers, then the network only when containment clears."""
         removed_crawler = await self._remove_owned_container(resources.crawler)
         removed_gateway = await self._remove_owned_container(resources.gateway)
-        removed_network = await self._remove_owned_network(resources.network)
-        return removed_crawler and removed_gateway and removed_network
+        if not (removed_crawler and removed_gateway):
+            return False
+        return await self._remove_owned_network(resources.network)
 
-    async def _network_inspect(self, name: str) -> dict[str, object] | None:
+    async def _network_inspect(
+        self, name: str, *, command_timeout: float = 30.0
+    ) -> dict[str, object] | None:
         """Return exact network metadata, or ``None`` when absent."""
-        code, stdout, _ = await self._run_podman(["network", "inspect", name])
+        code, stdout, _ = await self._run_podman(
+            ["network", "inspect", name], command_timeout=command_timeout
+        )
         if code != 0:
             return None
         try:
@@ -778,9 +904,13 @@ class PodmanSandbox(Sandbox):
         document = documents[0]
         return document if isinstance(document, dict) else None
 
-    async def _container_inspect(self, name: str) -> dict[str, object] | None:
+    async def _container_inspect(
+        self, name: str, *, command_timeout: float = 30.0
+    ) -> dict[str, object] | None:
         """Return exact container metadata, or ``None`` when absent."""
-        code, stdout, _ = await self._run_podman(["container", "inspect", name])
+        code, stdout, _ = await self._run_podman(
+            ["container", "inspect", name], command_timeout=command_timeout
+        )
         if code != 0:
             return None
         try:
@@ -793,24 +923,41 @@ class PodmanSandbox(Sandbox):
         return document if isinstance(document, dict) else None
 
     async def _remove_owned_network(self, name: str) -> bool:
-        """Remove one network only when positively Darkula-owned."""
-        while True:
+        """Remove one exact-owned network within a fixed two-attempt budget."""
+        for _attempt in range(_CLEANUP_MAX_ATTEMPTS):
             try:
-                document = await self._network_inspect(name)
+                exists = await self._cleanup_resource_exists("network", name)
             except SandboxInfrastructureError:
-                _LOGGER.error("podman cleanup failed for network %s", name)
+                _LOGGER.error("podman cleanup presence check failed for %s", name)
                 return False
-            if document is None:
+            if not exists:
                 return True
-            labels = document.get("labels") or {}
+            try:
+                document = await self._network_inspect(
+                    name, command_timeout=_CLEANUP_COMMAND_TIMEOUT_SECONDS
+                )
+            except SandboxInfrastructureError:
+                _LOGGER.error("podman cleanup inspect failed for %s", name)
+                return False
+            labels = document.get("labels") if document is not None else None
             if not isinstance(labels, dict) or labels.get("darkula.owned") != "true":
                 _LOGGER.error("refusing to remove unverified network %s", name)
                 return False
             try:
-                await self._run_podman(["network", "rm", name], command_timeout=60)
+                await self._run_podman(
+                    ["network", "rm", name],
+                    command_timeout=_CLEANUP_COMMAND_TIMEOUT_SECONDS,
+                )
             except SandboxInfrastructureError:
-                _LOGGER.error("podman cleanup failed for network %s", name)
+                _LOGGER.error("podman cleanup rm failed for %s", name)
                 return False
+            try:
+                exists = await self._cleanup_resource_exists("network", name)
+            except SandboxInfrastructureError:
+                return False
+            if not exists:
+                return True
+        return False
 
     # -- helpers ----------------------------------------------------------
     async def _collect_outputs(
@@ -890,7 +1037,10 @@ class PodmanSandbox(Sandbox):
         *,
         removed: bool,
     ) -> SandboxExecutionResult:
-        if timed_out:
+        if not removed:
+            exit_reason = SandboxExitReason.INFRASTRUCTURE_FAILURE
+            reason = "sandbox cleanup could not be verified"
+        elif timed_out:
             exit_reason = SandboxExitReason.TIMED_OUT
             reason = "execution exceeded the sandbox timeout"
         elif oversized:
@@ -934,12 +1084,14 @@ class PodmanSandbox(Sandbox):
         started: float,
         *,
         reason: str,
+        cleanup_succeeded: bool = True,
     ) -> SandboxExecutionResult:
         result = SandboxExecutionResult(
             execution_id=request.execution_id,
             exit_reason=exit_reason,
             metrics=SandboxExecutionMetrics(
-                duration_seconds=time.perf_counter() - started
+                duration_seconds=time.perf_counter() - started,
+                cleanup_succeeded=cleanup_succeeded,
             ),
             reason=reason,
         )

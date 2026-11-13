@@ -528,3 +528,177 @@ class TestLegacyContractUnchanged:
             "80",
         )
         assert code != 0, stdout
+
+
+class TestF1CleanupRegressions:
+    @pytest.mark.asyncio
+    async def test_i20f1_01_attached_network_refuses_bounded_removal(
+        self, live_sandbox: PodmanSandbox
+    ) -> None:
+        nonce = uuid.uuid4().hex[:8]
+        network = f"darkula-https-f1-net-{nonce}"
+        container = f"darkula-https-f1-ctr-{nonce}"
+        code, _, stderr = await _podman(
+            "network",
+            "create",
+            "--internal",
+            "--label",
+            "darkula.owned=true",
+            "--label",
+            "darkula.service=https-egress-network",
+            network,
+        )
+        assert code == 0, stderr[:160]
+        try:
+            code, _, stderr = await _podman(
+                "run",
+                "-d",
+                "--name",
+                container,
+                "--network",
+                network,
+                "--label",
+                "darkula.owned=true",
+                "--label",
+                "darkula.service=probe-f1",
+                "--read-only",
+                "--cap-drop",
+                "all",
+                "--security-opt",
+                "no-new-privileges",
+                "--user",
+                "10001",
+                RUNTIME_IMAGE,
+                "python3",
+                "-c",
+                "import time; time.sleep(120)",
+            )
+            assert code == 0, stderr[:160]
+            removed = await asyncio.wait_for(
+                live_sandbox._remove_owned_network(network), timeout=35.0
+            )
+            assert removed is False
+            assert (await _podman("network", "exists", network))[0] == 0
+            assert (await _podman("container", "exists", container))[0] == 0
+        finally:
+            code, stdout, _ = await _podman("container", "inspect", container)
+            if code == 0:
+                document = json.loads(stdout)[0]
+                labels = document.get("Config", {}).get("Labels", {})
+                assert labels.get("darkula.owned") == "true"
+                await _podman("rm", "-f", container)
+            await _podman("network", "rm", network)
+        assert (await _podman("container", "exists", container))[0] == 1
+        assert (await _podman("network", "exists", network))[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_i20f1_02_injected_persistent_rm_nonzero_is_bounded(
+        self, monkeypatch: pytest.MonkeyPatch, live_sandbox: PodmanSandbox
+    ) -> None:
+        nonce = uuid.uuid4().hex[:8]
+        container = f"darkula-https-f1-rm-{nonce}"
+        code, _, stderr = await _podman(
+            "run",
+            "-d",
+            "--name",
+            container,
+            "--network",
+            "darkula-intg",
+            "--label",
+            "darkula.owned=true",
+            "--label",
+            "darkula.service=probe-f1",
+            "--read-only",
+            "--cap-drop",
+            "all",
+            "--security-opt",
+            "no-new-privileges",
+            "--user",
+            "10001",
+            RUNTIME_IMAGE,
+            "python3",
+            "-c",
+            "import time; time.sleep(120)",
+        )
+        assert code == 0, stderr[:160]
+        original = live_sandbox._run_podman
+        rm_calls = 0
+
+        async def fail_rm(
+            argv: list[str], *, command_timeout: float = 30.0
+        ) -> tuple[int, bytes, bytes]:
+            nonlocal rm_calls
+            if argv[:3] == ["rm", "-f", container]:
+                rm_calls += 1
+                return 125, b"", b""
+            return await original(argv, command_timeout=command_timeout)
+
+        monkeypatch.setattr(live_sandbox, "_run_podman", fail_rm)
+        try:
+            removed = await asyncio.wait_for(
+                live_sandbox._remove_owned_container(container), timeout=35.0
+            )
+            assert removed is False
+            assert 1 <= rm_calls <= 2
+            code, stdout, _ = await _podman("container", "inspect", container)
+            assert code == 0
+            document = json.loads(stdout)[0]
+            assert document["Config"]["Labels"].get("darkula.owned") == "true"
+        finally:
+            monkeypatch.undo()
+            removed = await asyncio.wait_for(
+                live_sandbox._remove_owned_container(container), timeout=35.0
+            )
+            assert removed is True
+        assert (await _podman("container", "exists", container))[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_i20f1_03_live_topology_cleanup_is_verified(
+        self, live_sandbox: PodmanSandbox
+    ) -> None:
+        result = await live_sandbox.execute(live_request())
+        assert result.metrics.cleanup_succeeded is True
+        assert result.output is not None
+        output = decode_output(
+            result.output, max_bytes=1024 * 1024, max_pages=10, max_links=10
+        )
+        assert output.status != "completed"
+        await _no_live_resources()
+
+    @pytest.mark.asyncio
+    async def test_i20f1_04_unverified_resources_remain_untouched(
+        self, live_sandbox: PodmanSandbox
+    ) -> None:
+        name = f"darkula-https-f1-unowned-{uuid.uuid4().hex[:8]}"
+        code, _, stderr = await _podman("network", "create", name)
+        assert code == 0, stderr
+        try:
+            assert await live_sandbox._remove_owned_network(name) is False
+            assert (await _podman("network", "exists", name))[0] == 0
+        finally:
+            await _podman("network", "rm", name)
+        assert (await _podman("network", "exists", name))[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_i20f1_05_legacy_fake_world_still_completes(
+        self, controller: CrawlerController, fake_world_url: str
+    ) -> None:
+        from darkula.crawler import CrawlStatus
+        from tests.integration.crawler.conftest import container_names
+        from tests.integration.crawler.helpers import crawl_request
+
+        result = await controller.crawl(
+            crawl_request(
+                fake_world_url,
+                start_path="/",
+                max_pages=2,
+                max_requests=6,
+                max_depth=1,
+                timeout_seconds=60.0,
+            )
+        )
+        assert result.status is CrawlStatus.COMPLETED
+        assert result.protocol_version == 1
+        assert result.cleanup_succeeded is True
+        names = await container_names()
+        assert not any(name.startswith("darkula-crawler-") for name in names)

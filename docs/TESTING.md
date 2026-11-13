@@ -1525,3 +1525,25 @@ The integration fixture provisions the exact `darkula-live-egress` outer
 network (verifying ownership/non-internal semantics, removing it only when it
 created it) and builds/removes its own test gateway image. It never calls the
 operator provisioning script and never touches Fake World's `darkula-intg`.
+
+
+### PR 20-F1 cleanup/telemetry regression coverage
+
+**Offline only; no public request.** Added on top of U20/I20:
+
+- **U20F1-01..32** in `tests/unit/infrastructure/sandbox/test_podman_sandbox.py`:
+  exact `container|network exists` 0/1/125 semantics; fixed 10-second cleanup
+  deadlines; bounded two-attempt container/network removal; nonzero `stop`/`rm`
+  handling; ownership revalidation before mutation; unknown presence after a
+  removal is failure; containment (network retained if a container remains);
+  single terminal execution metric for success/failure/cancellation/unexpected
+  error; truthful `cleanup_succeeded`; legacy exception-after-launch path; and
+  the unchanged owned/unowned protections.
+- **I20F1-01..05** in `tests/integration/crawler/test_public_https_isolation.py`:
+  a real owned internal network with an attached test container refuses bounded
+  removal and stays in place; injected persistent `rm` nonzero remains bounded
+  with the real container intact; the offline live topology still verifies
+  cleanup; unverified resources are untouched; and the legacy v1 Fake World
+  crawl still completes with verified cleanup.
+- **L20-01..05 remain NOT RUN** pending operator approval and controlled
+  redirect/TLS fixtures. Offline QA success does not claim a real public crawl.

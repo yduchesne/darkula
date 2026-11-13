@@ -74,6 +74,19 @@ crawler, gateway and ephemeral internal network on success, timeout,
 cancellation and failure; only the shared outer network persists between
 authorized runs.
 
+Cleanup is deliberately bounded and fail-closed. Each exact resource gets at
+most **two** removal attempts, and every cleanup Podman command has a fixed
+**10-second** deadline. Absence is proven only by `podman {container|network}
+exists <exact-name>` code `1` (code `0` = present, anything else = unknown and
+treated as failure); a nonzero `rm`/`stop` exit is never read as success by
+itself. Ownership (`darkula.owned=true`) is re-read from exact metadata before
+`stop`/`rm`. If the crawler or gateway container cannot be verified removed,
+the ephemeral internal network is intentionally retained as containment and
+the execution returns an `INFRASTRUCTURE_FAILURE` with
+`cleanup_succeeded=false` — never a completed crawl. A returned execution emits
+exactly one terminal sandbox metric; cancellation is recorded once and then
+re-raised.
+
 ## Security constraints and limitations
 
 - The crawler container joins **only** the per-execution internal network,
