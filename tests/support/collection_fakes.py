@@ -524,6 +524,10 @@ class MemUnitOfWork(UnitOfWork):
     def qualification(self) -> Any:
         raise AssertionError("collection fake exposes no qualification repository")
 
+    @property
+    def admission(self) -> Any:
+        raise AssertionError("collection fake exposes no admission repository")
+
 
 class MemSpi(DarkulaSpi):
     """DarkulaSpi handing out :class:`MemUnitOfWork` instances."""

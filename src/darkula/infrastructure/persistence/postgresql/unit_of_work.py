@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
     from darkula.app.repositories import (
         AccessRepository,
+        AdmissionRepository,
         CollectionRepository,
         ContentRepository,
         DiscoveryRepository,
@@ -51,6 +52,9 @@ if TYPE_CHECKING:
         RelationshipRepository,
         SourceCandidateRepository,
         SourceRepository,
+    )
+    from darkula.infrastructure.persistence.postgresql.admission_repository import (
+        PostgresAdmissionRepository,
     )
     from darkula.infrastructure.persistence.postgresql.candidate_repository import (
         PostgresSourceCandidateRepository,
@@ -120,6 +124,7 @@ class PostgresUnitOfWork(UnitOfWork):
         self._discovery_repository: PostgresDiscoveryRepository | None = None
         self._access_repository: PostgresAccessRepository | None = None
         self._qualification_repository: PostgresQualificationRepository | None = None
+        self._admission_repository: PostgresAdmissionRepository | None = None
 
     async def __aenter__(self) -> Self:
         if self._state is not _State.CREATED:
@@ -362,6 +367,18 @@ class PostgresUnitOfWork(UnitOfWork):
 
             self._qualification_repository = PostgresQualificationRepository(self)
         return self._qualification_repository
+
+    @property
+    def admission(self) -> AdmissionRepository:
+        """Return the transaction-bound candidate admission repository (PR 19)."""
+        self.ensure_open()
+        if self._admission_repository is None:
+            from darkula.infrastructure.persistence.postgresql.admission_repository import (  # noqa: E501
+                PostgresAdmissionRepository,
+            )
+
+            self._admission_repository = PostgresAdmissionRepository(self)
+        return self._admission_repository
 
     async def _release_connection(self) -> None:
         """Return the borrowed connection to the pool exactly once."""

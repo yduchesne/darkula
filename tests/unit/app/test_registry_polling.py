@@ -744,3 +744,225 @@ class TestUnicodeSelectionSafety:
         assert result.outcome is RegistryPollOutcome.PERMANENT_ERROR
         assert spi.state.registry_checkpoints == {}
         assert spi.state.observations_by_key == {}
+
+
+# ---------------------------------------------------------------------------
+# PR 19-F1 — approved-ingestion provenance (U19F-01 .. U19F-06).
+# ---------------------------------------------------------------------------
+
+
+_APPROVED_INDEX = b'["blackgate"]'
+
+
+def _approved_detail() -> bytes:
+    import json
+
+    return json.dumps(
+        [
+            {
+                "name": "blackgate",
+                "locations": [{"slug": "http://approved-pipeline.onion/"}],
+            },
+            [],
+        ]
+    ).encode("utf-8")
+
+
+def _approved_transport_adapter() -> RansomLookDiscoveryAdapter:
+    from darkula.infrastructure.discovery.http import StdlibRegistryHttpTransport
+
+    return RansomLookDiscoveryAdapter(
+        transport=StdlibRegistryHttpTransport(),
+        request_interval_seconds=0,
+        sleep=_noop_sleep,
+    )
+
+
+def _patch_async_get_url(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    from darkula.infrastructure.discovery import http as http_module
+    from darkula.infrastructure.discovery.http import RegistryHttpResponse
+
+    seen: list[str] = []
+
+    async def _fake_get(
+        url: str,
+        *,
+        timeout_seconds: float,
+        max_response_bytes: int,
+        transport: Any = None,
+    ) -> RegistryHttpResponse:
+        del timeout_seconds, max_response_bytes, transport
+        assert url.startswith("https://www.ransomlook.io:443/")
+        seen.append(url)
+        path = url.removeprefix("https://www.ransomlook.io:443")
+        if path == "/api/groups":
+            return RegistryHttpResponse(status_code=200, body=_APPROVED_INDEX)
+        if path == "/api/group/blackgate":
+            return RegistryHttpResponse(status_code=200, body=_approved_detail())
+        raise AssertionError(f"unexpected approved URL: {url}")
+
+    monkeypatch.setattr(http_module, "_async_get_url", _fake_get)
+    return seen
+
+
+def _locator_claim(url: str = "http://approved-pipeline.onion/") -> DiscoveryInput:
+    return DiscoveryInput(
+        provider_id="ransomlook",
+        provider_record_id="location:" + "a" * 64,
+        provider_record_version="v1",
+        detection_method=DiscoveryDetectionMethod.REGISTRY,
+        reference_kind=DiscoveryReferenceKind.LOCATOR,
+        asserted_reference=url,
+        observed_at=BASE_TIME,
+        evidence_reference="registry://ransomlook/location/a",
+        source_kind_hint=None,
+        origin_reference="https://www.ransomlook.io/api/group/blackgate",
+    )
+
+
+class TestVerifiedIngestionProvenance:
+    """U19F-01..06: only the exact approved concrete pipeline may mark."""
+
+    @pytest.mark.asyncio
+    async def test_u19f_01_generic_ingest_is_unverified(self) -> None:
+        from tests.support.admission_fakes import MemAdmissionSpi
+
+        spi = MemAdmissionSpi()
+        service = SourceDiscoveryService(persistence=spi, clock=lambda: BASE_TIME)
+        observation = await service.ingest(_locator_claim())
+        assert observation.normalized_locator == "http://approved-pipeline.onion/"
+        assert spi.admission.verified == {}
+        assert len(spi.discovery.observations_by_id) == 1
+
+    @pytest.mark.asyncio
+    async def test_u19f_02_duck_typed_adapter_cannot_attest(self) -> None:
+        from tests.support.admission_fakes import MemAdmissionSpi
+
+        spi = MemAdmissionSpi()
+        clock = _Clock()
+        adapter = _StubAdapter({"entry": _StubProvider([_locator_claim()])})
+        poller = RegistryPoller(
+            persistence=spi,
+            discovery_service=SourceDiscoveryService(persistence=spi, clock=clock),
+            clock=clock,
+        )
+        result = await poller.poll_once(adapter)
+        assert result.observations_added == 1
+        assert spi.admission.verified == {}
+
+    @pytest.mark.asyncio
+    async def test_u19f_03_fake_transport_adapter_cannot_attest(self) -> None:
+        from tests.support.admission_fakes import MemAdmissionSpi
+
+        spi = MemAdmissionSpi()
+        clock = _Clock()
+        adapter = RansomLookDiscoveryAdapter(
+            transport=FakeSourceRegistry(index=("blackgate",)),
+            request_interval_seconds=0,
+            sleep=_noop_sleep,
+        )
+        assert adapter.uses_fixed_origin_transport is False
+        poller = RegistryPoller(
+            persistence=spi,
+            discovery_service=SourceDiscoveryService(persistence=spi, clock=clock),
+            clock=clock,
+        )
+        result = await poller.poll_once(adapter)
+        assert result.observations_added == 3
+        assert spi.admission.verified == {}
+
+    @pytest.mark.asyncio
+    async def test_u19f_04_exact_pipeline_marks_and_qualifies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.support.admission_fakes import (
+            MemAdmissionSpi,
+            seed_endpoint,
+        )
+
+        from darkula.app.candidate_admission import CandidateAdmissionService
+        from darkula.app.candidate_qualification import (
+            CandidateQualificationService,
+            QualificationRoute,
+        )
+        from darkula.config.settings import QualificationSettings
+        from darkula.domain.identifiers import SourceEndpointId
+
+        seen = _patch_async_get_url(monkeypatch)
+        spi = MemAdmissionSpi()
+        clock = _Clock()
+        adapter = _approved_transport_adapter()
+        assert adapter.uses_fixed_origin_transport is True
+        poller = RegistryPoller(
+            persistence=spi,
+            discovery_service=SourceDiscoveryService(persistence=spi, clock=clock),
+            clock=clock,
+        )
+        result = await poller.poll_once(adapter)
+        assert result.observations_added == 2
+        assert len(seen) == 2
+        assert len(spi.admission.verified) == 2
+
+        locator = next(
+            item
+            for item in spi.discovery.observations_by_id.values()
+            if item.normalized_locator == "http://approved-pipeline.onion/"
+        )
+        admitted = await CandidateAdmissionService(
+            persistence=spi, clock=clock
+        ).admit_observation(locator.observation_id)
+        assert admitted.candidate_id is not None
+        # A near-match endpoint must not create a false conflict.
+        await seed_endpoint(
+            spi,
+            SourceEndpointId.generate(),
+            "http://approved-pipeline.onion/other",
+        )
+        outcome = await CandidateQualificationService(
+            persistence=spi,
+            settings=QualificationSettings(ransomlook_location_trusted=True),
+            clock=clock,
+        ).evaluate_and_apply(admitted.candidate_id)
+        assert outcome.route is QualificationRoute.REGISTRY_QUALIFIED
+
+    @pytest.mark.asyncio
+    async def test_u19f_05_adapter_subclass_cannot_attest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.support.admission_fakes import MemAdmissionSpi
+
+        from darkula.infrastructure.discovery.http import StdlibRegistryHttpTransport
+
+        class _SubclassedAdapter(RansomLookDiscoveryAdapter):
+            pass
+
+        _patch_async_get_url(monkeypatch)
+        spi = MemAdmissionSpi()
+        clock = _Clock()
+        adapter = _SubclassedAdapter(
+            transport=StdlibRegistryHttpTransport(),
+            request_interval_seconds=0,
+            sleep=_noop_sleep,
+        )
+        assert adapter.uses_fixed_origin_transport is True
+        poller = RegistryPoller(
+            persistence=spi,
+            discovery_service=SourceDiscoveryService(persistence=spi, clock=clock),
+            clock=clock,
+        )
+        result = await poller.poll_once(adapter)
+        assert result.observations_added == 2
+        assert spi.admission.verified == {}
+
+    def test_u19f_06_transport_subclass_cannot_attest(self) -> None:
+        from darkula.infrastructure.discovery.http import StdlibRegistryHttpTransport
+
+        class _SubclassedTransport(StdlibRegistryHttpTransport):
+            pass
+
+        adapter = RansomLookDiscoveryAdapter(
+            transport=_SubclassedTransport(),
+            request_interval_seconds=0,
+            sleep=_noop_sleep,
+        )
+        assert adapter.uses_fixed_origin_transport is False

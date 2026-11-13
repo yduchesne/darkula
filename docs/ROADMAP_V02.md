@@ -1,6 +1,6 @@
 # Darkula v0.2 Roadmap — Source Discovery and Real-World Monitoring
 
-> **Status: PR 17 implemented; PRs 18–27 planned.** PR 17 (discovery domain, durable provenance, and the qualification persistence primitive) is delivered. The remaining roadmap identifiers below describe planned work, not shipped behavior. Each implementation PR requires a separate, fresh-`main` detailed plan under [Detailed PR Plan Authoring Guide](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
+> **Status: PRs 17–19 implemented; PRs 20–27 planned.** PR 17 (discovery domain, durable provenance, and the qualification persistence primitive), PR 18 (bounded RansomLook registry polling), and PR 19 (candidate admission, deduplication and policy-routed qualification) are delivered. The remaining roadmap identifiers below describe planned work, not shipped behavior. Each implementation PR requires a separate, fresh-`main` detailed plan under [Detailed PR Plan Authoring Guide](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
 
 ## Release objective
 
@@ -144,9 +144,11 @@ A versioned, operator-controlled `CandidateQualificationPolicy` runs in trusted 
 
 **Out of scope:** a general MISP/STIX/TAXII platform, crawling candidate URLs, credentialed clandestine access.
 
-## PR 19 — Candidate reconciliation, deduplication and admission (P0)
+## PR 19 — Candidate reconciliation, deduplication and admission (P0) — delivered
 
 **Depends on:** PRs 17–18. **Dominant concern:** reason deterministically about known candidate and endpoint identity.
+
+> **Delivered:** additive migration `0011_candidate_admission.sql` (admission ledger, normalized-locator slot, exact endpoint-match evidence, six versioned stored functions); `AdmissionRepository`/`PostgresAdmissionRepository` through the existing UnitOfWork; `CandidateAdmissionService` one-shot and bounded batch admission; deterministic exact-string reconciliation against `SourceEndpoint.uri` and `SourceCandidate.entrypoint`; bounded read-only possible-alias suggestions; `CandidateQualificationService` with the fixed default-deny `candidate-qualification`/`v1` `RANSOMLOOK_LOCATION_V1` rule; and provenance-aware `ReconCoordinator` integration that replaces (never duplicates) its final transition with the PR 17 atomic `AGENT_RECON` decision when a trusted admission context is supplied. Admission performs no network/LLM/crawler work and creates no Source, endpoint, policy, run, outbox record, promotion, or credential; auth-required claims record `CREDENTIALS_PENDING` only. Legacy `reconnoiter(candidate_id)` behavior is unchanged. Narrow documented limitation: only exact raw-text equality with an already normalized observation locator is an authoritative legacy match; a nonmatch is not proof of a different Source. Real HTTPS/Tor crawling (PR 20/21), promotion, credential provisioning (PR 26) and MonitoringProfiles remain out of scope.
 
 - Define canonical locator normalization and candidate semantic keys without assuming one URL equals one Source.
 - Reconcile new observations against candidate entrypoints and managed SourceEndpoints; record possible aliases/mirrors as **evidence-backed suggestions**.

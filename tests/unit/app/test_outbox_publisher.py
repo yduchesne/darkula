@@ -155,6 +155,10 @@ class _FakeUnitOfWork(UnitOfWork):
     def qualification(self) -> Any:
         raise AssertionError("outbox test exposes no qualification repository")
 
+    @property
+    def admission(self) -> Any:
+        raise AssertionError("outbox test exposes no admission repository")
+
 
 class _RecordingSpi(DarkulaSpi):
     def __init__(self, shared: _Shared) -> None:

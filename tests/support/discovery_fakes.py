@@ -14,6 +14,7 @@ second persistence framework.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, fields
 from datetime import datetime
 from types import TracebackType
@@ -301,11 +302,26 @@ class MemDiscoveryRepository(DiscoveryRepository):
 
 
 class MemAccessRepository(AccessRepository):
-    """In-memory access-evidence repository (pending-only write path)."""
+    """In-memory access-evidence repository (pending-only write path).
 
-    def __init__(self, state: MemDiscoveryState, pending: _Pending) -> None:
+    ``candidate_exists`` lets the composed PR 19 admission fake recognize a
+    candidate staged earlier in the same (still open) unit of work. It
+    defaults to the committed PR 17 state and never widens the production
+    write path.
+    """
+
+    def __init__(
+        self,
+        state: MemDiscoveryState,
+        pending: _Pending,
+        *,
+        candidate_exists: Callable[[SourceCandidateId], bool] | None = None,
+    ) -> None:
         self._state = state
         self._pending = pending
+        self._candidate_exists = candidate_exists or (
+            lambda candidate_id: candidate_id in self._state.candidate_status
+        )
 
     def _observation(
         self, observation_id: DiscoveryObservationId
@@ -326,7 +342,7 @@ class MemAccessRepository(AccessRepository):
         observation = self._observation(evidence.observation_id)
         if observation is None:
             raise NotFoundError("the discovery observation does not exist")
-        if evidence.candidate_id not in self._state.candidate_status:
+        if not self._candidate_exists(evidence.candidate_id):
             raise NotFoundError("the candidate does not exist")
         if (
             observation.candidate_id is not None
@@ -379,6 +395,24 @@ class MemAccessRepository(AccessRepository):
             )
         )
 
+    async def has_credentials_pending_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> bool:
+        """Constant-shape probe; never materializes the evidence list API."""
+        for evidence in self._state.access.values():
+            if (
+                evidence.candidate_id == candidate_id
+                and evidence.status is AccessStatus.CREDENTIALS_PENDING
+            ):
+                return True
+        for evidence in self._pending.access:
+            if (
+                evidence.candidate_id == candidate_id
+                and evidence.status is AccessStatus.CREDENTIALS_PENDING
+            ):
+                return True
+        return False
+
     async def latest_for_candidate(
         self, candidate_id: SourceCandidateId
     ) -> AccessEvidence | None:
@@ -393,11 +427,27 @@ class MemAccessRepository(AccessRepository):
 
 
 class MemQualificationRepository(QualificationRepository):
-    """In-memory atomic qualification decision + transition + event primitive."""
+    """In-memory atomic qualification decision + transition + event primitive.
 
-    def __init__(self, state: MemDiscoveryState, pending: _Pending) -> None:
+    ``recon_assessment_owner`` lets the composed PR 19 admission fake resolve
+    a genuine assessment staged in the shared candidate fake. It defaults to
+    the committed PR 17 assessment map.
+    """
+
+    def __init__(
+        self,
+        state: MemDiscoveryState,
+        pending: _Pending,
+        *,
+        recon_assessment_owner: (
+            Callable[[ReconAssessmentId], SourceCandidateId | None] | None
+        ) = None,
+    ) -> None:
         self._state = state
         self._pending = pending
+        self._recon_assessment_owner = recon_assessment_owner or (
+            self._state.recon_assessments.get
+        )
 
     def _status(self, candidate_id: SourceCandidateId) -> CandidateStatus | None:
         for decision, _event in reversed(self._pending.decisions):
@@ -462,7 +512,7 @@ class MemQualificationRepository(QualificationRepository):
                 "no cited registry observation establishes the claimed provider record"
             )
         if decision.recon_assessment_id is not None:
-            owner = self._state.recon_assessments.get(decision.recon_assessment_id)
+            owner = self._recon_assessment_owner(decision.recon_assessment_id)
             if owner != decision.candidate_id:
                 raise IntegrityError(
                     "the recon assessment does not belong to the candidate"
@@ -528,6 +578,25 @@ class MemQualificationRepository(QualificationRepository):
                 return decision
         return self._state.decisions_by_key.get(decision_key)
 
+    async def registry_v1_decisions_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> tuple[QualificationDecision, ...]:
+        visible = {
+            item.decision_id: item for item in self._state.decisions_by_id.values()
+        }
+        for decision, _event in self._pending.decisions:
+            visible[decision.decision_id] = decision
+        selected = [
+            item
+            for item in visible.values()
+            if item.candidate_id == candidate_id
+            and item.method is QualificationMethod.REGISTRY_POLICY
+            and item.policy_id == "candidate-qualification"
+            and item.policy_version == "v1"
+        ]
+        selected.sort(key=lambda item: (item.evaluated_at, str(item.decision_id)))
+        return tuple(selected[:2])
+
     async def list_for_candidate(
         self, candidate_id: SourceCandidateId
     ) -> tuple[QualificationDecision, ...]:
@@ -544,6 +613,33 @@ class MemQualificationRepository(QualificationRepository):
                 selected, key=lambda item: (item.evaluated_at, str(item.decision_id))
             )
         )
+
+
+def apply_pending_discovery(state: MemDiscoveryState, pending: _Pending) -> None:
+    """Apply one unit of work's staged discovery/access/decision mutations.
+
+    Shared by the PR 17 discovery fake and the PR 19 admission fake so the
+    commit semantics exist in exactly one place.
+    """
+    for observation in pending.observations:
+        state.observations_by_key[MemDiscoveryRepository._key(observation)] = (
+            observation
+        )
+        state.observations_by_id[observation.observation_id] = observation
+    for evidence in pending.access:
+        key = (
+            evidence.observation_id,
+            str(evidence.candidate_id),
+            evidence.status.value,
+        )
+        state.access[key] = evidence
+    for decision, event in pending.decisions:
+        state.candidate_status[decision.candidate_id] = decision.new_status
+        state.candidate_events.append(event)
+        state.decisions_by_key[decision.decision_key] = decision
+        state.decisions_by_id[decision.decision_id] = decision
+    for provider_id, checkpoint in pending.registry_checkpoints.items():
+        state.registry_checkpoints[provider_id] = checkpoint
 
 
 class MemDiscoveryUnitOfWork(UnitOfWork):
@@ -571,25 +667,7 @@ class MemDiscoveryUnitOfWork(UnitOfWork):
             await self.rollback()
 
     async def commit(self) -> None:
-        for observation in self._pending.observations:
-            self._state.observations_by_key[
-                MemDiscoveryRepository._key(observation)
-            ] = observation
-            self._state.observations_by_id[observation.observation_id] = observation
-        for evidence in self._pending.access:
-            key = (
-                evidence.observation_id,
-                str(evidence.candidate_id),
-                evidence.status.value,
-            )
-            self._state.access[key] = evidence
-        for decision, event in self._pending.decisions:
-            self._state.candidate_status[decision.candidate_id] = decision.new_status
-            self._state.candidate_events.append(event)
-            self._state.decisions_by_key[decision.decision_key] = decision
-            self._state.decisions_by_id[decision.decision_id] = decision
-        for provider_id, checkpoint in self._pending.registry_checkpoints.items():
-            self._state.registry_checkpoints[provider_id] = checkpoint
+        apply_pending_discovery(self._state, self._pending)
         self._pending = _Pending.empty()
         self.commits += 1
 
@@ -614,6 +692,10 @@ class MemDiscoveryUnitOfWork(UnitOfWork):
         if self._qualification is None:
             self._qualification = MemQualificationRepository(self._state, self._pending)
         return self._qualification
+
+    @property
+    def admission(self) -> Any:
+        raise AssertionError("discovery fake exposes no admission repository")
 
     @property
     def source_candidates(self) -> Any:
@@ -705,6 +787,7 @@ __all__ = [
     "MemDiscoveryState",
     "MemDiscoveryUnitOfWork",
     "MemQualificationRepository",
+    "apply_pending_discovery",
     "seed_candidate",
     "seed_observation",
     "seed_recon_assessment",

@@ -46,7 +46,9 @@ from darkula.domain.discovery import (
 from darkula.domain.registry_polling import validate_registry_cursor
 from darkula.domain.source import EndpointType
 from darkula.infrastructure.discovery.http import (
+    RANSOMLOOK_ORIGIN,
     RegistryHttpTransport,
+    StdlibRegistryHttpTransport,
     validate_relative_path,
 )
 
@@ -467,6 +469,19 @@ class RansomLookDiscoveryAdapter:
         self._request_interval_seconds = request_interval_seconds
         self._logical_requests = 0
         self._sleep = sleep
+
+    @property
+    def uses_fixed_origin_transport(self) -> bool:
+        """True only for the exact production fixed-origin HTTPX transport.
+
+        Deliberately uses ``type(...) is`` (never ``isinstance``): a subclass
+        must not gain approved-ingestion trust automatically.
+        """
+        return (
+            type(self._transport) is StdlibRegistryHttpTransport
+            and self._transport.build_url("/api/groups")
+            == RANSOMLOOK_ORIGIN + "/api/groups"
+        )
 
     async def _wait(self, seconds: float) -> None:
         if self._sleep is not None:

@@ -286,6 +286,10 @@ class MemSourceAnalysisUnitOfWork(UnitOfWork):
     def qualification(self) -> Any:
         raise AssertionError("source-analysis fake exposes no qualification repository")
 
+    @property
+    def admission(self) -> Any:
+        raise AssertionError("source-analysis fake exposes no admission repository")
+
 
 class MemSourceAnalysisSpi(DarkulaSpi):
     """One in-memory SPI producing the PR 14 fakes."""

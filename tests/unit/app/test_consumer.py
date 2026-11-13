@@ -155,6 +155,10 @@ class _FakeUoW(UnitOfWork):
     def qualification(self) -> Any:
         raise AssertionError("consumer test exposes no qualification repository")
 
+    @property
+    def admission(self) -> Any:
+        raise AssertionError("consumer test exposes no admission repository")
+
     async def record(
         self,
         *,

@@ -417,3 +417,27 @@ limited to aggregate counts, checkpoint generation, and outcome — never
 source names, URLs, or response bodies. RansomLook registry data are made
 available by their contributors under CC BY 4.0; observations are
 third-party claims, not verified facts.
+
+### Candidate admission and qualification group (PR 19)
+
+Candidate admission is an explicit operator/programmatic step, never started
+by importing a module, composing `Settings`, loading a profile, or running
+the PR 18 poller. Registry trust is **default-deny**: a provider's reputation
+alone never authorizes qualification, crawling, promotion, or collection.
+
+```toml
+[qualification]
+ransomlook_location_trusted = false
+max_admission_batch = 25
+```
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `ransomlook_location_trusted` | `false` | Permit prospective `REGISTRY_POLICY` qualification for the fixed `RANSOMLOOK_LOCATION_V1` rule. Disabling it never reverses recorded decisions. |
+| `max_admission_batch` | `25` | Hard ceiling for one pending-admission batch (`1..50`). |
+
+Overrides: `DARKULA_QUALIFICATION__RANSOMLOOK_LOCATION_TRUSTED`,
+`DARKULA_QUALIFICATION__MAX_ADMISSION_BATCH`. Unknown keys fail closed, and
+the policy ID/version (`candidate-qualification`/`v1`) and rule ID are fixed
+developer-controlled code, not caller-provided configuration. A future policy
+change requires a new version; `v1` is never redefined.

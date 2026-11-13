@@ -153,6 +153,23 @@ class RegistryPollResult:
     outcome: RegistryPollOutcome
 
 
+def _is_verified_ransomlook_pipeline(adapter: RegistryDiscoveryAdapter) -> bool:
+    """Return True only for the exact approved concrete RansomLook pipeline.
+
+    The import is function-local because ``ransomlook.py`` imports this
+    module; a module-level import would create a cycle. Exact type checks
+    (never ``isinstance``) prevent duck-typed adapters and subclasses from
+    gaining approved-ingestion trust.
+    """
+    from darkula.infrastructure.discovery.ransomlook import (
+        RansomLookDiscoveryAdapter,
+    )
+
+    if type(adapter) is not RansomLookDiscoveryAdapter:
+        return False
+    return adapter.provider_id == "ransomlook" and adapter.uses_fixed_origin_transport
+
+
 class RegistryPoller:
     """Deterministic one-shot registry poller (no scheduler, no daemon)."""
 
@@ -186,7 +203,7 @@ class RegistryPoller:
             )
 
     async def _ingest_exact(
-        self, claim: DiscoveryInput
+        self, claim: DiscoveryInput, *, verified_registry: bool
     ) -> tuple[DiscoveryObservation, bool]:
         """Ingest one claim, reusing the stored ``observed_at`` on replay.
 
@@ -194,14 +211,16 @@ class RegistryPoller:
         registry index/detail need not supply a stable observation time.
         Reading the semantic key first and replacing the claim's timestamp
         with the stored one keeps the exact replay semantics unchanged.
-        Returns ``(observation, replayed)``.
+        ``verified_registry`` selects the internal approved-pipeline
+        persistence entry point; it never changes what is observed or
+        counted. Returns ``(observation, replayed)``.
         """
         existing = await self._read_observation(claim)
         if existing is not None:
             adjusted = replace(claim, observed_at=existing.observed_at)
-            return await self._service.ingest(adjusted), True
+            return await self._persist_claim(adjusted, verified_registry), True
         try:
-            return await self._service.ingest(claim), False
+            return await self._persist_claim(claim, verified_registry), False
         except ConflictError:
             # A concurrent first writer won the same semantic tuple. Read
             # exactly once and replay; never loop.
@@ -209,7 +228,14 @@ class RegistryPoller:
             if existing is None:
                 raise
             adjusted = replace(claim, observed_at=existing.observed_at)
-            return await self._service.ingest(adjusted), True
+            return await self._persist_claim(adjusted, verified_registry), True
+
+    async def _persist_claim(
+        self, claim: DiscoveryInput, verified_registry: bool
+    ) -> DiscoveryObservation:
+        if verified_registry:
+            return await self._service._ingest_verified_registry_claim(claim)
+        return await self._service.ingest(claim)
 
     async def _advance(
         self,
@@ -330,6 +356,7 @@ class RegistryPoller:
                 outcome=RegistryPollOutcome.COOLDOWN,
             )
 
+        verified_registry = _is_verified_ransomlook_pipeline(adapter)
         try:
             names = await adapter.list_entry_ids()
         except RegistryRateLimited as exc:
@@ -416,7 +443,9 @@ class RegistryPoller:
             provider = adapter.for_entry(entry_id, observed_at=self._clock())
             try:
                 async for claim in provider.observations():
-                    observation, was_replayed = await self._ingest_exact(claim)
+                    observation, was_replayed = await self._ingest_exact(
+                        claim, verified_registry=verified_registry
+                    )
                     del observation
                     if was_replayed:
                         replayed += 1

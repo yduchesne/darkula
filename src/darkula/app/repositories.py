@@ -35,6 +35,10 @@ from uuid import UUID
 
 from darkula.app.data_stream import StreamMessage
 from darkula.app.object_store import ContentHash
+from darkula.domain.candidate_admission import (
+    AdmissionResult,
+    AliasSuggestionsResult,
+)
 from darkula.domain.collection import (
     CollectionFailureCode,
     CollectionPolicy,
@@ -57,6 +61,7 @@ from darkula.domain.discovery import (
 from darkula.domain.extraction import ExtractedEntity, ExtractionResult
 from darkula.domain.geography import GeographicResolution
 from darkula.domain.identifiers import (
+    CandidateEventId,
     CollectionPolicyId,
     CollectionRunId,
     ConsumerId,
@@ -92,6 +97,7 @@ from darkula.domain.source import (
 
 __all__ = [
     "AccessRepository",
+    "AdmissionRepository",
     "ClaimOutcome",
     "CollectionRepository",
     "ContentRepository",
@@ -867,6 +873,115 @@ class DiscoveryRepository(ABC):
         """
 
 
+class AdmissionRepository(ABC):
+    """Candidate admission ledger and locator-slot contract (PR 19).
+
+    All methods are transaction-scoped through the owning unit of work.
+    Admission is the explicit post-ingest step over an already persisted,
+    immutable :class:`~darkula.domain.discovery.DiscoveryObservation`; it
+    never fetches, crawls, resolves DNS, calls an LLM, promotes a Source,
+    creates an endpoint, or grants collection/access authority.
+
+    ``admit`` is the only write operation. It is idempotent: an exact replay
+    returns the stored original result. A normalized-locator digest is a
+    lookup key only, so equal URLs never establish logical Source
+    equivalence, and a candidate identity is never derived from a locator.
+    """
+
+    @abstractmethod
+    async def pending_observation_ids(
+        self, provider_id: str, *, limit: int = 25
+    ) -> tuple[DiscoveryObservationId, ...]:
+        """Return provider observations with no admission ledger row yet.
+
+        Deterministic ``(ingested_at, observation_id)`` order; ``limit`` is
+        bounded to ``1..50``.
+        """
+
+    @abstractmethod
+    async def admit(
+        self,
+        observation_id: DiscoveryObservationId,
+        candidate_id: SourceCandidateId,
+        event_id: CandidateEventId,
+        *,
+        processed_at: datetime,
+    ) -> AdmissionResult:
+        """Admit one immutable observation (the only admission writer).
+
+        The candidate/event identities are used only if the attempt creates
+        a new candidate; the database decides whether the attempt creates a
+        new candidate or reuses the committed winner.
+
+        :raises NotFoundError: if the observation does not exist.
+        :raises ConflictError: if candidate/event creation raced an existing
+            identity (the caller may retry once in a fresh unit of work).
+        """
+
+    @abstractmethod
+    async def get(
+        self, observation_id: DiscoveryObservationId
+    ) -> AdmissionResult | None:
+        """Return the stored admission result or ``None`` when unresolved."""
+
+    @abstractmethod
+    async def claims_for_candidate(
+        self, candidate_id: SourceCandidateId, *, limit: int = 65
+    ) -> tuple[DiscoveryObservation, ...]:
+        """Return the immutable claims linked to one candidate.
+
+        Deterministic ``(ingested_at, observation_id)`` order; ``limit`` is
+        bounded to ``1..65`` so callers can detect an over-64 claim set.
+        """
+
+    @abstractmethod
+    async def possible_aliases(
+        self, candidate_id: SourceCandidateId, *, limit: int = 16
+    ) -> AliasSuggestionsResult:
+        """Return bounded, read-only possible mirror/alias claims.
+
+        Suggestions never merge Sources, rotate endpoints, admit one
+        candidate as another, or imply trust.
+        """
+
+    @abstractmethod
+    async def record_verified_registry_observation(
+        self, observation_id: DiscoveryObservationId, *, verified_at: datetime
+    ) -> None:
+        """Write or replay the immutable approved-pipeline marker.
+
+        Only trusted application code that observed the claim through the
+        concrete fixed-origin RansomLook poller/transport may invoke this.
+        The marker records *which application ingestion path was used*; it is
+        never a cryptographic attestation from the remote registry.
+
+        :raises NotFoundError: if the observation does not exist.
+        :raises AdmissionInvariantError: if the stored observation is not a
+            RansomLook ``REGISTRY`` claim.
+        """
+
+    @abstractmethod
+    async def verified_registry_observation_ids_for_candidate(
+        self, candidate_id: SourceCandidateId, *, limit: int = 65
+    ) -> tuple[DiscoveryObservationId, ...]:
+        """Return at most 65 admitted observation IDs with approved markers.
+
+        Deterministic ``(ingested_at, observation_id)`` order; ``limit`` is
+        bounded to ``1..65`` so callers detect an over-64 evidence set.
+        """
+
+    @abstractmethod
+    async def current_endpoint_match(
+        self, candidate_id: SourceCandidateId
+    ) -> tuple[bool, bool]:
+        """Return ``(locator_slot_present, any_exact_managed_endpoint)``.
+
+        A missing locator slot is an unsafe state, never "zero endpoints".
+        The exact-match check concerns existing managed ownership only; it
+        never mutates or infers Source identity.
+        """
+
+
 class AccessRepository(ABC):
     """Immutable access-evidence persistence contract (PR 17).
 
@@ -915,6 +1030,17 @@ class AccessRepository(ABC):
     ) -> AccessEvidence | None:
         """Return the deterministic latest endpoint evidence or ``None``."""
 
+    @abstractmethod
+    async def has_credentials_pending_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> bool:
+        """Bounded existence check; do not materialize access-evidence history.
+
+        Any historical ``CREDENTIALS_PENDING`` row for the candidate returns
+        ``True`` in PR 19. This is not an assertion that access is ``READY``
+        or that credentials were provisioned.
+        """
+
 
 class QualificationRepository(ABC):
     """Immutable qualification-decision persistence contract (PR 17).
@@ -961,6 +1087,17 @@ class QualificationRepository(ABC):
     @abstractmethod
     async def get_by_key(self, decision_key: str) -> QualificationDecision | None:
         """Return the decision for a stable replay key or ``None``."""
+
+    @abstractmethod
+    async def registry_v1_decisions_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> tuple[QualificationDecision, ...]:
+        """Return at most two historical registry-policy v1 decisions.
+
+        Empty => no decision; one => possible immutable replay; two =>
+        ambiguous invariant requiring rejection by the application service.
+        Never loads unbounded history and never changes a decision.
+        """
 
     @abstractmethod
     async def list_for_candidate(

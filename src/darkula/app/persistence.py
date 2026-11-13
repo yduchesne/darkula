@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Self
 if TYPE_CHECKING:
     from darkula.app.repositories import (
         AccessRepository,
+        AdmissionRepository,
         CollectionRepository,
         ContentRepository,
         DiscoveryRepository,
@@ -74,6 +75,15 @@ class PersistenceUnavailableError(PersistenceError):
 class MappingError(PersistenceError):
     """A persisted value cannot be mapped to a documented domain value
     (for example an unsupported enum label). Bounded and data-free."""
+
+
+class AdmissionInvariantError(PersistenceError):
+    """A fatal candidate-admission invariant violation (PR 19).
+
+    Raised for a locator-digest collision or inconsistent persisted
+    admission state. These conditions are never retried, never "repaired"
+    by a fallback write, and never echo provider text or stored values.
+    """
 
 
 class UnitOfWork(ABC):
@@ -186,6 +196,12 @@ class UnitOfWork(ABC):
         """Return the immutable qualification-decision repository bound to
         this transaction (PR 17)."""
 
+    @property
+    @abstractmethod
+    def admission(self) -> AdmissionRepository:
+        """Return the candidate admission ledger repository bound to this
+        transaction (PR 19)."""
+
 
 class DarkulaSpi(ABC):
     """Darkula-owned persistence service boundary.
@@ -200,6 +216,7 @@ class DarkulaSpi(ABC):
 
 
 __all__ = [
+    "AdmissionInvariantError",
     "ConflictError",
     "DarkulaSpi",
     "IntegrityError",

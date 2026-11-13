@@ -225,6 +225,10 @@ class _Spi(DarkulaSpi):
                     "telemetry fake exposes no qualification repository"
                 )
 
+            @property
+            def admission(self) -> Any:
+                raise AssertionError("telemetry fake exposes no admission repository")
+
             async def append(
                 self, message: StreamMessage, *, stream_name: StreamName
             ) -> None:
