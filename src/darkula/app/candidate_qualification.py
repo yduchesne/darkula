@@ -629,41 +629,38 @@ class CandidateQualificationService:
         self,
         uow: UnitOfWork,
         candidate_id: SourceCandidateId,
-        claims: Sequence[DiscoveryObservation],
     ) -> QualificationDecision | None:
-        """Return the exact stored v1 decision for the latest claim, if any.
-
-        A replay is recognized *before* any status gate so an already
-        qualified candidate reports its immutable original decision instead
-        of a terminal-state outcome or a duplicate event.
-        """
-        if not claims:
+        """Find the immutable historic registry v1 decision independent of claims."""
+        decisions = await uow.qualification.registry_v1_decisions_for_candidate(
+            candidate_id
+        )
+        if len(decisions) > 1:
+            raise AdmissionInvariantError(
+                "multiple historical registry v1 decisions exist for this candidate"
+            )
+        if not decisions:
             return None
-        selected = max(
-            claims, key=lambda item: (item.ingested_at, str(item.observation_id))
-        )
-        evidence = (selected.observation_id,)
-        key = qualification_decision_key(
-            candidate_id=candidate_id,
-            method=QualificationMethod.REGISTRY_POLICY,
-            policy_id=QUALIFICATION_POLICY_ID,
-            policy_version=QUALIFICATION_POLICY_VERSION,
-            evidence_observation_ids=evidence,
-            recon_assessment_id=None,
-        )
-        return await uow.qualification.get_by_key(key)
+        decision = decisions[0]
+        if decision.candidate_id != candidate_id:
+            raise AdmissionInvariantError(
+                "historical registry decision belongs to another candidate"
+            )
+        if (
+            decision.method is not QualificationMethod.REGISTRY_POLICY
+            or decision.policy_id != QUALIFICATION_POLICY_ID
+            or decision.policy_version != QUALIFICATION_POLICY_VERSION
+        ):
+            raise AdmissionInvariantError(
+                "historical registry decision has unexpected policy identity"
+            )
+        return decision
 
     async def _apply_once(self, candidate_id: SourceCandidateId) -> QualificationResult:
         async with self._persistence.unit_of_work() as uow:
             stored_candidate = await uow.source_candidates.get(candidate_id)
             if stored_candidate is None:
                 raise NotFoundError("the candidate does not exist")
-            stored_claims = await uow.admission.claims_for_candidate(
-                candidate_id, limit=65
-            )
-            replay = await self._existing_registry_decision(
-                uow, candidate_id, stored_claims
-            )
+            replay = await self._existing_registry_decision(uow, candidate_id)
             if replay is not None:
                 await uow.commit()
                 return _registry_decision_replay_result(stored_candidate, replay)
@@ -726,12 +723,7 @@ class CandidateQualificationService:
             stored_candidate = await uow.source_candidates.get(candidate_id)
             if stored_candidate is None:
                 raise NotFoundError("the candidate does not exist")
-            stored_claims = await uow.admission.claims_for_candidate(
-                candidate_id, limit=65
-            )
-            replay = await self._existing_registry_decision(
-                uow, candidate_id, stored_claims
-            )
+            replay = await self._existing_registry_decision(uow, candidate_id)
             if replay is not None:
                 await uow.commit()
                 return _registry_decision_replay_result(stored_candidate, replay)

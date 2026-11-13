@@ -8,7 +8,7 @@ through the same PR 17 atomic primitive contract.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
@@ -38,9 +38,19 @@ from darkula.app.candidate_qualification import (
 from darkula.config.settings import QualificationSettings
 from darkula.domain.discovery import (
     DiscoveryDetectionMethod,
+    QualificationDecision,
     QualificationMethod,
+    QualificationOutcome,
+    qualification_decision_key,
+    qualification_new_status,
 )
-from darkula.domain.identifiers import SourceCandidateId
+from darkula.domain.identifiers import (
+    CandidateEventId,
+    DiscoveryObservationId,
+    QualificationDecisionId,
+    ReconAssessmentId,
+    SourceCandidateId,
+)
 from darkula.domain.source import CandidateStatus, EndpointType
 
 TRUSTED = QualificationSettings(ransomlook_location_trusted=True)
@@ -892,3 +902,673 @@ class TestFixupBoundedReads:
         async with spi.unit_of_work() as uow:
             result = await uow.access.has_credentials_pending_for_candidate(candidate)
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# PR 19-F2 — stable historical registry qualification replay (U19F2-01..20).
+# ---------------------------------------------------------------------------
+
+
+def _make_registry_decision(
+    candidate_id: SourceCandidateId,
+    evidence_observation_id: DiscoveryObservationId,
+    *,
+    outcome: QualificationOutcome = QualificationOutcome.QUALIFIED,
+    policy_id: str = QUALIFICATION_POLICY_ID,
+    policy_version: str = QUALIFICATION_POLICY_VERSION,
+    evaluated_at: datetime = T0,
+    provider_record_id: str = "location:" + "a" * 64,
+) -> QualificationDecision:
+    """Build one valid historical REGISTRY_POLICY decision fixture."""
+    method = QualificationMethod.REGISTRY_POLICY
+    evidence = (evidence_observation_id,)
+    return QualificationDecision(
+        decision_id=QualificationDecisionId.generate(),
+        candidate_id=candidate_id,
+        method=method,
+        outcome=outcome,
+        evaluated_at=evaluated_at,
+        policy_id=policy_id,
+        policy_version=policy_version,
+        evidence_observation_ids=evidence,
+        event_id=CandidateEventId.generate(),
+        expected_status=CandidateStatus.DISCOVERED,
+        new_status=qualification_new_status(outcome),
+        decision_key=qualification_decision_key(
+            candidate_id=candidate_id,
+            method=method,
+            policy_id=policy_id,
+            policy_version=policy_version,
+            evidence_observation_ids=evidence,
+            recon_assessment_id=None,
+        ),
+        provider_id="ransomlook",
+        provider_record_id=provider_record_id,
+        recon_assessment_id=None,
+    )
+
+
+@pytest.mark.asyncio
+class TestRegistryReplayAfterNewObservations:
+    """U19F2-01..20: candidate-level historic replay across new observations."""
+
+    async def test_u19f2_01_replay_after_new_version(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        first = build_observation(
+            url="http://f2-replay.example.test/",
+            record_id="location:" + "a" * 64,
+            record_version="v1",
+            observed_at=T0,
+            ingested_at=T0,
+        )
+        candidate = await _admit(spi, first, verified=True)
+        original = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        assert original.decision_id is not None
+        second = build_observation(
+            url="http://f2-replay.example.test/",
+            record_id="location:" + "a" * 64,
+            record_version="v2",
+            observed_at=T0 + timedelta(minutes=1),
+            ingested_at=T0 + timedelta(minutes=1),
+        )
+        assert await _admit(spi, second, verified=True) == candidate
+        replay = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        assert replay.decision_id == original.decision_id
+        assert replay.status is CandidateStatus.QUALIFIED
+        assert replay.replayed is True
+        assert len(spi.discovery.decisions_by_key) == 1
+        assert len(_decision_events(spi)) == 1
+
+    async def test_u19f2_02_promoted_replay_after_new_version(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        from darkula.domain.source import CandidateEventType
+
+        first = build_observation(
+            url="http://f2-promoted.example.test/",
+            record_id="location:" + "b" * 64,
+            observed_at=T0,
+            ingested_at=T0,
+        )
+        candidate = await _admit(spi, first, verified=True)
+        original = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        async with spi.unit_of_work() as uow:
+            stored = await uow.source_candidates.get(candidate)
+            assert stored is not None
+            await uow.source_candidates.transition(
+                candidate,
+                expected=CandidateStatus.QUALIFIED,
+                new_status=CandidateStatus.PROMOTED,
+                event=build_candidate_event(
+                    stored, event_type=CandidateEventType.PROMOTED
+                ),
+            )
+            await uow.commit()
+        second = build_observation(
+            url="http://f2-promoted.example.test/",
+            record_id="location:" + "b" * 64,
+            record_version="v2",
+            observed_at=T0 + timedelta(minutes=1),
+            ingested_at=T0 + timedelta(minutes=1),
+        )
+        await _admit(spi, second, verified=True)
+        replay = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        assert replay.decision_id == original.decision_id
+        assert replay.status is CandidateStatus.PROMOTED
+        assert replay.replayed is True
+        assert len(spi.discovery.decisions_by_key) == 1
+
+    async def test_u19f2_03_unverified_new_observation_does_not_block_replay(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        first = build_observation(
+            url="http://f2-unverified.example.test/",
+            record_id="location:" + "c" * 64,
+            observed_at=T0,
+            ingested_at=T0,
+        )
+        candidate = await _admit(spi, first, verified=True)
+        original = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        second = build_observation(
+            url="http://f2-unverified.example.test/",
+            record_id="location:" + "c" * 64,
+            record_version="v2",
+            observed_at=T0 + timedelta(minutes=1),
+            ingested_at=T0 + timedelta(minutes=1),
+        )
+        await _admit(spi, second, verified=False)
+        replay = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        assert replay.decision_id == original.decision_id
+        assert second.observation_id not in spi.admission.verified
+
+    async def test_u19f2_04_conflicting_later_claim_does_not_block_replay(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        first = build_observation(
+            url="http://f2-conflict.example.test/",
+            record_id="location:" + "d" * 64,
+            origin_reference=RANSOMLOOK_ORIGIN,
+            observed_at=T0,
+            ingested_at=T0,
+        )
+        candidate = await _admit(spi, first, verified=True)
+        original = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        second = build_observation(
+            url="http://f2-conflict.example.test/",
+            record_id="location:" + "e" * 64,
+            origin_reference="https://www.ransomlook.io/api/group/other",
+            observed_at=T0 + timedelta(minutes=1),
+            ingested_at=T0 + timedelta(minutes=1),
+        )
+        await _admit(spi, second, verified=True)
+        replay = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        assert replay.decision_id == original.decision_id
+        assert len(spi.discovery.decisions_by_key) == 1
+
+    async def test_u19f2_05_more_than_64_claims_replays(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        first = build_observation(
+            url="http://f2-many.example.test/",
+            record_id="location:" + "f" * 64,
+            observed_at=T0,
+            ingested_at=T0,
+        )
+        candidate = await _admit(spi, first, verified=True)
+        original = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        for index in range(65):
+            observation = build_observation(
+                url="http://f2-many.example.test/",
+                record_id="location:" + "f" * 64,
+                record_version=f"v{index + 2}",
+                observed_at=T0 + timedelta(seconds=index + 1),
+                ingested_at=T0 + timedelta(seconds=index + 1),
+            )
+            await _admit(spi, observation, verified=True)
+        replay = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        assert replay.decision_id == original.decision_id
+        assert replay.replayed is True
+        assert len(spi.discovery.decisions_by_key) == 1
+
+    async def test_u19f2_06_same_instant_new_observation_replays(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        first = build_observation(
+            url="http://f2-tie.example.test/",
+            record_id="location:" + "1" * 64,
+            observed_at=T0,
+            ingested_at=T0,
+        )
+        candidate = await _admit(spi, first, verified=True)
+        original = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        second = build_observation(
+            url="http://f2-tie.example.test/",
+            record_id="location:" + "1" * 64,
+            record_version="v2",
+            observed_at=T0,
+            ingested_at=T0,
+        )
+        await _admit(spi, second, verified=True)
+        replay = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        assert replay.decision_id == original.decision_id
+
+    async def test_u19f2_07_trust_off_still_replays_history(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        first = build_observation(
+            url="http://f2-trust-off.example.test/",
+            record_id="location:" + "2" * 64,
+            observed_at=T0,
+            ingested_at=T0,
+        )
+        candidate = await _admit(spi, first, verified=True)
+        original = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        second = build_observation(
+            url="http://f2-trust-off.example.test/",
+            record_id="location:" + "2" * 64,
+            record_version="v2",
+            observed_at=T0 + timedelta(minutes=1),
+            ingested_at=T0 + timedelta(minutes=1),
+        )
+        await _admit(spi, second, verified=True)
+        replay = await _qualification(spi, UNTRUSTED).evaluate_and_apply(candidate)
+        assert replay.decision_id == original.decision_id
+        assert replay.replayed is True
+
+    async def test_u19f2_08_auth_claim_new_observation_replays(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        first = build_observation(
+            url="http://f2-auth.example.test/",
+            record_id="location:" + "3" * 64,
+            observed_at=T0,
+            ingested_at=T0,
+        )
+        candidate = await _admit(spi, first, verified=True)
+        original = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        second = build_observation(
+            url="http://f2-auth.example.test/",
+            record_id="location:" + "3" * 64,
+            record_version="v2",
+            requires_auth_claim=True,
+            observed_at=T0 + timedelta(minutes=1),
+            ingested_at=T0 + timedelta(minutes=1),
+        )
+        await _admit(spi, second, verified=True)
+        replay = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        assert replay.decision_id == original.decision_id
+        assert replay.replayed is True
+
+    async def test_u19f2_09_agent_recon_terminal_is_not_registry_replay(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        from darkula.domain.discovery import (
+            QualificationMethod,
+            qualification_decision_key,
+        )
+        from darkula.domain.identifiers import (
+            CandidateEventId,
+            QualificationDecisionId,
+        )
+
+        candidate = build_candidate(
+            entrypoint="http://f2-agent.example.test/",
+            status=CandidateStatus.QUALIFIED,
+        )
+        await seed_candidate(spi, candidate, build_candidate_event(candidate))
+        assessment_id = ReconAssessmentId.generate()
+        evidence = (
+            build_observation(url="http://f2-agent.example.test/").observation_id,
+        )
+        key = qualification_decision_key(
+            candidate_id=candidate.candidate_id,
+            method=QualificationMethod.AGENT_RECON,
+            policy_id="candidate-qualification",
+            policy_version="v1",
+            evidence_observation_ids=evidence,
+            recon_assessment_id=assessment_id,
+        )
+        decision = QualificationDecision(
+            decision_id=QualificationDecisionId.generate(),
+            candidate_id=candidate.candidate_id,
+            method=QualificationMethod.AGENT_RECON,
+            outcome=QualificationOutcome.QUALIFIED,
+            evaluated_at=T0,
+            policy_id="candidate-qualification",
+            policy_version="v1",
+            evidence_observation_ids=evidence,
+            event_id=CandidateEventId.generate(),
+            expected_status=CandidateStatus.UNDER_RECONNAISSANCE,
+            new_status=CandidateStatus.QUALIFIED,
+            decision_key=key,
+            recon_assessment_id=assessment_id,
+        )
+        spi.discovery.decisions_by_key[key] = decision
+        spi.discovery.decisions_by_id[decision.decision_id] = decision
+        outcome = await _qualification(spi, TRUSTED).evaluate_and_apply(
+            candidate.candidate_id
+        )
+        assert outcome.route is QualificationRoute.ALREADY_TERMINAL_OR_BUSY
+        assert outcome.decision_id is None
+
+    async def test_u19f2_10_discovered_no_decision_trust_off(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        candidate = await _admit(
+            spi, build_observation(url="http://f2-none-off.example.test/")
+        )
+        outcome = await _qualification(spi, UNTRUSTED).evaluate_and_apply(candidate)
+        assert outcome.route is QualificationRoute.PENDING_RECON_POLICY_NOT_ELIGIBLE
+        assert outcome.decision_id is None
+        assert spi.discovery.decisions_by_key == {}
+
+    async def test_u19f2_11_prospective_qualification_unchanged(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        candidate = await _admit(
+            spi,
+            build_observation(url="http://f2-prospective.example.test/"),
+            verified=True,
+        )
+        outcome = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        assert outcome.route is QualificationRoute.REGISTRY_QUALIFIED
+        assert outcome.replayed is False
+        assert len(spi.discovery.decisions_by_key) == 1
+
+    async def test_u19f2_12_two_registry_decisions_fail_closed(
+        self, spi: MemAdmissionSpi, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from darkula.app.persistence import AdmissionInvariantError
+
+        candidate = build_candidate(
+            entrypoint="http://f2-duplicate.example.test/",
+            status=CandidateStatus.QUALIFIED,
+        )
+        await seed_candidate(spi, candidate, build_candidate_event(candidate))
+        two = (
+            _make_registry_decision(
+                candidate.candidate_id,
+                build_observation(
+                    url="http://f2-duplicate.example.test/"
+                ).observation_id,
+                provider_record_id="location:" + "a" * 64,
+            ),
+            _make_registry_decision(
+                candidate.candidate_id,
+                build_observation(
+                    url="http://f2-duplicate.example.test/"
+                ).observation_id,
+                provider_record_id="location:" + "a" * 64,
+                evaluated_at=T0 + timedelta(minutes=1),
+            ),
+        )
+        for decision in two:
+            spi.discovery.decisions_by_key[decision.decision_key] = decision
+            spi.discovery.decisions_by_id[decision.decision_id] = decision
+        with pytest.raises(AdmissionInvariantError):
+            await _qualification(spi, TRUSTED).evaluate_and_apply(
+                candidate.candidate_id
+            )
+        assert len(spi.discovery.decisions_by_key) == 2
+
+    async def test_u19f2_13_incompatible_status_fails_closed(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        from darkula.app.persistence import AdmissionInvariantError
+
+        candidate = build_candidate(
+            entrypoint="http://f2-rejected.example.test/",
+            status=CandidateStatus.REJECTED,
+        )
+        await seed_candidate(spi, candidate, build_candidate_event(candidate))
+        decision = _make_registry_decision(
+            candidate.candidate_id,
+            build_observation(url="http://f2-rejected.example.test/").observation_id,
+            provider_record_id="location:" + "b" * 64,
+        )
+        spi.discovery.decisions_by_key[decision.decision_key] = decision
+        spi.discovery.decisions_by_id[decision.decision_id] = decision
+        with pytest.raises(AdmissionInvariantError):
+            await _qualification(spi, TRUSTED).evaluate_and_apply(
+                candidate.candidate_id
+            )
+
+    async def test_u19f2_14_non_qualified_outcome_fails_closed(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        from darkula.app.persistence import AdmissionInvariantError
+
+        candidate = build_candidate(
+            entrypoint="http://f2-outcome.example.test/",
+            status=CandidateStatus.REJECTED,
+        )
+        await seed_candidate(spi, candidate, build_candidate_event(candidate))
+        decision = _make_registry_decision(
+            candidate.candidate_id,
+            build_observation(url="http://f2-outcome.example.test/").observation_id,
+            provider_record_id="location:" + "c" * 64,
+            outcome=QualificationOutcome.REJECTED,
+        )
+        spi.discovery.decisions_by_key[decision.decision_key] = decision
+        spi.discovery.decisions_by_id[decision.decision_id] = decision
+        with pytest.raises(AdmissionInvariantError):
+            await _qualification(spi, TRUSTED).evaluate_and_apply(
+                candidate.candidate_id
+            )
+
+    async def test_u19f2_15_wrong_candidate_or_policy_fails_closed(
+        self, spi: MemAdmissionSpi, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.support.discovery_fakes import MemQualificationRepository
+
+        from darkula.app.persistence import AdmissionInvariantError
+
+        candidate = build_candidate(
+            entrypoint="http://f2-wrong.example.test/",
+            status=CandidateStatus.QUALIFIED,
+        )
+        await seed_candidate(spi, candidate, build_candidate_event(candidate))
+        other_candidate = SourceCandidateId.generate()
+        wrong = _make_registry_decision(
+            other_candidate,
+            build_observation(url="http://f2-other.example.test/").observation_id,
+            provider_record_id="location:" + "d" * 64,
+        )
+
+        async def _wrong_candidate(
+            self: MemQualificationRepository, candidate_id: SourceCandidateId
+        ) -> tuple[QualificationDecision, ...]:
+            del candidate_id
+            return (wrong,)
+
+        monkeypatch.setattr(
+            MemQualificationRepository,
+            "registry_v1_decisions_for_candidate",
+            _wrong_candidate,
+        )
+        with pytest.raises(AdmissionInvariantError):
+            await _qualification(spi, TRUSTED).evaluate_and_apply(
+                candidate.candidate_id
+            )
+
+        wrong_policy = _make_registry_decision(
+            candidate.candidate_id,
+            build_observation(url="http://f2-wrong.example.test/").observation_id,
+            provider_record_id="location:" + "d" * 64,
+            policy_id="other-policy",
+            policy_version="v9",
+        )
+
+        async def _wrong_policy(
+            self: MemQualificationRepository, candidate_id: SourceCandidateId
+        ) -> tuple[QualificationDecision, ...]:
+            del candidate_id
+            return (wrong_policy,)
+
+        monkeypatch.setattr(
+            MemQualificationRepository,
+            "registry_v1_decisions_for_candidate",
+            _wrong_policy,
+        )
+        with pytest.raises(AdmissionInvariantError):
+            await _qualification(spi, TRUSTED).evaluate_and_apply(
+                candidate.candidate_id
+            )
+
+    async def test_u19f2_16_other_policy_and_agent_not_registry_replay(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        candidate = build_candidate(
+            entrypoint="http://f2-other-policy.example.test/",
+            status=CandidateStatus.QUALIFIED,
+        )
+        await seed_candidate(spi, candidate, build_candidate_event(candidate))
+        other = _make_registry_decision(
+            candidate.candidate_id,
+            build_observation(
+                url="http://f2-other-policy.example.test/"
+            ).observation_id,
+            provider_record_id="location:" + "e" * 64,
+            policy_id="legacy-policy",
+            policy_version="v0",
+        )
+        spi.discovery.decisions_by_key[other.decision_key] = other
+        spi.discovery.decisions_by_id[other.decision_id] = other
+        outcome = await _qualification(spi, TRUSTED).evaluate_and_apply(
+            candidate.candidate_id
+        )
+        assert outcome.route is QualificationRoute.ALREADY_TERMINAL_OR_BUSY
+        assert outcome.decision_id is None
+
+    async def test_u19f2_17_race_retry_finds_historic_decision(
+        self, spi: MemAdmissionSpi, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.support.discovery_fakes import MemQualificationRepository
+
+        from darkula.app.persistence import ConflictError
+
+        first = build_observation(
+            url="http://f2-race.example.test/",
+            record_id="location:" + "4" * 64,
+            observed_at=T0,
+            ingested_at=T0,
+        )
+        candidate = await _admit(spi, first, verified=True)
+        second = build_observation(
+            url="http://f2-race.example.test/",
+            record_id="location:" + "4" * 64,
+            record_version="v2",
+            observed_at=T0 + timedelta(minutes=1),
+            ingested_at=T0 + timedelta(minutes=1),
+        )
+        await _admit(spi, second, verified=True)
+
+        async def _lose(
+            self: MemQualificationRepository,
+            decision: QualificationDecision,
+            event: Any,
+        ) -> Any:
+            # Simulate a concurrent winner persisting D before our conflict.
+            from dataclasses import replace as _replace
+
+            self._state.decisions_by_key[decision.decision_key] = decision
+            self._state.decisions_by_id[decision.decision_id] = decision
+            self._state.candidate_status[decision.candidate_id] = decision.new_status
+            stored = spi.candidates.candidates.get(decision.candidate_id)
+            if stored is not None:
+                spi.candidates.candidates[decision.candidate_id] = _replace(
+                    stored, status=decision.new_status
+                )
+            del event
+            raise ConflictError("simulated concurrent qualification winner")
+
+        monkeypatch.setattr(MemQualificationRepository, "decide_and_transition", _lose)
+        outcome = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        assert outcome.route is QualificationRoute.REGISTRY_QUALIFIED
+        assert outcome.replayed is True
+        assert outcome.decision_id is not None
+        assert len(self._decisions(spi)) == 1
+
+    async def test_u19f2_18_race_with_two_decisions_fails_closed(
+        self, spi: MemAdmissionSpi, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.support.discovery_fakes import MemQualificationRepository
+
+        from darkula.app.persistence import AdmissionInvariantError
+
+        candidate = build_candidate(
+            entrypoint="http://f2-race-two.example.test/",
+            status=CandidateStatus.QUALIFIED,
+        )
+        await seed_candidate(spi, candidate, build_candidate_event(candidate))
+        two = (
+            _make_registry_decision(
+                candidate.candidate_id,
+                build_observation(
+                    url="http://f2-race-two.example.test/"
+                ).observation_id,
+                provider_record_id="location:" + "f" * 64,
+            ),
+            _make_registry_decision(
+                candidate.candidate_id,
+                build_observation(
+                    url="http://f2-race-two.example.test/"
+                ).observation_id,
+                provider_record_id="location:" + "f" * 64,
+                evaluated_at=T0 + timedelta(minutes=1),
+            ),
+        )
+        for decision in two:
+            spi.discovery.decisions_by_key[decision.decision_key] = decision
+            spi.discovery.decisions_by_id[decision.decision_id] = decision
+
+        async def _unused(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("decide_and_transition must not run")
+
+        monkeypatch.setattr(
+            MemQualificationRepository, "decide_and_transition", _unused
+        )
+        with pytest.raises(AdmissionInvariantError):
+            await _qualification(spi, TRUSTED)._resolve_race(candidate.candidate_id)
+
+    async def test_u19f2_19_replay_uses_only_bounded_lookup(
+        self, spi: MemAdmissionSpi, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.support.admission_fakes import MemAdmissionRepository
+        from tests.support.discovery_fakes import (
+            MemQualificationRepository,
+        )
+
+        first = build_observation(
+            url="http://f2-bound.example.test/",
+            record_id="location:" + "5" * 64,
+            observed_at=T0,
+            ingested_at=T0,
+        )
+        candidate = await _admit(spi, first, verified=True)
+        original = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+
+        async def _forbidden(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("unbounded replay read must not be used")
+
+        monkeypatch.setattr(MemAdmissionRepository, "claims_for_candidate", _forbidden)
+        monkeypatch.setattr(
+            MemQualificationRepository, "list_for_candidate", _forbidden
+        )
+        calls: list[SourceCandidateId] = []
+        bounded = MemQualificationRepository.registry_v1_decisions_for_candidate
+
+        async def _spy(
+            self: MemQualificationRepository, candidate_id: SourceCandidateId
+        ) -> tuple[QualificationDecision, ...]:
+            calls.append(candidate_id)
+            return await bounded(self, candidate_id)
+
+        monkeypatch.setattr(
+            MemQualificationRepository,
+            "registry_v1_decisions_for_candidate",
+            _spy,
+        )
+        replay = await _qualification(spi, TRUSTED).evaluate_and_apply(candidate)
+        assert replay.decision_id == original.decision_id
+        assert calls == [candidate]
+
+    async def test_u19f2_20_fake_bounded_lookup_counts_and_order(
+        self, spi: MemAdmissionSpi
+    ) -> None:
+        candidate = build_candidate(
+            entrypoint="http://f2-counts.example.test/",
+            status=CandidateStatus.QUALIFIED,
+        )
+        await seed_candidate(spi, candidate, build_candidate_event(candidate))
+        decisions = [
+            _make_registry_decision(
+                candidate.candidate_id,
+                build_observation(url="http://f2-counts.example.test/").observation_id,
+                provider_record_id="location:" + "6" * 64,
+                evaluated_at=T0 + timedelta(seconds=index),
+            )
+            for index in range(3)
+        ]
+        for decision in decisions:
+            spi.discovery.decisions_by_key[decision.decision_key] = decision
+            spi.discovery.decisions_by_id[decision.decision_id] = decision
+        async with spi.unit_of_work() as uow:
+            result = await uow.qualification.registry_v1_decisions_for_candidate(
+                candidate.candidate_id
+            )
+        assert len(result) == 2
+        ordered = sorted(
+            decisions, key=lambda item: (item.evaluated_at, str(item.decision_id))
+        )
+        assert result == tuple(ordered[:2])
+        assert all(
+            decision.policy_id == QUALIFICATION_POLICY_ID
+            and decision.policy_version == QUALIFICATION_POLICY_VERSION
+            for decision in result
+        )
+
+    @staticmethod
+    def _decisions(spi: MemAdmissionSpi) -> list[QualificationDecision]:
+        return list(spi.discovery.decisions_by_key.values())

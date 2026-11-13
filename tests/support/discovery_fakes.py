@@ -578,6 +578,25 @@ class MemQualificationRepository(QualificationRepository):
                 return decision
         return self._state.decisions_by_key.get(decision_key)
 
+    async def registry_v1_decisions_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> tuple[QualificationDecision, ...]:
+        visible = {
+            item.decision_id: item for item in self._state.decisions_by_id.values()
+        }
+        for decision, _event in self._pending.decisions:
+            visible[decision.decision_id] = decision
+        selected = [
+            item
+            for item in visible.values()
+            if item.candidate_id == candidate_id
+            and item.method is QualificationMethod.REGISTRY_POLICY
+            and item.policy_id == "candidate-qualification"
+            and item.policy_version == "v1"
+        ]
+        selected.sort(key=lambda item: (item.evaluated_at, str(item.decision_id)))
+        return tuple(selected[:2])
+
     async def list_for_candidate(
         self, candidate_id: SourceCandidateId
     ) -> tuple[QualificationDecision, ...]:

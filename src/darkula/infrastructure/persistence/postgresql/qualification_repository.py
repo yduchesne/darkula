@@ -46,6 +46,9 @@ _DECIDE_FN = (
 )
 _GET_FN = "SELECT * FROM qualification_decision_get_v1(%s)"
 _GET_BY_KEY_FN = "SELECT * FROM qualification_decision_get_by_key_v1(%s)"
+_REGISTRY_V1_FOR_CANDIDATE_FN = (
+    "SELECT * FROM qualification_registry_v1_decisions_for_candidate_v1(%s)"
+)
 _LIST_FOR_CANDIDATE_FN = (
     "SELECT * FROM qualification_decision_list_for_candidate_v1(%s)"
 )
@@ -176,6 +179,16 @@ class PostgresQualificationRepository(QualificationRepository):
     async def get_by_key(self, decision_key: str) -> QualificationDecision | None:
         row = await self._fetch_one(_GET_BY_KEY_FN, (decision_key,))
         return None if row is None else map_qualification_decision(row)
+
+    async def registry_v1_decisions_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> tuple[QualificationDecision, ...]:
+        rows = await self._fetch_all(
+            _REGISTRY_V1_FOR_CANDIDATE_FN, (str(candidate_id),)
+        )
+        if len(rows) > 2:
+            raise MappingError("registry decision lookup exceeded its bounded result")
+        return tuple(map_qualification_decision(row) for row in rows)
 
     async def list_for_candidate(
         self, candidate_id: SourceCandidateId

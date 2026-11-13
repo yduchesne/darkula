@@ -67,6 +67,18 @@ status is a typed invariant error. `CREDENTIALS_PENDING` readiness and recon
 dispatch use an indexed, constant-shape SQL `EXISTS` probe instead of
 retrieving access-evidence history.
 
+**Delivered by PR 19-F2 (stable historical replay):** historical
+`REGISTRY_POLICY` replay resolves by candidate and the frozen
+`(method, policy_id, policy_version)` tuple, **not** by the newest admitted
+observation. Later admitted provider versions (same locator, new record
+version) therefore no longer obscure the original decision: replay returns
+the exact original decision identity and the candidate's current `QUALIFIED`
+or `PROMOTED` status with no new decision, event, assessment, transition, or
+admission row. Membership is bounded to two rows in one read-only SQL
+function; two matching decisions are an invariant error rather than a choice
+by time or key. The PR 17 atomic writer, PR 19-F1 trust/endpoint/access
+guards, `AGENT_RECON` path, and admission semantics are unchanged.
+
 The existing `SourceCandidate` identity and lifecycle remain authoritative. **v0.2 adds policy-routed qualification:** a trusted, versioned `CandidateQualificationPolicy` can qualify a complete, non-conflicting record from an explicitly approved registry adapter *without* ReconAgent or an LLM; incomplete/ambiguous records go through the existing `ReconCoordinator` (when authorized) or remain pending. The `ReconAgent` does not gain network tooling or persistence access. `QUALIFIED` remains distinct from `PROMOTED`. Discovery cannot silently promote Sources or manufacture CollectionPolicies.
 
 Do not equate URI equality with logical Source identity. Repeated observations of one locator can converge while preserving every provider/evidence record. A claimed alias or mirror is only a proposed relationship pending verification/approval; source merging cannot be inferred solely from text, redirects, or provider claims. A `WebSearchProvider` may later contribute observations, but the initial v0.2 adapter is structured registry ingestion, not unrestricted agent search.

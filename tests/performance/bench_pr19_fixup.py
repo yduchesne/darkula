@@ -13,7 +13,7 @@ Usage::
         --warmup 40 --samples 200 --output .benchmarks/pr19f1-local.json
 
 The database must be the Darkula-owned integration PostgreSQL on the
-host-published port 35432, migrated to ``0012_candidate_qualification_fixup.sql``
+host-published port 35432, migrated to ``0013_registry_qualification_replay.sql``
 and otherwise empty of business data.
 """
 
@@ -39,7 +39,7 @@ from darkula.config.loader import load_settings
 FIXED_TIME = datetime(2026, 11, 12, 12, 0, 0, tzinfo=UTC)
 CASES = (0, 1, 64, 512)
 ACCESS_COUNTS = (0, 1, 64, 512)
-EXPECTED_HEAD = "0012_candidate_qualification_fixup.sql"
+EXPECTED_HEAD = "0013_registry_qualification_replay.sql"
 OUTPUT_ROOT = Path(".benchmarks")
 
 

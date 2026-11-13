@@ -99,6 +99,12 @@ See [v0.2 Roadmap](ROADMAP_V02.md). These are **design constraints and future ac
 
 **Registry provenance is application-attested, not provider-asserted (PR 19-F1).** A `DiscoveryInput` with a forged `provider_id='ransomlook'`, a plausible `origin_reference`, and a well-formed `location:` record ID remains **untrusted** until its persisted observation carries a separate `trusted_registry_observation` marker. The marker is written only by trusted application code after exact concrete type checks of the `RansomLookDiscoveryAdapter` and its `StdlibRegistryHttpTransport` (fixed `https://www.ransomlook.io:443` origin) — never via the generic `SourceDiscoveryService.ingest` API, a duck-typed adapter, a fake transport, or a subclass. It commits in the same unit of work as the observation and is append-only. This is a trusted-pipeline provenance record, **not** cryptographic upstream verification, and it cannot defend against an adversary who already runs Python in-process or holds unrestricted application PostgreSQL credentials. The operator trust flag remains default-off and independent of the marker. Mixed verified/unverified evidence fails closed, an existing managed `SourceEndpoint` for the candidate's exact locator blocks new automatic qualification, and the historical-decision replay path reports the current lifecycle status without rewriting history.
 
+Historical registry replay ambiguity also fails closed: the candidate-level
+lookup returns at most two matching `REGISTRY_POLICY` v1 decisions, and two or
+more are treated as an invariant error rather than selecting one by time or
+key. This is a read-only bound; it changes no trust, authorization, or
+credential semantics.
+
 **Required tests.** Include forbidden egress and DNS/redirect negatives, policy cancellation, failed Tor transport, malicious discovery payloads, duplicate/racing feed records, mirror-claim spoofing, prompt injection, bounded artifact and resource limits, credential isolation, telemetry redaction, and source/provenance preservation. CI runs deterministic Fake World/controlled fixtures; live destination checks are explicit operator-approved opt-ins, not CI dependencies.
 
 

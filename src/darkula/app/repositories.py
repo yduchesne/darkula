@@ -1089,6 +1089,17 @@ class QualificationRepository(ABC):
         """Return the decision for a stable replay key or ``None``."""
 
     @abstractmethod
+    async def registry_v1_decisions_for_candidate(
+        self, candidate_id: SourceCandidateId
+    ) -> tuple[QualificationDecision, ...]:
+        """Return at most two historical registry-policy v1 decisions.
+
+        Empty => no decision; one => possible immutable replay; two =>
+        ambiguous invariant requiring rejection by the application service.
+        Never loads unbounded history and never changes a decision.
+        """
+
+    @abstractmethod
     async def list_for_candidate(
         self, candidate_id: SourceCandidateId
     ) -> tuple[QualificationDecision, ...]:

@@ -132,6 +132,7 @@ EXPECTED_FUNCTIONS = {
     "trusted_registry_candidate_ids_v1",
     "candidate_current_endpoint_match_v1",
     "access_evidence_has_pending_v1",
+    "qualification_registry_v1_decisions_for_candidate_v1",
 }
 
 
@@ -172,8 +173,8 @@ class TestMigrations:
                 ledger = [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
-        # The ledger head is the newest shipped artifact (PR 19-F1 added 0012).
-        assert ledger[-1].startswith("0012_candidate_qualification_fixup.sql")
+        # The ledger head is the newest shipped artifact (PR 19-F2 added 0013).
+        assert ledger[-1].startswith("0013_registry_qualification_replay.sql")
 
     def test_expected_tables_exist(self, database_settings: DatabaseSettings) -> None:
         conn = _raw_connect(database_settings)
@@ -286,6 +287,7 @@ class TestSchemaContinuity:
             "0010_registry_polling.sql",
             "0011_candidate_admission.sql",
             "0012_candidate_qualification_fixup.sql",
+            "0013_registry_qualification_replay.sql",
         ]
         assert [version for version, _count in rows] == expected
         assert all(count == 1 for _version, count in rows)

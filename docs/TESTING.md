@@ -1423,3 +1423,60 @@ Known limits: the marker is application-attested (no cryptographic upstream
 signature); the current endpoint guard is a committed-state read and does not
 serialize a concurrently committing `SourceEndpoint` insert; the live
 RansomLook response contract is not validated in CI.
+
+## PR 19-F2 testing status — stable historical registry qualification replay
+
+Migration `0013_registry_qualification_replay.sql` adds one read-only SQL
+function, `qualification_registry_v1_decisions_for_candidate_v1`, returning at
+most two `REGISTRY_POLICY` / `candidate-qualification` / `v1` decisions for one
+candidate in `(evaluated_at, decision_id)` order. Replay resolves by
+candidate and frozen policy identity, never by the newest admission-linked
+observation.
+
+### Unit matrix (U19F2-01 .. U19F2-20)
+
+`tests/unit/app/test_candidate_qualification.py` adds
+`TestRegistryReplayAfterNewObservations`:
+
+| ID | Assertion |
+| --- | --- |
+| U19F2-01 | qualify from v1, admit a later v2 same locator, replay exact original decision ID with `QUALIFIED` and no second decision/event |
+| U19F2-02 | same after a legal `QUALIFIED -> PROMOTED` transition; replay reports `PROMOTED` |
+| U19F2-03 | later unverified observation does not block or requalify historical replay |
+| U19F2-04 | later conflicting record/origin claim does not block historical replay |
+| U19F2-05 | 65 later admitted versions (66 claims total) still replay without a claim bound |
+| U19F2-06 | same-instant later observation does not change replay selection |
+| U19F2-07 | trust disabled after qualification: historical replay still returned; unrelated candidate stays default-deny |
+| U19F2-08 | later auth-claim observation and pending evidence do not block historical replay |
+| U19F2-09 | `AGENT_RECON`-only terminal candidate is not misreported as registry replay |
+| U19F2-10 | `DISCOVERED` candidate with no decision keeps the existing trust-off pending behavior |
+| U19F2-11 | prospective verified qualification still creates exactly one new decision |
+| U19F2-12 | two historical registry v1 decisions fail closed with `AdmissionInvariantError` |
+| U19F2-13 | single historical decision with incompatible current status fails closed |
+| U19F2-14 | single historical decision with a non-`QUALIFIED` outcome fails closed |
+| U19F2-15 | wrong candidate/policy identity fails closed without leaking provider values |
+| U19F2-16 | other-policy and `AGENT_RECON` decisions are not treated as registry replay |
+| U19F2-17 | controlled conflict retry finds the concurrent winner and replays it |
+| U19F2-18 | conflict retry with two registry v1 decisions fails closed without a new write |
+| U19F2-19 | historical replay calls exactly one bounded lookup and never `claims_for_candidate`/`list_for_candidate` |
+| U19F2-20 | fake lookup returns 0/1/2/2 rows in deterministic order for 0/1/2/3 matching decisions with interleaved `AGENT_RECON` rows |
+
+### Real-PostgreSQL matrix (I19F2-01 .. I19F2-08)
+
+`tests/integration/persistence/test_candidate_admission.py` adds
+`TestRegistryQualificationReplayF2`:
+
+| ID | Coverage |
+| --- | --- |
+| I19F2-01 | real qualification then later v2 admission: exact original decision ID, `QUALIFIED`, `replayed=True`, one decision/event, two ledger rows |
+| I19F2-02 | promote, admit v2, replay: original ID, `PROMOTED`, no duplicate `QUALIFIED` event |
+| I19F2-03 | later generic/unverified observation: historical replay works, no marker for the new observation |
+| I19F2-04 | 66 total admission-linked claims: replay without a claim bound; one decision/event |
+| I19F2-05 | trust disabled later: historical replay retained; fresh candidate still default-deny |
+| I19F2-06 | test-only second valid registry v1 decision: production service raises `AdmissionInvariantError`, zero writes |
+| I19F2-07 | genuine `AGENT_RECON` terminal candidate: no registry replay, existing terminal result, original decision untouched |
+| I19F2-08 | SQL function returns exactly two ordered rows; migration head `0013`; `0011`/`0012` functions and tables still present; no new table |
+
+The PR 19-F1 standalone benchmark's only change is its migration-head
+precondition (`0013_registry_qualification_replay.sql`); fixture sizes,
+sampling, metrics, and safety checks are unchanged.

@@ -45,10 +45,13 @@ from darkula.domain.discovery import (
     DiscoveryInput,
     DiscoveryObservation,
     DiscoveryReferenceKind,
+    QualificationMethod,
+    qualification_decision_key,
 )
 from darkula.domain.identifiers import (
     AccessEvidenceId,
     CandidateEventId,
+    QualificationDecisionId,
     SourceCandidateId,
     SourceEndpointId,
     SourceId,
@@ -214,7 +217,7 @@ class TestAdmissionSchema:
             database_settings,
             "SELECT version FROM darkula_schema_migrations "
             "ORDER BY version DESC LIMIT 1",
-        ).startswith("0012_candidate_qualification_fixup.sql")
+        ).startswith("0013_registry_qualification_replay.sql")
         conn = _raw_connect(database_settings)
         try:
             with conn.cursor() as cur:
@@ -1005,7 +1008,7 @@ class TestFixupMigrationAndProvenance:
             database_settings,
             "SELECT version FROM darkula_schema_migrations "
             "ORDER BY version DESC LIMIT 1",
-        ).startswith("0012_candidate_qualification_fixup.sql")
+        ).startswith("0013_registry_qualification_replay.sql")
 
     @pytest.mark.asyncio
     async def test_i19f_02_forged_generic_provenance(
@@ -1575,3 +1578,415 @@ async def _observation_attempt(claim: Any) -> Any:
         observation_id=DiscoveryObservationId.generate(),
         ingested_at=BASE_TIME,
     )
+
+
+# ---------------------------------------------------------------------------
+# PR 19-F2 — stable historical registry qualification replay (I19F2-01..08).
+# ---------------------------------------------------------------------------
+
+
+async def _qualify_trusted(
+    spi: PostgresDarkulaSpi, candidate_id: SourceCandidateId
+) -> Any:
+    return await CandidateQualificationService(
+        persistence=spi,
+        settings=QualificationSettings(ransomlook_location_trusted=True),
+        clock=lambda: BASE_TIME,
+    ).evaluate_and_apply(candidate_id)
+
+
+async def _seed_duplicate_registry_decision(
+    spi: PostgresDarkulaSpi, database_settings: DatabaseSettings
+) -> tuple[SourceCandidateId, Any, Any]:
+    """Create a valid but ambiguous second registry v1 decision (test-only SQL)."""
+    url = "http://f2-duplicate-intg.onion/"
+    first_observation = await _ingest(
+        spi, _locator_input(record="a", url=url, version="v1")
+    )
+    await _mark_verified(spi, first_observation.observation_id)
+    admitted = await _admit(spi, first_observation.observation_id)
+    candidate_id = admitted.candidate_id
+    assert candidate_id is not None
+    first = await _qualify_trusted(spi, candidate_id)
+    assert first.decision_id is not None
+    async with spi.unit_of_work() as uow:
+        first_decision = await uow.qualification.get(first.decision_id)
+    assert first_decision is not None
+
+    second_observation = await _ingest(
+        spi,
+        _locator_input(
+            record="a",
+            url=url,
+            version="v2",
+            observed_at=BASE_TIME + timedelta(minutes=1),
+        ),
+    )
+    admitted_second = await _admit(spi, second_observation.observation_id)
+    assert admitted_second.candidate_id == candidate_id
+
+    new_event_id = CandidateEventId.generate()
+    new_decision_id = QualificationDecisionId.generate()
+    new_key = qualification_decision_key(
+        candidate_id=candidate_id,
+        method=QualificationMethod.REGISTRY_POLICY,
+        policy_id="candidate-qualification",
+        policy_version="v1",
+        evidence_observation_ids=(second_observation.observation_id,),
+        recon_assessment_id=None,
+    )
+    assert new_key != first_decision.decision_key
+    conn = _raw_connect(database_settings)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO source_candidate_event_history "
+                "(event_id, candidate_id, event_type, occurred_at, context, "
+                " reason, provenance) VALUES (%s, %s, 'QUALIFIED', %s, NULL, "
+                "'test-only duplicate registry history', NULL)",
+                (str(new_event_id), str(candidate_id), BASE_TIME),
+            )
+            cur.execute(
+                "INSERT INTO qualification_decision "
+                "(decision_id, candidate_id, method, outcome, evaluated_at, "
+                " policy_id, policy_version, provider_id, provider_record_id, "
+                " recon_assessment_id, event_id, expected_status, new_status, "
+                " decision_key, evidence_observation_ids) VALUES "
+                "(%s, %s, 'REGISTRY_POLICY', 'QUALIFIED', %s, "
+                "'candidate-qualification', 'v1', 'ransomlook', %s, NULL, %s, "
+                "'DISCOVERED', 'QUALIFIED', %s, %s)",
+                (
+                    str(new_decision_id),
+                    str(candidate_id),
+                    BASE_TIME,
+                    first_decision.provider_record_id,
+                    str(new_event_id),
+                    new_key,
+                    [str(second_observation.observation_id)],
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return candidate_id, first_decision, second_observation
+
+
+class TestRegistryQualificationReplayF2:
+    """I19F2-01..08: real PostgreSQL historical replay across new observations."""
+
+    @pytest.mark.asyncio
+    async def test_i19f2_01_replay_after_new_version(
+        self, spi: PostgresDarkulaSpi, database_settings: DatabaseSettings
+    ) -> None:
+        url = "http://f2-replay-intg.onion/"
+        first = await _ingest(spi, _locator_input(record="a", url=url, version="v1"))
+        await _mark_verified(spi, first.observation_id)
+        admitted = await _admit(spi, first.observation_id)
+        candidate_id = admitted.candidate_id
+        assert candidate_id is not None
+        original = await _qualify_trusted(spi, candidate_id)
+        assert original.decision_id is not None
+        second = await _ingest(
+            spi,
+            _locator_input(
+                record="a",
+                url=url,
+                version="v2",
+                observed_at=BASE_TIME + timedelta(minutes=1),
+            ),
+        )
+        assert (await _admit(spi, second.observation_id)).candidate_id == candidate_id
+
+        replay = await _qualify_trusted(spi, candidate_id)
+        assert replay.decision_id == original.decision_id
+        assert replay.status is CandidateStatus.QUALIFIED
+        assert replay.replayed is True
+        assert _count(database_settings, "qualification_decision") == 1
+        assert (
+            _scalar(
+                database_settings,
+                "SELECT count(*) FROM source_candidate_event_history "
+                "WHERE event_type = 'QUALIFIED' AND candidate_id = %s",
+                (str(candidate_id),),
+            )
+            == 1
+        )
+        assert _count(database_settings, "source_candidate") == 1
+        assert _count(database_settings, "discovery_candidate_admission") == 2
+
+    @pytest.mark.asyncio
+    async def test_i19f2_02_promoted_replay_after_new_version(
+        self, spi: PostgresDarkulaSpi, database_settings: DatabaseSettings
+    ) -> None:
+        url = "http://f2-promoted-intg.onion/"
+        first = await _ingest(spi, _locator_input(record="b", url=url, version="v1"))
+        await _mark_verified(spi, first.observation_id)
+        admitted = await _admit(spi, first.observation_id)
+        candidate_id = admitted.candidate_id
+        assert candidate_id is not None
+        original = await _qualify_trusted(spi, candidate_id)
+        async with spi.unit_of_work() as uow:
+            await uow.source_candidates.transition(
+                candidate_id,
+                expected=CandidateStatus.QUALIFIED,
+                new_status=CandidateStatus.PROMOTED,
+                event=SourceCandidateEventHistory(
+                    event_id=CandidateEventId.generate(),
+                    candidate_id=candidate_id,
+                    event_type=CandidateEventType.PROMOTED,
+                    occurred_at=BASE_TIME,
+                ),
+            )
+            await uow.commit()
+        second = await _ingest(
+            spi,
+            _locator_input(
+                record="b",
+                url=url,
+                version="v2",
+                observed_at=BASE_TIME + timedelta(minutes=1),
+            ),
+        )
+        await _admit(spi, second.observation_id)
+
+        replay = await _qualify_trusted(spi, candidate_id)
+        assert replay.decision_id == original.decision_id
+        assert replay.status is CandidateStatus.PROMOTED
+        assert replay.replayed is True
+        assert _count(database_settings, "qualification_decision") == 1
+        assert (
+            _scalar(
+                database_settings,
+                "SELECT count(*) FROM source_candidate_event_history "
+                "WHERE event_type = 'QUALIFIED' AND candidate_id = %s",
+                (str(candidate_id),),
+            )
+            == 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_i19f2_03_unverified_new_observation_replays(
+        self, spi: PostgresDarkulaSpi, database_settings: DatabaseSettings
+    ) -> None:
+        url = "http://f2-unverified-intg.onion/"
+        first = await _ingest(spi, _locator_input(record="c", url=url, version="v1"))
+        await _mark_verified(spi, first.observation_id)
+        admitted = await _admit(spi, first.observation_id)
+        candidate_id = admitted.candidate_id
+        assert candidate_id is not None
+        original = await _qualify_trusted(spi, candidate_id)
+        second = await _ingest(
+            spi,
+            _locator_input(
+                record="c",
+                url=url,
+                version="v2",
+                observed_at=BASE_TIME + timedelta(minutes=1),
+            ),
+        )
+        await _admit(spi, second.observation_id)
+
+        replay = await _qualify_trusted(spi, candidate_id)
+        assert replay.decision_id == original.decision_id
+        assert _count(database_settings, "trusted_registry_observation") == 1
+        assert (
+            _scalar(
+                database_settings,
+                "SELECT count(*) FROM trusted_registry_observation "
+                "WHERE observation_id = %s",
+                (str(second.observation_id),),
+            )
+            == 0
+        )
+
+    @pytest.mark.asyncio
+    async def test_i19f2_04_sixty_six_claims_replays(
+        self, spi: PostgresDarkulaSpi, database_settings: DatabaseSettings
+    ) -> None:
+        url = "http://f2-many-intg.onion/"
+        first = await _ingest(spi, _locator_input(record="d", url=url, version="v1"))
+        await _mark_verified(spi, first.observation_id)
+        admitted = await _admit(spi, first.observation_id)
+        candidate_id = admitted.candidate_id
+        assert candidate_id is not None
+        original = await _qualify_trusted(spi, candidate_id)
+        for index in range(65):
+            observation = await _ingest(
+                spi,
+                _locator_input(
+                    record="d",
+                    url=url,
+                    version=f"v{index + 2}",
+                    observed_at=BASE_TIME + timedelta(seconds=index + 1),
+                ),
+            )
+            await _admit(spi, observation.observation_id)
+        replay = await _qualify_trusted(spi, candidate_id)
+        assert replay.decision_id == original.decision_id
+        assert _count(database_settings, "discovery_candidate_admission") == 66
+        assert _count(database_settings, "qualification_decision") == 1
+        assert (
+            _scalar(
+                database_settings,
+                "SELECT count(*) FROM source_candidate_event_history "
+                "WHERE event_type = 'QUALIFIED' AND candidate_id = %s",
+                (str(candidate_id),),
+            )
+            == 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_i19f2_05_trust_off_still_replays_history(
+        self, spi: PostgresDarkulaSpi, database_settings: DatabaseSettings
+    ) -> None:
+        url = "http://f2-trust-off-intg.onion/"
+        first = await _ingest(spi, _locator_input(record="e", url=url, version="v1"))
+        await _mark_verified(spi, first.observation_id)
+        admitted = await _admit(spi, first.observation_id)
+        candidate_id = admitted.candidate_id
+        assert candidate_id is not None
+        original = await _qualify_trusted(spi, candidate_id)
+        second = await _ingest(
+            spi,
+            _locator_input(
+                record="e",
+                url=url,
+                version="v2",
+                observed_at=BASE_TIME + timedelta(minutes=1),
+            ),
+        )
+        await _admit(spi, second.observation_id)
+
+        disabled = CandidateQualificationService(
+            persistence=spi,
+            settings=QualificationSettings(ransomlook_location_trusted=False),
+            clock=lambda: BASE_TIME,
+        )
+        replay = await disabled.evaluate_and_apply(candidate_id)
+        assert replay.decision_id == original.decision_id
+        assert replay.replayed is True
+
+        fresh_observation = await _ingest(
+            spi, _locator_input(record="f", url="http://f2-fresh-off-intg.onion/")
+        )
+        await _mark_verified(spi, fresh_observation.observation_id)
+        fresh = await _admit(spi, fresh_observation.observation_id)
+        assert fresh.candidate_id is not None
+        fresh_result = await disabled.evaluate_and_apply(fresh.candidate_id)
+        assert fresh_result.route is (
+            QualificationRoute.PENDING_RECON_POLICY_NOT_ELIGIBLE
+        )
+        assert _count(database_settings, "qualification_decision") == 1
+
+    @pytest.mark.asyncio
+    async def test_i19f2_06_two_registry_decisions_fail_closed(
+        self, spi: PostgresDarkulaSpi, database_settings: DatabaseSettings
+    ) -> None:
+        from darkula.app.persistence import AdmissionInvariantError
+
+        candidate_id, _first, _second = await _seed_duplicate_registry_decision(
+            spi, database_settings
+        )
+        decisions_before = _count(database_settings, "qualification_decision")
+        events_before = _scalar(
+            database_settings,
+            "SELECT count(*) FROM source_candidate_event_history "
+            "WHERE candidate_id = %s",
+            (str(candidate_id),),
+        )
+        with pytest.raises(AdmissionInvariantError):
+            await _qualify_trusted(spi, candidate_id)
+        assert _count(database_settings, "qualification_decision") == decisions_before
+        assert (
+            _scalar(
+                database_settings,
+                "SELECT count(*) FROM source_candidate_event_history "
+                "WHERE candidate_id = %s",
+                (str(candidate_id),),
+            )
+            == events_before
+        )
+
+    @pytest.mark.asyncio
+    async def test_i19f2_07_agent_recon_terminal_not_registry_replay(
+        self, spi: PostgresDarkulaSpi, database_settings: DatabaseSettings
+    ) -> None:
+        candidate_id = await _admit_ransomlook_observation(spi)
+        llm = FakeLlmClient(expected_response_model=ReconAgentDecision)
+        llm.enqueue(_agent_decision(ReconDisposition.QUALIFY))
+        coordinator = ReconCoordinator(
+            spi=spi,
+            agent=_recon_agent(llm),
+            crawler=FakeCrawler(),
+            settings=_recon_settings(),
+            clock=lambda: BASE_TIME,
+        )
+        outcome = await CandidateQualificationService(
+            persistence=spi,
+            settings=QualificationSettings(ransomlook_location_trusted=True),
+            clock=lambda: BASE_TIME,
+        ).dispatch_recon(candidate_id, coordinator=coordinator, authorized=True)
+        assert outcome.dispatched is True
+        assert _count(database_settings, "qualification_decision") == 1
+        assert (
+            _scalar(
+                database_settings,
+                "SELECT count(*) FROM qualification_decision "
+                "WHERE method = 'REGISTRY_POLICY'",
+            )
+            == 0
+        )
+
+        result = await _qualify_trusted(spi, candidate_id)
+        assert result.route is QualificationRoute.ALREADY_TERMINAL_OR_BUSY
+        assert result.decision_id is None
+        assert _count(database_settings, "qualification_decision") == 1
+
+    @pytest.mark.asyncio
+    async def test_i19f2_08_function_is_bounded_and_ordered(
+        self, spi: PostgresDarkulaSpi, database_settings: DatabaseSettings
+    ) -> None:
+        candidate_id, first, _second = await _seed_duplicate_registry_decision(
+            spi, database_settings
+        )
+        conn = _raw_connect(database_settings)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT decision_id, evaluated_at FROM "
+                    "qualification_registry_v1_decisions_for_candidate_v1(%s)",
+                    (str(candidate_id),),
+                )
+                rows = list(cur.fetchall())
+                cur.execute(
+                    "SELECT version FROM darkula_schema_migrations "
+                    "ORDER BY version DESC LIMIT 1"
+                )
+                head = cur.fetchone()
+                cur.execute(
+                    "SELECT proname FROM pg_proc "
+                    "WHERE pronamespace = 'public'::regnamespace"
+                )
+                functions = {row[0] for row in cur.fetchall()}
+                cur.execute(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                )
+                tables = {row[0] for row in cur.fetchall()}
+        finally:
+            conn.close()
+        assert head is not None and str(head[0]).startswith(
+            "0013_registry_qualification_replay.sql"
+        )
+        assert len(rows) == 2
+        assert [row[0] for row in rows] == sorted(row[0] for row in rows)
+        assert rows[0][1] <= rows[1][1]
+        assert "qualification_registry_v1_decisions_for_candidate_v1" in functions
+        assert {
+            "discovery_admit_observation_v1",
+            "trusted_registry_observation_record_v1",
+            "candidate_current_endpoint_match_v1",
+            "access_evidence_has_pending_v1",
+        } <= functions
+        assert "candidate_locator_slot" in tables
+        assert "trusted_registry_observation" in tables
+        assert first.decision_id is not None

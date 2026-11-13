@@ -555,6 +555,15 @@ current managed-endpoint check is exact and read-only. Historical registry
 replay may report `PROMOTED` when that is the candidate's current lifecycle
 status; it never rewrites the original `QUALIFIED` decision.
 
+The immutable `QualificationDecision` identity also survives subsequently
+admitted provider record versions. Replay is resolved at candidate level by
+the frozen `(method, policy_id, policy_version)` tuple with a bounded
+two-row read; it never derives a replay key from the newest observation.
+Zero matching historical decisions mean normal prospective evaluation; one
+means an immutable replay; two mean a fail-closed invariant error. Replay
+reports the candidate's current lifecycle status, never a newly created
+decision.
+
 ### MonitoringProfile (v0.2, planned — owned by PR 24/25)
 
 Caller-defined monitoring interest, **not** a tenant or account:
