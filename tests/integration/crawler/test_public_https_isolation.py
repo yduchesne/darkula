@@ -17,6 +17,7 @@ from typing import cast
 
 import pytest
 
+from darkula.crawler.controller import CrawlerController
 from darkula.crawler.runtime_protocol import (
     PUBLIC_HTTPS_PROTOCOL_VERSION,
     RuntimeInput,
@@ -79,6 +80,18 @@ req += "Host: " + sys.argv[3] + ":443\\r\\n\\r\\n"
 s.sendall(req.encode())
 print(s.recv(64).split(b"\\r\\n")[0].decode("ascii", "replace"))
 s.close()
+"""
+
+_METADATA_PROBE = """
+import socket, sys
+s = socket.socket()
+s.settimeout(2)
+try:
+    s.connect((sys.argv[1], int(sys.argv[2])))
+    print("REACHABLE")
+except Exception:
+    print("DENIED")
+    sys.exit(3)
 """
 
 _ISOLATION_PROBE = """
@@ -477,3 +490,41 @@ class TestFailuresAndCleanup:
             assert code == 0
         finally:
             await _podman("network", "rm", name)
+
+
+class TestLegacyContractUnchanged:
+    @pytest.mark.asyncio
+    async def test_i20_01_fake_world_v1_crawl_unchanged(
+        self, controller: CrawlerController, fake_world_url: str
+    ) -> None:
+        from darkula.crawler import CrawlStatus
+        from tests.integration.crawler.helpers import crawl_request
+
+        result = await controller.crawl(
+            crawl_request(
+                fake_world_url,
+                start_path="/",
+                max_pages=2,
+                max_requests=6,
+                max_depth=1,
+                timeout_seconds=60.0,
+            )
+        )
+        assert result.status is CrawlStatus.COMPLETED
+        assert result.protocol_version == 1
+
+    @pytest.mark.asyncio
+    async def test_i20_15_existing_internal_isolation_probes_unchanged(
+        self, sandbox: PodmanSandbox, fake_world_url: str
+    ) -> None:
+        from tests.integration.crawler.helpers import run_probe
+
+        code, stdout, _ = await run_probe(
+            sandbox,
+            "i20-15",
+            fake_world_url,
+            _METADATA_PROBE,
+            "169.254.169.254",
+            "80",
+        )
+        assert code != 0, stdout
