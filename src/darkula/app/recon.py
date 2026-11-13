@@ -67,7 +67,12 @@ from urllib.parse import urljoin, urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from darkula.app.llm import LlmError
-from darkula.app.persistence import ConflictError, DarkulaSpi, PersistenceError
+from darkula.app.persistence import (
+    ConflictError,
+    DarkulaSpi,
+    PersistenceError,
+    UnitOfWork,
+)
 from darkula.config.settings import ReconSettings
 from darkula.crawler.contracts import (
     AllowedOrigin,
@@ -77,8 +82,19 @@ from darkula.crawler.contracts import (
     CrawlStatus,
     InvalidCrawlRequest,
 )
+from darkula.domain.discovery import (
+    MAX_EVIDENCE_OBSERVATIONS,
+    AccessStatus,
+    QualificationDecision,
+    QualificationMethod,
+    QualificationOutcome,
+    qualification_decision_key,
+    qualification_new_status,
+)
 from darkula.domain.identifiers import (
     CandidateEventId,
+    DiscoveryObservationId,
+    QualificationDecisionId,
     ReconAssessmentId,
     SourceCandidateId,
 )
@@ -645,6 +661,51 @@ class ReconWorkflowResult:
     evidence_items: int
 
 
+@dataclass(frozen=True, slots=True)
+class ReconQualificationContext:
+    """Trusted admission-origin provenance for a PR 19 reconnaissance run.
+
+    Constructed only by trusted application code from already persisted
+    ``discovery_candidate_admission`` links. It is never model-supplied and
+    never derived from free-form tool input. Supplying it replaces (never
+    duplicates) the coordinator's legacy terminal transition with the PR 17
+    atomic qualification-decision primitive.
+    """
+
+    candidate_id: SourceCandidateId
+    policy_id: str
+    policy_version: str
+    evidence_observation_ids: tuple[DiscoveryObservationId, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidate_id, SourceCandidateId):
+            raise ValueError("candidate_id must be a SourceCandidateId")
+        for field_name, value in (
+            ("policy_id", self.policy_id),
+            ("policy_version", self.policy_version),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be a non-blank string")
+            if len(value) > 100:
+                raise ValueError(f"{field_name} must not exceed 100 characters")
+        evidence = self.evidence_observation_ids
+        if not isinstance(evidence, tuple) or not evidence:
+            raise ValueError("evidence_observation_ids must be a non-empty tuple")
+        if len(evidence) > MAX_EVIDENCE_OBSERVATIONS:
+            raise ValueError(
+                "evidence_observation_ids must not exceed "
+                f"{MAX_EVIDENCE_OBSERVATIONS} entries"
+            )
+        for item in evidence:
+            if not isinstance(item, DiscoveryObservationId):
+                raise ValueError(
+                    "evidence_observation_ids must contain DiscoveryObservationId "
+                    "values"
+                )
+        if len(set(evidence)) != len(evidence):
+            raise ValueError("evidence_observation_ids must be unique")
+
+
 class ReconCoordinator:
     """Coordinator-owned bounded reconnaissance workflow.
 
@@ -674,12 +735,25 @@ class ReconCoordinator:
 
     # -- public API --------------------------------------------------------
 
-    async def reconnoiter(self, candidate_id: SourceCandidateId) -> ReconWorkflowResult:
+    async def reconnoiter(
+        self,
+        candidate_id: SourceCandidateId,
+        *,
+        qualification_context: ReconQualificationContext | None = None,
+    ) -> ReconWorkflowResult:
         """Run one bounded reconnaissance execution and return its result.
+
+        The default ``qualification_context=None`` path is exactly the PR 10
+        legacy behavior. A non-``None`` context is trusted admission-origin
+        provenance (PR 19): the final transaction then commits the real
+        assessment, exactly one ``AGENT_RECON`` decision, and one terminal
+        event/status through the PR 17 atomic primitive instead of the
+        legacy transition.
 
         :raises ReconCandidateNotFoundError: the candidate does not exist.
         :raises ReconCandidateNotEligibleError: the candidate is terminal or
-            already under reconnaissance (includes lost concurrent starts).
+            already under reconnaissance (includes lost concurrent starts),
+            or the supplied qualification context is not valid for it.
         :raises ReconProtocolError / ReconBudgetExceededError /
             ReconInspectionRejectedError / ReconExecutionError: bounded
             workflow failures — never analytical dispositions.
@@ -690,7 +764,9 @@ class ReconCoordinator:
         tracer = get_tracer()
         with tracer.start_as_current_span(WORKFLOW_SPAN):
             try:
-                result = await self._reconnoiter(candidate_id)
+                result = await self._reconnoiter(
+                    candidate_id, qualification_context=qualification_context
+                )
             except asyncio.CancelledError:
                 raise
             except ReconError as exc:
@@ -704,7 +780,10 @@ class ReconCoordinator:
         return result
 
     async def _reconnoiter(
-        self, candidate_id: SourceCandidateId
+        self,
+        candidate_id: SourceCandidateId,
+        *,
+        qualification_context: ReconQualificationContext | None = None,
     ) -> ReconWorkflowResult:
         now = self._clock()
         execution_id = self._execution_id_factory()
@@ -717,6 +796,10 @@ class ReconCoordinator:
                     "the candidate does not exist; no reconnaissance is started"
                 )
             self._assert_startable(candidate)
+            if qualification_context is not None:
+                await self._assert_qualification_context(
+                    uow, candidate_id, qualification_context
+                )
             started_event = SourceCandidateEventHistory(
                 event_id=CandidateEventId.generate(),
                 candidate_id=candidate_id,
@@ -834,12 +917,24 @@ class ReconCoordinator:
                 )
             try:
                 await uow.source_candidates.append_recon_assessment(assessment)
-                await uow.source_candidates.transition(
-                    candidate_id,
-                    expected=CandidateStatus.UNDER_RECONNAISSANCE,
-                    new_status=final_status,
-                    event=final_event_record,
-                )
+                if qualification_context is None:
+                    await uow.source_candidates.transition(
+                        candidate_id,
+                        expected=CandidateStatus.UNDER_RECONNAISSANCE,
+                        new_status=final_status,
+                        event=final_event_record,
+                    )
+                else:
+                    qualification_decision = self._qualification_decision(
+                        candidate_id=candidate_id,
+                        assessment=assessment,
+                        completion=completion,
+                        context=qualification_context,
+                        final_event_record=final_event_record,
+                    )
+                    await uow.qualification.decide_and_transition(
+                        qualification_decision, final_event_record
+                    )
                 await uow.commit()
             except ConflictError:
                 # Defensive: within one PostgreSQL transaction a successful
@@ -882,6 +977,83 @@ class ReconCoordinator:
                 "the candidate is not eligible for reconnaissance "
                 "(terminal status replay performs no LLM or crawler work)"
             )
+
+    async def _assert_qualification_context(
+        self,
+        uow: UnitOfWork,
+        candidate_id: SourceCandidateId,
+        context: ReconQualificationContext,
+    ) -> None:
+        """Verify trusted admission-origin provenance before any agent work.
+
+        The context is never model-supplied: every cited observation must be
+        linked to this candidate through the admission ledger, and recorded
+        credential-pending evidence suppresses unauthenticated reconnaissance
+        (never a ``REJECT`` disposition).
+        """
+        if context.candidate_id != candidate_id:
+            raise ReconCandidateNotEligibleError(
+                "the qualification context belongs to another candidate"
+            )
+        claims = await uow.admission.claims_for_candidate(candidate_id, limit=65)
+        linked = {claim.observation_id for claim in claims}
+        if any(
+            observation_id not in linked
+            for observation_id in context.evidence_observation_ids
+        ):
+            raise ReconCandidateNotEligibleError(
+                "an evidence observation is not linked to the candidate "
+                "through the admission ledger"
+            )
+        access = await uow.access.list_for_candidate(candidate_id)
+        if any(
+            evidence.status is AccessStatus.CREDENTIALS_PENDING for evidence in access
+        ):
+            raise ReconCandidateNotEligibleError(
+                "the candidate has credential-pending access evidence; "
+                "unauthenticated reconnaissance is not started"
+            )
+
+    def _qualification_decision(
+        self,
+        *,
+        candidate_id: SourceCandidateId,
+        assessment: ReconAssessment,
+        completion: ReconCompletion,
+        context: ReconQualificationContext,
+        final_event_record: SourceCandidateEventHistory,
+    ) -> QualificationDecision:
+        """Build the one genuine ``AGENT_RECON`` decision for this run.
+
+        The assessment is the real, just-appended analytical result; no
+        assessment or event is fabricated for a replay.
+        """
+        outcome = _qualification_outcome(completion.disposition)
+        evidence = context.evidence_observation_ids
+        return QualificationDecision(
+            decision_id=QualificationDecisionId.generate(),
+            candidate_id=candidate_id,
+            method=QualificationMethod.AGENT_RECON,
+            outcome=outcome,
+            evaluated_at=assessment.assessed_at,
+            policy_id=context.policy_id,
+            policy_version=context.policy_version,
+            evidence_observation_ids=evidence,
+            event_id=final_event_record.event_id,
+            expected_status=CandidateStatus.UNDER_RECONNAISSANCE,
+            new_status=qualification_new_status(outcome),
+            decision_key=qualification_decision_key(
+                candidate_id=candidate_id,
+                method=QualificationMethod.AGENT_RECON,
+                policy_id=context.policy_id,
+                policy_version=context.policy_version,
+                evidence_observation_ids=evidence,
+                recon_assessment_id=assessment.assessment_id,
+            ),
+            provider_id=None,
+            provider_record_id=None,
+            recon_assessment_id=assessment.assessment_id,
+        )
 
     async def _agent_decision(
         self,
@@ -1036,6 +1208,17 @@ class ReconCoordinator:
             return
 
 
+def _qualification_outcome(
+    disposition: ReconDisposition,
+) -> QualificationOutcome:
+    """Map one analytical disposition to a qualification outcome."""
+    if disposition is ReconDisposition.QUALIFY:
+        return QualificationOutcome.QUALIFIED
+    if disposition is ReconDisposition.NEEDS_MORE_RECON:
+        return QualificationOutcome.RECONNAISSANCE_PENDING
+    return QualificationOutcome.REJECTED
+
+
 def _final_transition(
     disposition: ReconDisposition,
 ) -> tuple[CandidateStatus, CandidateEventType]:
@@ -1092,6 +1275,7 @@ __all__ = [
     "ReconInspection",
     "ReconInspectionRejectedError",
     "ReconProtocolError",
+    "ReconQualificationContext",
     "ReconWorkflowResult",
     "authorize_recon_inspection",
     "build_evidence_context",

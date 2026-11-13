@@ -120,3 +120,35 @@ class TestProfileDeferred:
             assert not hasattr(settings_module, unimplemented), (
                 f"{unimplemented} must remain PR 3 work"
             )
+
+
+class TestQualificationSettings:
+    """PR 19: default-deny registry trust with fail-closed limits."""
+
+    def test_trust_is_disabled_by_default(self) -> None:
+        settings = Settings()
+        assert settings.qualification.ransomlook_location_trusted is False
+        assert settings.qualification.max_admission_batch == 25
+
+    def test_frozen(self) -> None:
+        settings = Settings()
+        with pytest.raises(ValidationError):
+            settings.qualification.ransomlook_location_trusted = True
+
+    @pytest.mark.parametrize("limit", [0, 51, -1])
+    def test_invalid_batch_limit_rejected(self, limit: int) -> None:
+        with pytest.raises(ValidationError):
+            Settings(qualification={"max_admission_batch": limit})  # type: ignore[arg-type]
+
+    def test_unknown_key_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(
+                qualification={  # type: ignore[arg-type]
+                    "ransomlook_location_trusted": True,
+                    "wildcard": "*",
+                }
+            )
+
+    def test_environment_override(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.setenv("DARKULA_QUALIFICATION__RANSOMLOOK_LOCATION_TRUSTED", "true")
+        assert Settings().qualification.ransomlook_location_trusted is True

@@ -161,6 +161,22 @@ class MemCandidateRepository(SourceCandidateRepository):
         return tuple(self._assessments(candidate_id))
 
 
+def apply_pending_candidates(
+    state: MemCandidateState, pending: _PendingCandidateState
+) -> None:
+    """Apply one unit of work's staged candidate/event/assessment mutations.
+
+    Shared by the PR 10 recon fake and the PR 19 admission fake so the
+    commit semantics exist in exactly one place.
+    """
+    for candidate_id, candidate in pending.candidates.items():
+        state.candidates[candidate_id] = candidate
+    for candidate_id, events in pending.history.items():
+        state.history.setdefault(candidate_id, []).extend(events)
+    for candidate_id, assessments in pending.assessments.items():
+        state.assessments.setdefault(candidate_id, []).extend(assessments)
+
+
 class MemCandidateUnitOfWork(UnitOfWork):
     """One fake transaction over :class:`MemCandidateState`."""
 
@@ -184,12 +200,7 @@ class MemCandidateUnitOfWork(UnitOfWork):
             await self.rollback()
 
     async def commit(self) -> None:
-        for candidate_id, candidate in self._pending.candidates.items():
-            self._state.candidates[candidate_id] = candidate
-        for candidate_id, events in self._pending.history.items():
-            self._state.history.setdefault(candidate_id, []).extend(events)
-        for candidate_id, assessments in self._pending.assessments.items():
-            self._state.assessments.setdefault(candidate_id, []).extend(assessments)
+        apply_pending_candidates(self._state, self._pending)
         self._pending = _PendingCandidateState()
         self.commits += 1
 
@@ -247,6 +258,10 @@ class MemCandidateUnitOfWork(UnitOfWork):
     def qualification(self) -> Any:
         raise AssertionError("recon fake exposes no qualification repository")
 
+    @property
+    def admission(self) -> Any:
+        raise AssertionError("recon fake exposes no admission repository")
+
 
 class MemCandidateSpi(DarkulaSpi):
     """DarkulaSpi handing out :class:`MemCandidateUnitOfWork` instances."""
@@ -272,5 +287,6 @@ __all__ = [
     "MemCandidateSpi",
     "MemCandidateState",
     "MemCandidateUnitOfWork",
+    "apply_pending_candidates",
     "seed_candidate",
 ]

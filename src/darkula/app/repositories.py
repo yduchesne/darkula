@@ -35,6 +35,10 @@ from uuid import UUID
 
 from darkula.app.data_stream import StreamMessage
 from darkula.app.object_store import ContentHash
+from darkula.domain.candidate_admission import (
+    AdmissionResult,
+    AliasSuggestionsResult,
+)
 from darkula.domain.collection import (
     CollectionFailureCode,
     CollectionPolicy,
@@ -57,6 +61,7 @@ from darkula.domain.discovery import (
 from darkula.domain.extraction import ExtractedEntity, ExtractionResult
 from darkula.domain.geography import GeographicResolution
 from darkula.domain.identifiers import (
+    CandidateEventId,
     CollectionPolicyId,
     CollectionRunId,
     ConsumerId,
@@ -92,6 +97,7 @@ from darkula.domain.source import (
 
 __all__ = [
     "AccessRepository",
+    "AdmissionRepository",
     "ClaimOutcome",
     "CollectionRepository",
     "ContentRepository",
@@ -864,6 +870,78 @@ class DiscoveryRepository(ABC):
         persisted checkpoint.
 
         :raises ConflictError: if another writer advanced the checkpoint.
+        """
+
+
+class AdmissionRepository(ABC):
+    """Candidate admission ledger and locator-slot contract (PR 19).
+
+    All methods are transaction-scoped through the owning unit of work.
+    Admission is the explicit post-ingest step over an already persisted,
+    immutable :class:`~darkula.domain.discovery.DiscoveryObservation`; it
+    never fetches, crawls, resolves DNS, calls an LLM, promotes a Source,
+    creates an endpoint, or grants collection/access authority.
+
+    ``admit`` is the only write operation. It is idempotent: an exact replay
+    returns the stored original result. A normalized-locator digest is a
+    lookup key only, so equal URLs never establish logical Source
+    equivalence, and a candidate identity is never derived from a locator.
+    """
+
+    @abstractmethod
+    async def pending_observation_ids(
+        self, provider_id: str, *, limit: int = 25
+    ) -> tuple[DiscoveryObservationId, ...]:
+        """Return provider observations with no admission ledger row yet.
+
+        Deterministic ``(ingested_at, observation_id)`` order; ``limit`` is
+        bounded to ``1..50``.
+        """
+
+    @abstractmethod
+    async def admit(
+        self,
+        observation_id: DiscoveryObservationId,
+        candidate_id: SourceCandidateId,
+        event_id: CandidateEventId,
+        *,
+        processed_at: datetime,
+    ) -> AdmissionResult:
+        """Admit one immutable observation (the only admission writer).
+
+        The candidate/event identities are used only if the attempt creates
+        a new candidate; the database decides whether the attempt creates a
+        new candidate or reuses the committed winner.
+
+        :raises NotFoundError: if the observation does not exist.
+        :raises ConflictError: if candidate/event creation raced an existing
+            identity (the caller may retry once in a fresh unit of work).
+        """
+
+    @abstractmethod
+    async def get(
+        self, observation_id: DiscoveryObservationId
+    ) -> AdmissionResult | None:
+        """Return the stored admission result or ``None`` when unresolved."""
+
+    @abstractmethod
+    async def claims_for_candidate(
+        self, candidate_id: SourceCandidateId, *, limit: int = 65
+    ) -> tuple[DiscoveryObservation, ...]:
+        """Return the immutable claims linked to one candidate.
+
+        Deterministic ``(ingested_at, observation_id)`` order; ``limit`` is
+        bounded to ``1..65`` so callers can detect an over-64 claim set.
+        """
+
+    @abstractmethod
+    async def possible_aliases(
+        self, candidate_id: SourceCandidateId, *, limit: int = 16
+    ) -> AliasSuggestionsResult:
+        """Return bounded, read-only possible mirror/alias claims.
+
+        Suggestions never merge Sources, rotate endpoints, admit one
+        candidate as another, or imply trust.
         """
 
 

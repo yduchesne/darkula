@@ -34,6 +34,7 @@ from darkula.app.recon import (
     ReconCandidateNotEligibleError,
     ReconCandidateNotFoundError,
     ReconCompletion,
+    ReconCoordinator,
     ReconEvidenceContext,
     ReconEvidenceItem,
     ReconExecutionError,
@@ -46,7 +47,7 @@ from darkula.app.recon import (
     evidence_reference,
 )
 from darkula.app.recon_agent import ReconAgent
-from darkula.config.settings import ReconSettings
+from darkula.config.settings import QualificationSettings, ReconSettings
 from darkula.crawler.contracts import (
     AllowedOrigin,
     CrawlRequest,
@@ -1316,3 +1317,274 @@ class TestReconTelemetry:
         assert data_point_attributes(failure) == {
             "darkula.recon.failure_category": "inspection_rejected"
         }
+
+
+# ---------------------------------------------------------------------------
+# PR 19 — provenance-aware reconnaissance integration (U19-34 .. U19-41).
+# ---------------------------------------------------------------------------
+
+
+def _pr19_settings() -> QualificationSettings:
+    from darkula.config.settings import QualificationSettings
+
+    return QualificationSettings(ransomlook_location_trusted=True)
+
+
+async def _pr19_candidate(
+    *,
+    requires_auth_claim: bool = False,
+) -> tuple[Any, Any]:
+    """Admit one RansomLook location and return (spi, admission result)."""
+    from tests.support.admission_fakes import (
+        MemAdmissionSpi,
+        build_observation,
+        seed_observation,
+    )
+
+    from darkula.app.candidate_admission import CandidateAdmissionService
+
+    spi = MemAdmissionSpi()
+    observation = build_observation(
+        url=_ENTRYPOINT, requires_auth_claim=requires_auth_claim
+    )
+    await seed_observation(spi, observation)
+    result = await CandidateAdmissionService(
+        persistence=spi, clock=lambda: _T0
+    ).admit_observation(observation.observation_id)
+    return spi, result
+
+
+class _ExplodingCoordinator:
+    """Stand-in coordinator that fails if any agent work is attempted."""
+
+    async def reconnoiter(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("no reconnaissance may start for this candidate")
+
+
+@pytest.mark.asyncio
+class TestPr19ProvenanceAwareRecon:
+    async def test_u19_34_unauthorized_dispatch_starts_no_agent(self) -> None:
+        from darkula.app.candidate_qualification import CandidateQualificationService
+
+        spi, result = await _pr19_candidate()
+        service = CandidateQualificationService(
+            persistence=spi, settings=_pr19_settings(), clock=lambda: _T0
+        )
+        outcome = await service.dispatch_recon(
+            result.candidate_id,
+            coordinator=_ExplodingCoordinator(),  # type: ignore[arg-type]
+            authorized=False,
+        )
+        assert outcome.dispatched is False
+        assert outcome.blocked_route is not None
+        assert spi.candidates.assessments == {}
+
+    async def test_u19_35_auth_pending_dispatch_is_blocked_not_rejected(
+        self,
+    ) -> None:
+        from darkula.app.candidate_qualification import CandidateQualificationService
+
+        spi, result = await _pr19_candidate(requires_auth_claim=True)
+        service = CandidateQualificationService(
+            persistence=spi, settings=_pr19_settings(), clock=lambda: _T0
+        )
+        outcome = await service.dispatch_recon(
+            result.candidate_id,
+            coordinator=_ExplodingCoordinator(),  # type: ignore[arg-type]
+            authorized=True,
+        )
+        assert outcome.dispatched is False
+        assert outcome.workflow is None
+        assert spi.candidates.assessments == {}
+        assert spi.latest_status(result.candidate_id) is not CandidateStatus.REJECTED
+
+    async def test_u19_36_authorized_qualify_commits_real_assessment_and_decision(
+        self,
+    ) -> None:
+        from darkula.app.candidate_qualification import CandidateQualificationService
+
+        spi, result = await _pr19_candidate()
+        llm = FakeLlmClient(expected_response_model=ReconAgentDecision)
+        llm.enqueue(_complete(disposition=ReconDisposition.QUALIFY))
+        coordinator = ReconCoordinator(
+            spi=spi,
+            agent=_agent(llm, _settings()),
+            crawler=FakeCrawler(),
+            settings=_settings(),
+            clock=lambda: _T0,
+            execution_id_factory=lambda: _EXECUTION_ID,
+        )
+        service = CandidateQualificationService(
+            persistence=spi, settings=_pr19_settings(), clock=lambda: _T0
+        )
+        outcome = await service.dispatch_recon(
+            result.candidate_id, coordinator=coordinator, authorized=True
+        )
+        assert outcome.dispatched is True
+        assert outcome.workflow is not None
+        assert outcome.workflow.disposition is ReconDisposition.QUALIFY
+        assert spi.latest_status(result.candidate_id) is CandidateStatus.QUALIFIED
+        assessments = spi.candidates.assessments[result.candidate_id]
+        assert len(assessments) == 1
+        decisions = list(spi.discovery.decisions_by_key.values())
+        assert len(decisions) == 1
+        decision = decisions[0]
+        assert decision.method.value == "AGENT_RECON"
+        assert decision.outcome.value == "QUALIFIED"
+        assert decision.recon_assessment_id == assessments[0].assessment_id
+        assert len(spi.discovery.candidate_events) == 1
+        assert spi.discovery.candidate_events[0].event_type is (
+            CandidateEventType.QUALIFIED
+        )
+
+    async def test_u19_37_authorized_needs_more_recon_commits_decision(
+        self,
+    ) -> None:
+        from darkula.app.candidate_qualification import CandidateQualificationService
+
+        spi, result = await _pr19_candidate()
+        llm = FakeLlmClient(expected_response_model=ReconAgentDecision)
+        llm.enqueue(_complete(disposition=ReconDisposition.NEEDS_MORE_RECON))
+        coordinator = ReconCoordinator(
+            spi=spi,
+            agent=_agent(llm, _settings()),
+            crawler=FakeCrawler(),
+            settings=_settings(),
+            clock=lambda: _T0,
+            execution_id_factory=lambda: _EXECUTION_ID,
+        )
+        service = CandidateQualificationService(
+            persistence=spi, settings=_pr19_settings(), clock=lambda: _T0
+        )
+        outcome = await service.dispatch_recon(
+            result.candidate_id, coordinator=coordinator, authorized=True
+        )
+        assert outcome.dispatched is True
+        assert spi.latest_status(result.candidate_id) is (
+            CandidateStatus.RECONNAISSANCE_PENDING
+        )
+        assert len(spi.candidates.assessments[result.candidate_id]) == 1
+        decision = next(iter(spi.discovery.decisions_by_key.values()))
+        assert decision.outcome.value == "RECONNAISSANCE_PENDING"
+        assert spi.discovery.candidate_events[0].event_type is (
+            CandidateEventType.NEEDS_MORE_RECON
+        )
+
+    async def test_u19_38_authorized_reject_commits_real_decision(self) -> None:
+        from darkula.app.candidate_qualification import CandidateQualificationService
+
+        spi, result = await _pr19_candidate()
+        llm = FakeLlmClient(expected_response_model=ReconAgentDecision)
+        llm.enqueue(_complete(disposition=ReconDisposition.REJECT))
+        coordinator = ReconCoordinator(
+            spi=spi,
+            agent=_agent(llm, _settings()),
+            crawler=FakeCrawler(),
+            settings=_settings(),
+            clock=lambda: _T0,
+            execution_id_factory=lambda: _EXECUTION_ID,
+        )
+        service = CandidateQualificationService(
+            persistence=spi, settings=_pr19_settings(), clock=lambda: _T0
+        )
+        outcome = await service.dispatch_recon(
+            result.candidate_id, coordinator=coordinator, authorized=True
+        )
+        assert outcome.dispatched is True
+        assert spi.latest_status(result.candidate_id) is CandidateStatus.REJECTED
+        assert len(spi.candidates.assessments[result.candidate_id]) == 1
+        decision = next(iter(spi.discovery.decisions_by_key.values()))
+        assert decision.outcome.value == "REJECTED"
+
+    async def test_u19_39_operational_failure_manufactures_no_decision(
+        self,
+    ) -> None:
+        from darkula.app.candidate_qualification import CandidateQualificationService
+
+        class _FailingCrawler(FakeCrawler):
+            async def crawl(self, request: CrawlRequest) -> CrawlResult:
+                raise RuntimeError("injected operational crawl failure")
+
+        spi, result = await _pr19_candidate()
+        llm = FakeLlmClient(expected_response_model=ReconAgentDecision)
+        llm.enqueue(_inspect())
+        coordinator = ReconCoordinator(
+            spi=spi,
+            agent=_agent(llm, _settings()),
+            crawler=_FailingCrawler(),
+            settings=_settings(),
+            clock=lambda: _T0,
+            execution_id_factory=lambda: _EXECUTION_ID,
+        )
+        service = CandidateQualificationService(
+            persistence=spi, settings=_pr19_settings(), clock=lambda: _T0
+        )
+        with pytest.raises(ReconExecutionError):
+            await service.dispatch_recon(
+                result.candidate_id, coordinator=coordinator, authorized=True
+            )
+        assert spi.discovery.decisions_by_key == {}
+        assert spi.candidates.assessments.get(result.candidate_id, []) == []
+        assert spi.latest_status(result.candidate_id) is (
+            CandidateStatus.RECONNAISSANCE_PENDING
+        )
+
+    async def test_u19_40_final_decision_conflict_rolls_back_assessment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.support.discovery_fakes import MemQualificationRepository
+
+        from darkula.app.candidate_qualification import CandidateQualificationService
+        from darkula.app.persistence import ConflictError
+
+        spi, result = await _pr19_candidate()
+        llm = FakeLlmClient(expected_response_model=ReconAgentDecision)
+        llm.enqueue(_complete(disposition=ReconDisposition.QUALIFY))
+        coordinator = ReconCoordinator(
+            spi=spi,
+            agent=_agent(llm, _settings()),
+            crawler=FakeCrawler(),
+            settings=_settings(),
+            clock=lambda: _T0,
+            execution_id_factory=lambda: _EXECUTION_ID,
+        )
+
+        async def _conflict(*args: Any, **kwargs: Any) -> Any:
+            raise ConflictError("injected final qualification conflict")
+
+        monkeypatch.setattr(
+            MemQualificationRepository, "decide_and_transition", _conflict
+        )
+        service = CandidateQualificationService(
+            persistence=spi, settings=_pr19_settings(), clock=lambda: _T0
+        )
+        with pytest.raises(ReconExecutionError):
+            await service.dispatch_recon(
+                result.candidate_id, coordinator=coordinator, authorized=True
+            )
+        assert spi.candidates.assessments.get(result.candidate_id, []) == []
+        assert spi.discovery.decisions_by_key == {}
+        assert spi.discovery.candidate_events == []
+        assert spi.latest_status(result.candidate_id) is (
+            CandidateStatus.UNDER_RECONNAISSANCE
+        )
+
+    async def test_u19_41_legacy_reconnoiter_touches_no_qualification(self) -> None:
+        spi = MemCandidateSpi()
+        candidate = await _seed(spi)
+        llm = FakeLlmClient(expected_response_model=ReconAgentDecision)
+        llm.enqueue(_complete(disposition=ReconDisposition.QUALIFY))
+        coordinator = _coordinator(spi, llm=llm)
+        result = await coordinator.reconnoiter(candidate.candidate_id)
+        assert result.final_status is CandidateStatus.QUALIFIED
+        async with spi.unit_of_work() as uow:
+            assessments = await uow.source_candidates.list_recon_assessments(
+                candidate.candidate_id
+            )
+            history = await uow.source_candidates.list_history(candidate.candidate_id)
+        assert len(assessments) == 1
+        assert [event.event_type for event in history] == [
+            CandidateEventType.DISCOVERED,
+            CandidateEventType.RECONNAISSANCE_STARTED,
+            CandidateEventType.QUALIFIED,
+        ]

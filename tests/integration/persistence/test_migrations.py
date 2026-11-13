@@ -15,6 +15,9 @@ pytestmark = pytest.mark.integration
 
 
 EXPECTED_TABLES = {
+    "candidate_locator_slot",
+    "discovery_candidate_admission",
+    "discovery_endpoint_match",
     "registry_poll_checkpoint",
     "discovery_observation",
     "access_evidence",
@@ -118,6 +121,12 @@ EXPECTED_FUNCTIONS = {
     "registry_poll_checkpoint_get_v1",
     "registry_poll_checkpoint_advance_v1",
     "registry_poll_checkpoint_defer_v1",
+    "discovery_admission_pending_v1",
+    "discovery_admission_get_v1",
+    "discovery_admission_endpoints_v1",
+    "discovery_admission_claims_for_candidate_v1",
+    "discovery_possible_aliases_v1",
+    "discovery_admit_observation_v1",
 }
 
 
@@ -158,8 +167,8 @@ class TestMigrations:
                 ledger = [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
-        # The ledger head is the newest shipped artifact (PR 18 added 0010).
-        assert ledger[-1].startswith("0010_registry_polling.sql")
+        # The ledger head is the newest shipped artifact (PR 19 added 0011).
+        assert ledger[-1].startswith("0011_candidate_admission.sql")
 
     def test_expected_tables_exist(self, database_settings: DatabaseSettings) -> None:
         conn = _raw_connect(database_settings)
@@ -213,6 +222,11 @@ class TestMigrations:
         assert "qualification_decision_method_provenance" in constraints
         assert "registry_poll_checkpoint_provider_id_check" in constraints
         assert "registry_poll_checkpoint_cursor_check" in constraints
+        assert "candidate_locator_slot_locator_key_check" in constraints
+        assert "candidate_locator_slot_candidate_id_key" in constraints
+        assert "discovery_candidate_admission_shape" in constraints
+        assert "discovery_candidate_admission_outcome_check" in constraints
+        assert "discovery_endpoint_match_match_reason_check" in constraints
 
     def test_host_exposure_is_35432_to_5432(
         self, database_settings: DatabaseSettings

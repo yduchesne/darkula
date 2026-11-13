@@ -184,6 +184,10 @@ class _SliceUnitOfWork(UnitOfWork):
     def qualification(self) -> Any:
         raise AssertionError("slice stub exposes no qualification repository")
 
+    @property
+    def admission(self) -> Any:
+        raise AssertionError("slice stub exposes no admission repository")
+
 
 def _slice_message() -> StreamMessage:
     return StreamMessage(

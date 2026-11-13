@@ -56,3 +56,11 @@ max_index_entries = 2000
 max_response_bytes = 8388608
 request_timeout_seconds = 8.0
 request_interval_seconds = 2.0
+
+[qualification]
+# PR 19 candidate qualification is default-deny. RansomLook registry trust is
+# an explicit operator decision; registry reputation alone never authorizes
+# qualification, crawling, promotion, or collection. `max_admission_batch` is
+# a hard ceiling that a profile or environment may only lower.
+ransomlook_location_trusted = false
+max_admission_batch = 25

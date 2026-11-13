@@ -532,6 +532,10 @@ class MemExtractionUnitOfWork(UnitOfWork):
     def qualification(self) -> Any:
         raise AssertionError("extraction fake exposes no qualification repository")
 
+    @property
+    def admission(self) -> Any:
+        raise AssertionError("extraction fake exposes no admission repository")
+
 
 class MemExtractionSpi(DarkulaSpi):
     """One in-memory SPI producing snapshot-isolated extraction units of work."""

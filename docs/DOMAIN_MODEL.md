@@ -289,7 +289,7 @@ semantic idempotency key is
 Assessments never mutate `Source` or extraction history, and the absence of
 collected evidence is never inferred to mean inactivity.
 
-## v0.2 discovery foundation (PR 17 delivered; registry polling PR 18 delivered)
+## v0.2 discovery foundation (PR 17 delivered; registry polling PR 18 delivered; candidate admission PR 19 delivered)
 
 PR 17 delivers the executable discovery/provenance domain, additive
 PostgreSQL persistence, and the atomic qualification persistence primitive.
@@ -452,6 +452,91 @@ strings, does not satisfy the provenance rule (`IntegrityError`, no effects);
 policy trust, recon routing, and invoking the repository operation. The
 existing PR 10 `ReconCoordinator` path is unchanged; PR 19 must coordinate
 ownership so a candidate is not double-transitioned.
+
+### Candidate admission (PR 19)
+
+The explicit, trusted post-ingest step over an immutable
+`DiscoveryObservation`. It is deterministic application code, never an agent:
+
+`DiscoveryObservation -> bounded exact reconciliation -> durable ledger
+outcome -> (optional separate) policy routing`.
+
+**Identity separation.** `DiscoveryObservationId` is the claim identity; the
+persisted `normalized_locator` is a syntactic key; `sha256(normalized
+locator)` is the *admission-slot lookup digest*; `SourceCandidateId` is the
+candidate identity; `SourceId` is a logical managed source; `SourceEndpointId`
+is an endpoint identity; the `QualificationDecision` key is the immutable
+policy/evidence replay identity. A normalized URL is never a Source identity,
+a locator slot is never a Source relationship, and an equal digest/locator
+pair never proves two claims describe the same real organization.
+
+**Finite admission vocabulary.** `AdmissionOutcome` = `UNRESOLVED_NAME`,
+`KNOWN_ENDPOINT`, `ADMITTED_NEW`, `ADMITTED_EXISTING`, `REVIEW_REQUIRED`;
+`AdmissionReason` = `NAME_ONLY`, `EXACT_MANAGED_ENDPOINT`, `NEW_LOCATOR`,
+`EXISTING_LOCATOR_SLOT`, `EXISTING_LEGACY_CANDIDATE`,
+`MULTIPLE_LEGACY_CANDIDATES`, `EXCESS_ENDPOINT_MATCHES`. `AdmissionResult`
+carries the observation, outcome/reason, optional candidate, bounded exact
+`SourceEndpointId` matches (never URIs), and a `replayed` flag. `ADMITTED_*`
+carries a candidate and no endpoints; `KNOWN_ENDPOINT` carries at least one
+endpoint and no candidate; the remaining outcomes carry neither.
+
+**Deterministic decision matrix (first match wins).** Ledger replay; name-only
+-> `UNRESOLVED_NAME` (no synthetic locator); at most 32 exact
+`source_endpoint.uri` matches -> `KNOWN_ENDPOINT` (evidence only; no Source,
+endpoint, policy, run, or collection write); at most 2 exact
+`source_candidate.entrypoint` matches with no existing slot -> reuse the UUID
+(`PROMOTED` and ambiguous multi-match stay `REVIEW_REQUIRED`); otherwise a new
+`DISCOVERED` candidate via the existing `candidate_create_v1`. More than 32
+endpoint matches -> `REVIEW_REQUIRED/EXCESS_ENDPOINT_MATCHES`; more than one
+legacy candidate -> `REVIEW_REQUIRED/MULTIPLE_LEGACY_CANDIDATES`. Matching is
+exact-string only: no case folding, slash guessing, DNS, fuzzy matching,
+`ILIKE`, or shortener expansion, and no global URI->Source uniqueness.
+
+**Admission slot.** `candidate_locator_slot` maps the lowercase SHA-256 hex
+digest of the persisted normalized locator to one candidate and retains the
+exact normalized locator for re-validation. A slot with an equal digest and a
+different locator is a fatal `HASH_COLLISION` (rolled back, never aliased). The
+slot suppresses duplicate candidate creation for one exact locator only; it
+does not merge Sources and does not update `discovery_observation.candidate_id`
+(observations remain immutable).
+
+**Ledger.** `discovery_candidate_admission` has exactly one row per handled
+observation including unresolved-name and review outcomes, so pending
+selection never re-processes a handled claim forever. Pending selection is
+provider-scoped, deterministic `(ingested_at, observation_id)`, bounded 1..50.
+`discovery_endpoint_match` records exact managed-endpoint evidence only and is
+written exclusively by the admission stored function.
+
+**Possible mirrors/aliases.** Read-only `PossibleAliasSuggestion` claims
+(`SHARED_PROVIDER_ORIGIN`) exist only for two distinct admitted candidates
+sharing an exact non-null `(provider_id, origin_reference)` with different
+normalized locators; at most 16 are returned and an overflow is an explicit
+`too_many` result with no partial list. They never merge Sources, rotate
+endpoints, admit one candidate as another, or imply trust.
+
+**Authentication.** For each admitted candidate whose persisted observation
+claims `requires_auth_claim=True`, admission appends PR 17
+`CREDENTIALS_PENDING` evidence with reason `PROVIDER_AUTH_CLAIM` in the same
+unit of work. Missing credentials never implies `REJECT`, `READY` is never
+produced, and a candidate-only managed-endpoint match never manufactures a
+candidate just to record evidence.
+
+**Qualification routing (PR 19).** `CandidateQualificationPolicy`
+(`candidate-qualification`/`v1`, rule `RANSOMLOOK_LOCATION_V1`) is pure,
+fixed, default-deny operator-configured code. It can only qualify when the
+operator enabled `qualification.ransomlook_location_trusted`, the candidate is
+`DISCOVERED`/`RECONNAISSANCE_PENDING`, the linked claims are 1..64 immutable
+versions of exactly one RansomLook `location:` record sharing provider,
+origin, and normalized locator with `REGISTRY` detection,
+`LOCATOR`/`VALID_LOCATOR`, matching `ONION`/`CLEARNET` hint and no auth claim,
+the record ID is `location:` + 64 lowercase hex, the origin is the fixed
+public RansomLook group reference, and there is no known-endpoint or review
+conflict. The decision cites exactly the latest `(ingested_at,
+observation_id)`; other versions stay linked in the admission ledger.
+Otherwise the candidate routes to `RECONNAISSANCE_PENDING` with at most one
+existing `NEEDS_MORE_RECON` event and no fabricated decision. `AGENT_RECON`
+decisions are only produced by the existing `ReconCoordinator` when a trusted
+`ReconQualificationContext` links the genuine same-candidate assessment.
 
 ### MonitoringProfile (v0.2, planned — owned by PR 24/25)
 

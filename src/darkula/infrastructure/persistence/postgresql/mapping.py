@@ -26,6 +26,12 @@ from darkula.app.repositories import (
     ScheduledOccurrence,
     ScheduleOutcome,
 )
+from darkula.domain.candidate_admission import (
+    AdmissionOutcome,
+    AdmissionReason,
+    AdmissionResult,
+    PossibleAliasSuggestion,
+)
 from darkula.domain.collection import (
     CollectionFailureCode,
     CollectionPolicy,
@@ -663,8 +669,54 @@ def map_qualification_decision(row: tuple[Any, ...]) -> QualificationDecision:
         raise _mapping_error("qualification decision", exc) from exc
 
 
+def map_admission_result(
+    row: tuple[Any, ...],
+    *,
+    endpoint_ids: tuple[SourceEndpointId, ...],
+    replayed: bool,
+) -> AdmissionResult:
+    """Map one ``discovery_candidate_admission`` result row.
+
+    Column order: observation_id, outcome, reason, candidate_id, processed_at.
+    Endpoint matches and the replay flag come from their own bounded reads.
+    """
+    try:
+        return AdmissionResult(
+            observation_id=DiscoveryObservationId.from_str(str(row[0])),
+            outcome=AdmissionOutcome(row[1]),
+            reason=AdmissionReason(row[2]),
+            candidate_id=(
+                None if row[3] is None else SourceCandidateId.from_str(str(row[3]))
+            ),
+            matched_endpoint_ids=endpoint_ids,
+            replayed=replayed,
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("candidate admission", exc) from exc
+
+
+def map_possible_alias(
+    row: tuple[Any, ...], *, left_candidate_id: SourceCandidateId
+) -> PossibleAliasSuggestion:
+    """Map one ``discovery_possible_aliases_v1`` result row.
+
+    Column order: other_candidate_id, our_observation_id, other_observation_id.
+    The left (our) candidate identity is supplied by the caller.
+    """
+    try:
+        return PossibleAliasSuggestion(
+            left_candidate_id=left_candidate_id,
+            right_candidate_id=SourceCandidateId.from_str(str(row[0])),
+            left_observation_id=DiscoveryObservationId.from_str(str(row[1])),
+            right_observation_id=DiscoveryObservationId.from_str(str(row[2])),
+        )
+    except (ValueError, TypeError) as exc:
+        raise _mapping_error("possible alias suggestion", exc) from exc
+
+
 __all__ = [
     "map_access_evidence",
+    "map_admission_result",
     "map_candidate",
     "map_collection_policy",
     "map_collection_run",
@@ -678,6 +730,7 @@ __all__ = [
     "map_geographic_resolution",
     "map_normalized_content",
     "map_outbox_record",
+    "map_possible_alias",
     "map_qualification_decision",
     "map_recon_assessment",
     "map_relationship_extraction_result",

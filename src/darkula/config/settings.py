@@ -1039,6 +1039,29 @@ class RegistrySettings(BaseModel):
         return value
 
 
+class QualificationSettings(BaseModel):
+    """Trusted candidate-qualification routing settings (PR 19).
+
+    Registry trust is operator-controlled, versioned in developer-owned code,
+    and **disabled by default**. Registry reputation alone is never
+    authorization to qualify, crawl, promote, or collect. Enabling the flag
+    only permits *prospective* registry-policy decisions; disabling it never
+    reverses a historical decision.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ransomlook_location_trusted: bool = False
+    max_admission_batch: int = 25
+
+    @field_validator("max_admission_batch")
+    @classmethod
+    def _validate_batch(cls, value: int) -> int:
+        if value < 1 or value > 50:
+            raise ValueError("max_admission_batch must be within [1, 50]")
+        return value
+
+
 class Settings(BaseSettings):
     """Root typed settings with the frozen pydantic-settings contract.
 
@@ -1076,6 +1099,7 @@ class Settings(BaseSettings):
     source_analysis: SourceAnalysisSettings = SourceAnalysisSettings()
     evaluation: EvaluationSettings = EvaluationSettings()
     registry: RegistrySettings = RegistrySettings()
+    qualification: QualificationSettings = QualificationSettings()
 
 
 __all__ = [
@@ -1097,6 +1121,7 @@ __all__ = [
     "LlmSettings",
     "ObjectStoreDriver",
     "ObjectStoreSettings",
+    "QualificationSettings",
     "ReconSettings",
     "RegistrySettings",
     "RelationshipExtractionSettings",

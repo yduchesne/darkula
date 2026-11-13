@@ -2,7 +2,7 @@
 
 ## v0.2 planned acceptance and test boundaries
 
-The completed v0.1 integration suite uses controlled Fake World sources. PR 17's discovery/provenance tests are delivered (see [PR 17 testing status](#pr-17-testing-status--discovery-foundation)); the remaining requirements below are **planned** for [v0.2](ROADMAP_V02.md).
+The completed v0.1 integration suite uses controlled Fake World sources. PR 17's discovery/provenance tests and PR 19's candidate-admission/qualification tests are delivered (see [PR 17 testing status](#pr-17-testing-status--discovery-foundation) and [PR 19 testing status](#pr-19-testing-status--candidate-admission-and-policy-routed-qualification)); the remaining requirements below are **planned** for [v0.2](ROADMAP_V02.md).
 
 - **Discovery contract/persistence:** deterministic registry fixtures; malformed/unresolvable locators; provider evidence and provenance retention; replay/race idempotency; stable candidate identity without URI-equals-Source assumptions.
 - **Source reconciliation:** duplicates from separate feeds, changed provider records, aliases/mirrors, malicious claims, rejected candidates, and failed imports. No automatic source merge or promotion.
@@ -1260,3 +1260,91 @@ Surrogates are written as escaped Python literals and escaped JSON bytes; no
 invalid UTF-8 is embedded in source files. Mid-stream failure uses HTTPX
 `MockTransport`, not the live provider. Header parsing is tested directly and
 through the async transport; no live RansomLook/Tor/Internet request occurs.
+
+## PR 19 testing status — candidate admission and policy-routed qualification
+
+PR 19 keeps the external boundaries fake and everything behind them real.
+Unit tests use the composed in-memory admission fake
+(`tests/support/admission_fakes.py`, which reuses the existing PR 10/17 fakes
+and their commit/rollback helpers) and the production
+`CandidateAdmissionService`, `CandidateQualificationService` and
+`ReconCoordinator`. Integration tests use the real `PostgresDarkulaSpi`,
+migration `0011_candidate_admission.sql`, PR 17 ingest, PR 19 stored
+functions and the real `ReconCoordinator`; only the registry HTTP transport
+and LLM/crawler boundaries are faked. No test contacts RansomLook, Tor, the
+Internet, or a live provider.
+
+### Unit matrix — domain and application
+
+| ID | Scenario | Assertion |
+| --- | --- | --- |
+| U19-01 | name-only observation | ledger `UNRESOLVED_NAME`; no candidate/event |
+| U19-02 | first valid locator | one `DISCOVERED` candidate + event + slot + ledger; observation unchanged |
+| U19-03 | exact replay | original candidate/outcome returned; no rewrite |
+| U19-04 | new observation, same locator | same candidate; second ledger link; no second `DISCOVERED` |
+| U19-05 | two raw spellings, same normalized locator | one slot and candidate |
+| U19-06 | different locators, same provider origin | two candidates; read-only alias suggestion; no merge |
+| U19-07 | exact managed endpoint | `KNOWN_ENDPOINT` evidence only; no candidate/source write |
+| U19-08 | 33 exact endpoint matches | `REVIEW_REQUIRED/EXCESS_ENDPOINT_MATCHES` |
+| U19-09 | one exact legacy candidate | reuse UUID; no second event |
+| U19-10 | two exact legacy candidates | `REVIEW_REQUIRED`; no slot |
+| U19-11 | promoted legacy candidate | `REVIEW_REQUIRED`; no reactivation |
+| U19-12 | malformed persisted classification | typed `AdmissionInvariantError`; nothing written |
+| U19-13 | injected digest collision | fatal; original slot unchanged |
+| U19-14 | cancellation before commit | no candidate/slot/ledger |
+| U19-15 | repeated admission race | winner reused; one candidate |
+| U19-16/17 | auth claim and replay | one `CREDENTIALS_PENDING` evidence; original ID/timestamp retained |
+| U19-18 | auth claim + managed endpoint | no candidate; claim retained |
+| U19-19 | batch limits 1 and 50 | exact bounded processing; no reprocessing |
+| U19-20 | injected batch failure | prior entry survives; failed entry uncommitted |
+| U19-21 | >16 possible aliases | `too_many=True`; no partial list |
+| U19-22 | trust disabled | pending route; one pending event; no decision |
+| U19-23 | trusted complete record | `REGISTRY_POLICY`/`QUALIFIED`; one decision/event; zero recon |
+| U19-24 | trusted but name-only | never qualifies; no candidate |
+| U19-25 | unknown provider/record class | pending; no decision |
+| U19-26 | conflicting provenance | ambiguous/pending; no decision |
+| U19-27 | multiple versions of one record | latest observation cited; history retained |
+| U19-28 | source-kind mismatch | pending; no agent |
+| U19-29 | disable after success | historic decision kept; no new decisions |
+| U19-30 | pending then enabled | qualifies once; no duplicate pending event |
+| U19-31/32 | concurrent/exact decision replay | one winner; original decision/event retained |
+| U19-33 | terminal/busy candidate | no decision, event, LLM, or crawler |
+| U19-34/35 | unauthorized/auth-pending dispatch | no coordinator call; not `REJECTED` |
+| U19-36..38 | authorized FakeLLM/FakeCrawler recon | real assessment + `AGENT_RECON` decision + one terminal event per disposition |
+| U19-39 | operational recon failure | PR 10 recovery; no fabricated decision |
+| U19-40 | final decision conflict | assessment/decision/event rolled back |
+| U19-41 | legacy `reconnoiter` | unchanged PR 10 event/status/assessment semantics |
+| U19-42 | config fail-closed | default trust off; invalid batch limits/unknown keys rejected |
+| U19-43 | telemetry/log fields | bounded outcome/reason/count/policy only |
+| U19-44 | immutable observation | bytewise-equal fields incl. null `candidate_id` |
+| U19-45 | forbidden side effects | no Source/Endpoint/Policy/run/outbox |
+
+Host-test modules: `tests/unit/domain/test_candidate_admission_domain.py`,
+`tests/unit/app/test_candidate_admission.py`,
+`tests/unit/app/test_candidate_qualification.py`, and the PR 19 classes
+appended to `tests/unit/app/test_recon.py`.
+
+### Real-PostgreSQL vertical slices (`tests/integration/persistence/test_candidate_admission.py`)
+
+| ID | Coverage |
+| --- | --- |
+| I19-01 | migration head `0011`; admission tables and six `_v1` functions present; `0009`/`0010` still applied |
+| I19-02 | Fake Source Registry -> real adapter -> ingest -> admission; group NAME_ONLY unresolved, valid location creates one candidate/event; observations immutable |
+| I19-03 | replay + new version same locator -> one candidate, two ledger links, one `DISCOVERED` event |
+| I19-04 | two independent SPIs admit concurrently -> exactly one candidate/event, both observations linked |
+| I19-05 | seeded managed endpoint -> `KNOWN_ENDPOINT`; no candidate/source/endpoint/collection rows |
+| I19-06 | duplicate legacy candidates -> `REVIEW_REQUIRED`; neither mutated; no slot |
+| I19-07 | auth claim -> candidate + `CREDENTIALS_PENDING`; unit-of-work rollback removes all admission effects |
+| I19-08 | trust off -> pending; enable -> one `REGISTRY_POLICY` decision + one `QUALIFIED` event; zero recon |
+| I19-09 | conflicting provider provenance -> no `QUALIFIED` decision, no merge/source |
+| I19-10 | two concurrent qualifying SPIs -> one decision/event; typed bounded loser |
+| I19-11 | real `ReconCoordinator` + FakeLlm/FakeCrawler -> one assessment, one `AGENT_RECON` decision, one terminal event |
+| I19-12 | mid-run status conflict -> assessment/decision/status/event rolled back together |
+| I19-13 | cancellation before commit -> no admission data |
+| I19-14 | restart SPI -> slot/ledger/decisions survive; replay deterministic |
+| I19-15 | audit -> no managed Source/endpoint/policy/run/outbox/credential |
+| I19-16 | PR 18 registry-only ingestion still creates zero candidates/ledger rows |
+
+Real-PostgreSQL tests run under `./build.sh --intg` and reset only Darkula
+tables. Multi-connection race proofs use two independent
+`PostgresDarkulaSpi` instances, not a fake `ConflictError`.

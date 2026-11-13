@@ -12,6 +12,7 @@ import pytest
 from darkula.app.persistence import DarkulaSpi, UnitOfWork
 from darkula.app.repositories import (
     AccessRepository,
+    AdmissionRepository,
     CollectionRepository,
     ContentRepository,
     DiscoveryRepository,
@@ -91,6 +92,10 @@ class _RecordingUnitOfWork(UnitOfWork):
     @property
     def qualification(self) -> QualificationRepository:
         raise AssertionError("recording stub exposes no qualification repository")
+
+    @property
+    def admission(self) -> AdmissionRepository:
+        raise AssertionError("recording stub exposes no admission repository")
 
 
 class _RecordingSpi(DarkulaSpi):
