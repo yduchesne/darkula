@@ -154,7 +154,7 @@ async def test_p7b_remove_owned_container_by_label(
         "darkula.owned=true",
         "--label",
         "darkula.service=crawler",
-        "localhost/darkula-crawler-runtime:1.63.0",
+        "localhost/darkula-crawler-runtime:1.63.0-pr20",
         "sleep",
         "60",
     )

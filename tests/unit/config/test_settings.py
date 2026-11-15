@@ -152,3 +152,79 @@ class TestQualificationSettings:
     def test_environment_override(self, monkeypatch: MonkeyPatch) -> None:
         monkeypatch.setenv("DARKULA_QUALIFICATION__RANSOMLOOK_LOCATION_TRUSTED", "true")
         assert Settings().qualification.ransomlook_location_trusted is True
+
+
+class TestPublicHttpsSettings:
+    """PR 20 U20-12: default-off exact live configuration."""
+
+    def test_u20_12_defaults_are_off_and_empty(self) -> None:
+        from darkula.config.settings import CrawlerSettings
+
+        crawler = CrawlerSettings()
+        assert crawler.real_https_enabled is False
+        assert crawler.real_https_allowed_origins == ()
+        assert crawler.real_https_egress_network == "darkula-live-egress"
+        assert crawler.real_https_gateway_image == "localhost/darkula-https-egress:1"
+        assert crawler.real_https_max_pages == 20
+        assert crawler.real_https_max_requests == 60
+        assert crawler.real_https_max_depth == 2
+        assert crawler.real_https_max_timeout_seconds == 90.0
+
+    def test_u20_12_nonempty_environment_enables_exact_allowlist(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DARKULA_CRAWLER__REAL_HTTPS_ENABLED", "true")
+        monkeypatch.setenv(
+            "DARKULA_CRAWLER__REAL_HTTPS_ALLOWED_ORIGINS",
+            '["https://approved.example.org:443"]',
+        )
+        settings = Settings()
+        assert settings.crawler.real_https_enabled is True
+        assert settings.crawler.real_https_allowed_origins == (
+            "https://approved.example.org:443",
+        )
+
+    def test_u20_12_empty_environment_cannot_enable(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DARKULA_CRAWLER__REAL_HTTPS_ENABLED", "")
+        monkeypatch.setenv("DARKULA_CRAWLER__REAL_HTTPS_ALLOWED_ORIGINS", "")
+        settings = Settings()
+        assert settings.crawler.real_https_enabled is False
+        assert settings.crawler.real_https_allowed_origins == ()
+
+    @pytest.mark.parametrize(
+        "origins",
+        [
+            ("approved.example.org",),
+            ("http://approved.example.org:443",),
+            ("https://approved.example.org",),
+            ("https://approved.example.org:8443",),
+            ("https://approved.example.org:443/path",),
+            ("https://*.example.org:443",),
+            (
+                "https://approved.example.org:443",
+                "https://approved.example.org:443",
+            ),
+        ],
+    )
+    def test_u20_12_noncanonical_allowlist_rejected(
+        self, origins: tuple[str, ...]
+    ) -> None:
+        from darkula.config.settings import CrawlerSettings
+
+        with pytest.raises(ValidationError):
+            CrawlerSettings(real_https_allowed_origins=origins)
+
+    def test_u20_12_hard_live_limits_enforced(self) -> None:
+        from darkula.config.settings import CrawlerSettings
+
+        for field, value in (
+            ("real_https_max_pages", 21),
+            ("real_https_max_requests", 61),
+            ("real_https_max_depth", 3),
+            ("real_https_max_timeout_seconds", 90.1),
+            ("real_https_max_timeout_seconds", 0.5),
+        ):
+            with pytest.raises(ValidationError):
+                CrawlerSettings(**{field: value})  # type: ignore[arg-type]

@@ -24,7 +24,7 @@ from darkula.infrastructure.sandbox.podman import PodmanSandbox
 
 FAKE_WORLD_URL = "http://darkula-fake-world-intg:8080"
 FAKE_WORLD_CONTAINER = "darkula-fake-world-intg"
-RUNTIME_IMAGE = "localhost/darkula-crawler-runtime:1.63.0"
+RUNTIME_IMAGE = "localhost/darkula-crawler-runtime:1.63.0-pr20"
 NETWORK_NAME = "darkula-intg"
 OWNED_LABEL = "darkula.owned=true"
 SIBLING_NAME = "darkula-sibling-http-intg"
@@ -316,3 +316,116 @@ async def no_crawler_containers_leak() -> AsyncIterator[None]:
     leaked = sorted(name for name in names if name.startswith("darkula-crawler-"))
     if leaked:
         raise AssertionError(f"crawler integration left containers behind: {leaked}")
+
+
+# -- PR 20 public HTTPS egress fixtures -----------------------------------
+
+LIVE_EGRESS_NETWORK = "darkula-live-egress"
+TEST_GATEWAY_IMAGE = "localhost/darkula-https-egress-test:1"
+TEST_GATEWAY_CONTAINERFILE = (
+    "tests/integration/crawler/fixtures/https-egress-test.Containerfile"
+)
+
+
+async def network_internal_flag(name: str) -> bool:
+    rc, stdout, _ = await _run_podman_argv(
+        "network", "inspect", name, "--format", "{{.Internal}}"
+    )
+    return rc == 0 and stdout.strip() == b"true"
+
+
+@pytest_asyncio.fixture(scope="session")
+async def live_egress_outer_network() -> AsyncIterator[str]:
+    """Provision/verify the exact Darkula-owned outer egress network.
+
+    Fails closed on a foreign same-name network. Only a network created by
+    this fixture is removed at teardown; an operator-owned network is left
+    intact.
+    """
+    created = False
+    rc, _, _ = await _run_podman_argv("network", "exists", LIVE_EGRESS_NETWORK)
+    if rc == 0:
+        if not await podman_network_is_labeled_owned(LIVE_EGRESS_NETWORK):
+            raise pytest.UsageError(
+                f"network {LIVE_EGRESS_NETWORK!r} exists but is not Darkula-owned"
+            )
+        if await network_internal_flag(LIVE_EGRESS_NETWORK):
+            raise pytest.UsageError(
+                f"network {LIVE_EGRESS_NETWORK!r} is internal; refusing to use it"
+            )
+    else:
+        rc, _, stderr = await _run_podman_argv(
+            "network",
+            "create",
+            "--label",
+            "darkula.owned=true",
+            "--label",
+            "darkula.service=https-egress",
+            LIVE_EGRESS_NETWORK,
+        )
+        if rc != 0:
+            raise pytest.UsageError(
+                f"could not create {LIVE_EGRESS_NETWORK!r}: {stderr[:160]!r}"
+            )
+        created = True
+    try:
+        yield LIVE_EGRESS_NETWORK
+    finally:
+        if created:
+            attached = await _run_podman_argv(
+                "ps",
+                "-a",
+                "--filter",
+                f"network={LIVE_EGRESS_NETWORK}",
+                "--format",
+                "{{.Names}}",
+            )
+            if attached[1].strip():
+                raise pytest.UsageError(
+                    f"network {LIVE_EGRESS_NETWORK!r} still has attached containers"
+                )
+            await _run_podman_argv("network", "rm", LIVE_EGRESS_NETWORK)
+
+
+@pytest_asyncio.fixture(scope="session")
+async def test_gateway_image() -> AsyncIterator[str]:
+    """Build/use the test-only fail-closed gateway image; remove if built here."""
+    created = False
+    rc, _, _ = await _run_podman_argv("image", "exists", TEST_GATEWAY_IMAGE)
+    if rc != 0:
+        rc, _, stderr = await _run_podman_argv(
+            "build",
+            "-f",
+            TEST_GATEWAY_CONTAINERFILE,
+            "-t",
+            TEST_GATEWAY_IMAGE,
+            ".",
+        )
+        if rc != 0:
+            raise pytest.UsageError(
+                f"could not build test gateway image: {stderr[:200]!r}"
+            )
+        created = True
+    try:
+        yield TEST_GATEWAY_IMAGE
+    finally:
+        if created:
+            await _run_podman_argv("rmi", TEST_GATEWAY_IMAGE)
+
+
+@pytest_asyncio.fixture(scope="session")
+async def live_sandbox(
+    live_egress_outer_network: str,
+    test_gateway_image: str,
+) -> AsyncIterator[PodmanSandbox]:
+    """A PodmanSandbox configured for offline public-HTTPS topology tests."""
+    from darkula.infrastructure.sandbox.podman import PodmanSandboxConfig
+
+    yield PodmanSandbox(
+        PodmanSandboxConfig(
+            image=RUNTIME_IMAGE,
+            network=NETWORK_NAME,
+            live_egress_network=live_egress_outer_network,
+            gateway_image=test_gateway_image,
+        )
+    )

@@ -37,6 +37,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Protocol
 
+from crawler_runtime.public_policy import is_allowed_https_url
+
 #: Per-navigation browser timeout ceiling (seconds).
 _PAGE_TIMEOUT_CEILING_SECONDS = 15.0
 
@@ -80,6 +82,8 @@ class TraversalInput:
     max_depth: int = 4
     timeout_seconds: float = 60.0
     max_page_text_bytes: int = 4096
+    network_mode: str = "isolated"
+    allowed_path_prefix: str = "/"
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +188,26 @@ def _is_within_origin(url: str, payload: TraversalInput) -> bool:
     )
 
 
+def _is_authorized(url: str, payload: TraversalInput) -> bool:
+    """Return whether a URL is authorized by the active traversal mode."""
+    if payload.network_mode == "public_https_proxy":
+        return is_allowed_https_url(
+            url, payload.origin_host, payload.allowed_path_prefix
+        )
+    return _is_within_origin(url, payload)
+
+
+def _live_violation(adapter: PageAdapter) -> str | None:
+    """Return the sticky live-policy violation, if any (v1: none)."""
+    return getattr(adapter, "live_violation", None)
+
+
+def _live_request_count(adapter: PageAdapter, fallback: int) -> int:
+    """Return total intercepted live requests (fallback for fakes)."""
+    value = getattr(adapter, "intercepted_requests", None)
+    return value if isinstance(value, int) else fallback
+
+
 def _normalize_url(url: str, base: str) -> str | None:
     """Resolve a link against a base and return a canonical absolute URL.
 
@@ -230,6 +254,19 @@ async def traverse(
     """Execute the deterministic bounded traversal and return its output."""
     start = time.monotonic()
     deadline = start + payload.timeout_seconds
+    live = payload.network_mode == "public_https_proxy"
+    if live and not _is_authorized(payload.start_url.strip(), payload):
+        return TraversalOutput(
+            execution_id=payload.execution_id,
+            request_id=payload.request_id,
+            status="policy_violation",
+            pages=(),
+            links=(),
+            requests=0,
+            redirects_observed=adapter.redirects_observed,
+            duration_seconds=time.monotonic() - start,
+            reason="public HTTPS start URL is not authorized",
+        )
     seen_urls: set[str] = set()
     enqueued: set[str] = set()
     discovered: list[str] = []
@@ -244,7 +281,7 @@ async def traverse(
     def record_links(links: tuple[str, ...], base_url: str) -> None:
         for raw in links:
             absolute = _normalize_url(raw, base_url)
-            if absolute is None or not _is_within_origin(absolute, payload):
+            if absolute is None or not _is_authorized(absolute, payload):
                 continue
             parts = urllib.parse.urlsplit(absolute)
             if parts.path in _SELF_DESTRUCTIVE_PATHS:
@@ -267,6 +304,10 @@ async def traverse(
                 status = "timed_out"
                 reason = "runtime time budget exhausted"
                 break
+            if live and _live_violation(adapter) is not None:
+                status = "policy_violation"
+                reason = "public HTTPS policy violation"
+                break
             url, depth = queue.popleft()
             if url in seen_urls:
                 continue
@@ -278,6 +319,10 @@ async def traverse(
             redirects_before = adapter.redirects_observed
             result = await adapter.navigate(url, timeout_ms=timeout_ms)
             requests += 1
+            if live and _live_violation(adapter) is not None:
+                status = "policy_violation"
+                reason = "public HTTPS policy violation"
+                break
             nav_had_redirect = adapter.redirects_observed > redirects_before
             if result is None:
                 observations.append(
@@ -300,11 +345,20 @@ async def traverse(
                     await asyncio.sleep(_retry_wait(result.retry_after_seconds))
                     retried = await adapter.navigate(url, timeout_ms=timeout_ms)
                     requests += 1
+                    if live and _live_violation(adapter) is not None:
+                        status = "policy_violation"
+                        reason = "public HTTPS policy violation"
+                        break
                     if retried is not None:
                         result = retried
+                observation_url = result.url if live else url
+                if live and not _is_authorized(observation_url, payload):
+                    status = "policy_violation"
+                    reason = "public HTTPS policy violation"
+                    break
                 observations.append(
                     PageObservation(
-                        url=url,
+                        url=observation_url,
                         depth=depth,
                         http_status=result.http_status,
                         rendered=result.http_status is not None,
@@ -316,11 +370,12 @@ async def traverse(
                         ),
                     )
                 )
-                record_links(result.links, url)
+                record_links(result.links, observation_url)
 
                 # Deterministic optional login: submit the form once.
                 if (
-                    result.auth_form_present
+                    not live
+                    and result.auth_form_present
                     and not logged_in
                     and payload.credentials is not None
                 ):
@@ -408,13 +463,26 @@ async def traverse(
         status = "workload_failed"
         reason = "browser workload failed (bounded)"
 
+    if (
+        live
+        and status == "completed"
+        and not any(page.http_status is not None for page in observations)
+    ):
+        status = "workload_failed"
+        reason = "no authorized page was loaded"
+        observations = []
+        discovered = []
+    violation = live and status == "policy_violation"
+    if violation:
+        observations = []
+        discovered = []
     return TraversalOutput(
         execution_id=payload.execution_id,
         request_id=payload.request_id,
         status=status,
         pages=tuple(observations),
         links=tuple(discovered[:_MAX_LINKS]),
-        requests=requests,
+        requests=(_live_request_count(adapter, requests) if live else requests),
         redirects_observed=adapter.redirects_observed,
         duration_seconds=time.monotonic() - start,
         reason=reason,

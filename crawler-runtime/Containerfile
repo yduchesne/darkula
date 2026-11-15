@@ -25,11 +25,13 @@ RUN pip install --no-cache-dir "playwright==${PLAYWRIGHT_VERSION}" \
 # Only the minimal runtime payload crosses into the image.
 COPY crawler-runtime/crawler_runtime/ /app/crawler_runtime/
 COPY src/darkula/crawler/runtime_protocol.py /app/runtime_protocol.py
+COPY src/darkula/crawler/public_https_policy.py /app/public_https_policy.py
 
 # Bounded runtime user (non-root; podman maps it inside a user namespace).
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin crawler \
     && chmod -R a+rX /app \
-    && python3 -m compileall -q /app/crawler_runtime /app/runtime_protocol.py
+    && python3 -m compileall -q /app/crawler_runtime /app/runtime_protocol.py \
+       /app/public_https_policy.py
 
 ENV HOME=/tmp \
     XDG_RUNTIME_DIR=/tmp \

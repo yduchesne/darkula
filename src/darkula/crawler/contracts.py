@@ -34,6 +34,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from urllib.parse import urlsplit
 
+from darkula.crawler.public_https_policy import (
+    is_safe_public_host,
+    validate_live_path_prefix,
+)
+
 #: Valid host character set for the parsed-origin model (ASCII, bounded).
 _HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
 
@@ -193,6 +198,33 @@ class AllowedOrigin:
 
 
 @dataclass(frozen=True, slots=True)
+class PublicHttpsGrant:
+    """One explicit, per-execution authorization to reach public HTTPS.
+
+    This is an operator/application authorization attached to a single
+    :class:`CrawlRequest`; it is **not** Source identity, Candidate status,
+    access readiness, or a persistent capability. ``allowed_path_prefix``
+    grants exactly one origin plus a component-boundary path prefix.
+    """
+
+    origin: AllowedOrigin
+    allowed_path_prefix: str = "/"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.origin, AllowedOrigin):
+            raise InvalidCrawlRequest("invalid public HTTPS origin")
+        if self.origin.scheme != "https" or self.origin.port != 443:
+            raise InvalidCrawlRequest("invalid public HTTPS origin")
+        if not is_safe_public_host(self.origin.host):
+            raise InvalidCrawlRequest("invalid public HTTPS origin")
+        try:
+            prefix = validate_live_path_prefix(self.allowed_path_prefix)
+        except ValueError:
+            raise InvalidCrawlRequest("invalid public HTTPS path prefix") from None
+        object.__setattr__(self, "allowed_path_prefix", prefix)
+
+
+@dataclass(frozen=True, slots=True)
 class CrawlCredentials:
     """Bounded, execution-scoped source authentication material (BlackGate).
 
@@ -245,6 +277,9 @@ class CrawlRequest:
     max_requests: int = 60
     max_depth: int = 4
     timeout_seconds: float = 60.0
+    #: Optional explicit public-HTTPS authorization (PR 20). ``None`` keeps
+    #: the original isolated Fake World behavior exactly.
+    public_https_grant: PublicHttpsGrant | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "request_id", _validate_request_id(self.request_id))
@@ -324,6 +359,9 @@ class CrawlResult:
     duration_seconds: float = 0.0
     reason: str | None = None
     protocol_version: int | None = None
+    #: Whether the sandbox reported verified resource cleanup (PR 20 live
+    #: acceptance evidence); ``None`` when the adapter has no such signal.
+    cleanup_succeeded: bool | None = None
 
     def __post_init__(self) -> None:
         if len(self.pages) > _MAX_OBSERVATIONS:
@@ -358,4 +396,5 @@ __all__ = [
     "CrawlStatus",
     "Crawler",
     "InvalidCrawlRequest",
+    "PublicHttpsGrant",
 ]

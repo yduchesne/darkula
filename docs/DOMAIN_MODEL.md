@@ -203,7 +203,10 @@ A durable **historical execution record** of one policy occurrence. The occurren
 
 ## Crawl and content
 ### CrawlRequest
-A bounded instruction for crawler execution: endpoint, allowed origins/paths, navigation constraints, depth/page/time budgets, authentication reference, and content-handling policy.
+A bounded instruction for crawler execution: endpoint, allowed origins/paths, navigation constraints, depth/page/time budgets, authentication reference, and content-handling policy. **PR 20** adds one optional trailing `public_https_grant`; `None` preserves the legacy Fake World/isolated contract exactly.
+
+### PublicHttpsGrant (PR 20)
+An immutable **per-execution operator authorization** to reach one exact public HTTPS origin on port 443 under one component-boundary path prefix (for example `/docs/`). It is *not* Source identity, `SourceEndpoint`, Candidate status, access readiness, recursion authority, or a persistent capability, and it never creates, promotes, or schedules a Source. The trusted controller separately requires the global live switch, the exact configured origin allowlist, and the per-call grant; the grant is never synthesized from hostile content, registry observations, discovered links, or agent output. A live grant forbids credentials in PR 20.
 
 ### CrawlResult
 Execution outcome containing references to collected artifacts/content plus discovered links, redirects, failures, and execution metadata.

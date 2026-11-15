@@ -37,9 +37,12 @@ from darkula.crawler.contracts import (
     CrawlResult,
     CrawlStatus,
     InvalidCrawlRequest,
+    PublicHttpsGrant,
 )
+from darkula.crawler.public_https_policy import is_allowed_https_url
 from darkula.crawler.runtime_protocol import (
     PROTOCOL_VERSION,
+    PUBLIC_HTTPS_PROTOCOL_VERSION,
     RuntimeCredentials,
     RuntimeInput,
     RuntimeOutput,
@@ -49,6 +52,7 @@ from darkula.crawler.runtime_protocol import (
 )
 from darkula.sandbox.contracts import (
     AllowedDestination,
+    EgressMode,
     FilesystemPolicy,
     InputPolicy,
     NetworkPolicy,
@@ -102,18 +106,67 @@ def _clamp_budget(value: int, *, maximum: int, name: str) -> int:
     return value
 
 
-def _derive_policy(
+def _validate_public_https_grant(
     request: CrawlRequest, settings: CrawlerSettings
+) -> PublicHttpsGrant | None:
+    """Validate the explicit per-call public-HTTPS authorization (PR 20).
+
+    All checks run before any sandbox work, with fixed messages that never
+    echo the URL/host. ``None`` means the legacy isolated path.
+    """
+    grant = request.public_https_grant
+    if grant is None:
+        return None
+    if not isinstance(grant, PublicHttpsGrant):
+        raise InvalidCrawlRequest("invalid public HTTPS origin")
+    if not settings.real_https_enabled:
+        raise InvalidCrawlRequest("public HTTPS crawling is disabled")
+    if request.allowed_origin != grant.origin:
+        raise InvalidCrawlRequest("invalid public HTTPS origin")
+    if grant.origin.scheme != "https" or grant.origin.port != 443:
+        raise InvalidCrawlRequest("invalid public HTTPS origin")
+    if grant.origin.as_origin_url() not in settings.real_https_allowed_origins:
+        raise InvalidCrawlRequest("public HTTPS origin is not approved")
+    if not is_allowed_https_url(
+        request.start_url, grant.origin.host, grant.allowed_path_prefix
+    ):
+        raise InvalidCrawlRequest("public HTTPS start URL is not authorized")
+    if request.credentials is not None:
+        raise InvalidCrawlRequest("public HTTPS credentials are unsupported")
+    if request.max_pages > settings.real_https_max_pages:
+        raise InvalidCrawlRequest("max_pages exceeds live HTTPS limit")
+    if request.max_requests > settings.real_https_max_requests:
+        raise InvalidCrawlRequest("max_requests exceeds live HTTPS limit")
+    if request.max_depth > settings.real_https_max_depth:
+        raise InvalidCrawlRequest("max_depth exceeds live HTTPS limit")
+    if request.timeout_seconds > settings.real_https_max_timeout_seconds:
+        raise InvalidCrawlRequest("timeout_seconds exceeds live HTTPS limit")
+    return grant
+
+
+def _derive_policy(
+    request: CrawlRequest,
+    settings: CrawlerSettings,
+    grant: PublicHttpsGrant | None = None,
 ) -> SandboxExecutionPolicy:
     """Derive the least-capability default-deny policy for one crawl.
 
-    The network grant is exactly the request's allowed origin; filesystem,
-    runtime, input, and output capabilities come from the restrictive
-    defaults bounded by settings.
+    The isolated (legacy) network grant is exactly the request's allowed
+    origin. The public-HTTPS grant yields exactly one approved FQDN on port
+    443 and never carries credentials.
     """
-    destination = AllowedDestination(
-        host=request.allowed_origin.host, port=request.allowed_origin.port
-    )
+    if grant is None:
+        destination = AllowedDestination(
+            host=request.allowed_origin.host, port=request.allowed_origin.port
+        )
+        network = NetworkPolicy(destinations=(destination,))
+        credentials_allowed = request.credentials is not None
+    else:
+        network = NetworkPolicy(
+            egress=EgressMode.PUBLIC_HTTPS_PROXY,
+            destinations=(AllowedDestination(host=grant.origin.host, port=443),),
+        )
+        credentials_allowed = False
     resources = ResourceLimits(
         memory_bytes=settings.sandbox_memory_bytes,
         cpus=settings.sandbox_cpus,
@@ -121,7 +174,7 @@ def _derive_policy(
         timeout_seconds=request.timeout_seconds,
     )
     return SandboxExecutionPolicy(
-        network=NetworkPolicy(destinations=(destination,)),
+        network=network,
         filesystem=FilesystemPolicy(
             tmpfs=(
                 TmpfsMount("/tmp", 256 * 1024 * 1024),  # nosec B108 - sandbox tmpfs
@@ -132,7 +185,7 @@ def _derive_policy(
         runtime=RuntimeIsolationPolicy(),
         input=InputPolicy(
             max_input_bytes=settings.max_input_bytes,
-            credentials_allowed=request.credentials is not None,
+            credentials_allowed=credentials_allowed,
         ),
         output=OutputPolicy(max_output_bytes=settings.max_output_bytes),
     )
@@ -161,7 +214,9 @@ def _map_exit_reason(reason: SandboxExitReason) -> CrawlStatus:
     return CrawlStatus.SANDBOX_UNAVAILABLE
 
 
-def _runtime_result(output: RuntimeOutput) -> CrawlResult:
+def _runtime_result(
+    output: RuntimeOutput, *, cleanup_succeeded: bool | None = None
+) -> CrawlResult:
     """Build a CrawlResult from a validated runtime output document."""
     pages = tuple(
         CrawlPageObservation(
@@ -182,6 +237,7 @@ def _runtime_result(output: RuntimeOutput) -> CrawlResult:
         requests=output.requests,
         duration_seconds=output.duration_seconds,
         protocol_version=output.version,
+        cleanup_succeeded=cleanup_succeeded,
     )
 
 
@@ -266,16 +322,19 @@ class CrawlerController(Crawler):
                 "loopback/metadata origins are not authorizable targets"
             )
 
+        grant = _validate_public_https_grant(request, self._settings)
+        live = grant is not None
+
         # 2. allow-listed crawler workload (bounded protocol document).
         execution_id = _execution_id_for(request.request_id)
         credentials = None
-        if request.credentials is not None:
+        if not live and request.credentials is not None:
             credentials = RuntimeCredentials(
                 username=request.credentials.username,
                 password=request.credentials.password,
             )
         runtime_input = RuntimeInput(
-            version=PROTOCOL_VERSION,
+            version=PUBLIC_HTTPS_PROTOCOL_VERSION if live else PROTOCOL_VERSION,
             execution_id=execution_id,
             request_id=request.request_id,
             start_url=request.start_url,
@@ -288,6 +347,10 @@ class CrawlerController(Crawler):
             max_depth=request.max_depth,
             timeout_seconds=request.timeout_seconds,
             max_page_text_bytes=self._settings.max_page_text_bytes,
+            network_mode="public_https_proxy" if live else "isolated",
+            allowed_path_prefix=(
+                grant.allowed_path_prefix if grant is not None else "/"
+            ),
         )
         if len(encode_input(runtime_input)) > self._settings.max_input_bytes:
             raise InvalidCrawlRequest("runtime input exceeds the size bound")
@@ -297,7 +360,7 @@ class CrawlerController(Crawler):
         )
 
         # 3. least-capability policy.
-        policy = _derive_policy(request, self._settings)
+        policy = _derive_policy(request, self._settings, grant)
 
         # 4. execute in the sandbox (cancellation propagates).
         execution = SandboxExecutionRequest(
@@ -307,7 +370,7 @@ class CrawlerController(Crawler):
         )
         result = await self._sandbox.execute(execution)
         # 5/6. decode and map.
-        crawl_result = self._map_result(request, result, policy)
+        crawl_result = self._map_result(request, result, policy, grant=grant)
         self._record_outcome(crawl_result)
         return crawl_result
 
@@ -316,6 +379,8 @@ class CrawlerController(Crawler):
         request: CrawlRequest,
         result: SandboxExecutionResult,
         policy: SandboxExecutionPolicy,
+        *,
+        grant: PublicHttpsGrant | None = None,
     ) -> CrawlResult:
         if result.exit_reason is not SandboxExitReason.COMPLETED:
             return CrawlResult(
@@ -323,6 +388,7 @@ class CrawlerController(Crawler):
                 status=_map_exit_reason(result.exit_reason),
                 reason=result.reason,
                 duration_seconds=result.metrics.duration_seconds,
+                cleanup_succeeded=result.metrics.cleanup_succeeded,
             )
         if result.output is None:
             return CrawlResult(
@@ -330,6 +396,7 @@ class CrawlerController(Crawler):
                 status=CrawlStatus.INVALID_OUTPUT,
                 reason="sandbox completed without output",
                 duration_seconds=result.metrics.duration_seconds,
+                cleanup_succeeded=result.metrics.cleanup_succeeded,
             )
         try:
             output = decode_output(
@@ -345,6 +412,7 @@ class CrawlerController(Crawler):
                 status=CrawlStatus.INVALID_OUTPUT,
                 reason="runtime output failed protocol validation",
                 duration_seconds=result.metrics.duration_seconds,
+                cleanup_succeeded=result.metrics.cleanup_succeeded,
             )
         if output.execution_id != result.execution_id:
             return CrawlResult(
@@ -352,8 +420,47 @@ class CrawlerController(Crawler):
                 status=CrawlStatus.INVALID_OUTPUT,
                 reason="runtime output execution identity mismatch",
                 duration_seconds=result.metrics.duration_seconds,
+                cleanup_succeeded=result.metrics.cleanup_succeeded,
             )
-        return _runtime_result(output)
+        requested_version = (
+            PROTOCOL_VERSION if grant is None else PUBLIC_HTTPS_PROTOCOL_VERSION
+        )
+        if output.version != requested_version:
+            return CrawlResult(
+                request_id=request.request_id,
+                status=CrawlStatus.INVALID_OUTPUT,
+                reason="runtime output version mismatch",
+                duration_seconds=result.metrics.duration_seconds,
+                cleanup_succeeded=result.metrics.cleanup_succeeded,
+            )
+        if grant is not None:
+            if output.request_id != request.request_id:
+                return CrawlResult(
+                    request_id=request.request_id,
+                    status=CrawlStatus.INVALID_OUTPUT,
+                    reason="runtime output request identity mismatch",
+                    duration_seconds=result.metrics.duration_seconds,
+                    cleanup_succeeded=result.metrics.cleanup_succeeded,
+                )
+            if not all(
+                is_allowed_https_url(
+                    page.url, grant.origin.host, grant.allowed_path_prefix
+                )
+                for page in output.pages
+            ) or not all(
+                is_allowed_https_url(link, grant.origin.host, grant.allowed_path_prefix)
+                for link in output.links
+            ):
+                return CrawlResult(
+                    request_id=request.request_id,
+                    status=CrawlStatus.INVALID_OUTPUT,
+                    reason="runtime output violates the public HTTPS grant",
+                    duration_seconds=result.metrics.duration_seconds,
+                    cleanup_succeeded=result.metrics.cleanup_succeeded,
+                )
+        return _runtime_result(
+            output, cleanup_succeeded=result.metrics.cleanup_succeeded
+        )
 
     # -- bounded OTEL ----------------------------------------------------
     def _record_outcome(self, result: CrawlResult) -> None:

@@ -441,3 +441,28 @@ Overrides: `DARKULA_QUALIFICATION__RANSOMLOOK_LOCATION_TRUSTED`,
 the policy ID/version (`candidate-qualification`/`v1`) and rule ID are fixed
 developer-controlled code, not caller-provided configuration. A future policy
 change requires a new version; `v1` is never redefined.
+
+
+## PR 20 status — public HTTPS crawler settings
+
+`[crawler]` gains a default-off live capability. Every field is typed and
+validated; non-empty environment remains the ultimate override and an empty
+environment value has no effect.
+
+```text
+real_https_enabled = false                          # global switch
+real_https_allowed_origins = []                     # exact "https://<fqdn>:443", max 8
+real_https_egress_network = "darkula-live-egress"   # fixed name; no substitution
+real_https_gateway_image = "localhost/darkula-https-egress:1"  # fixed local tag
+real_https_max_pages = 20                           # hard ceiling [1,20]
+real_https_max_requests = 60                        # hard ceiling [1,60]
+real_https_max_depth = 2                            # hard ceiling [0,2]
+real_https_max_timeout_seconds = 90.0               # hard ceiling [1.0,90.0]
+```
+
+Enabling the switch without an exact non-empty allowlist authorizes no request.
+Enabling both still requires a per-call `PublicHttpsGrant`; configuration alone
+never authorizes a URL. Over-budget caller requests are rejected, never silently
+clamped. `runtime_image` uses the PR 20 protocol tag
+`localhost/darkula-crawler-runtime:1.63.0-pr20`. Do not commit a live allowlist
+or a permissive example.

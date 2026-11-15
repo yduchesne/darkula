@@ -16,6 +16,7 @@ import pytest
 
 from darkula.crawler.runtime_protocol import (
     PROTOCOL_VERSION,
+    PUBLIC_HTTPS_PROTOCOL_VERSION,
     RuntimeCredentials,
     RuntimeInput,
     RuntimeOutput,
@@ -184,3 +185,112 @@ class TestSafety:
         # Only JSON documents are accepted; a pickle-style payload fails.
         with pytest.raises(RuntimeProtocolError):
             decode_input(b"cos\nsystem\n(S'id'\ntR.", max_bytes=65536)
+
+
+# -- PR 20 public HTTPS protocol (U20-13..U20-15) -------------------------
+
+_V1_GOLDEN = (
+    b'{"credentials":null,"execution_id":"exec-01","max_depth":4,'
+    b'"max_page_text_bytes":4096,"max_pages":20,"max_requests":60,'
+    b'"origin":{"host":"blackgate.example.test","port":8080,"scheme":"http"},'
+    b'"request_id":"crawl-001","start_url":"http://blackgate.example.test:8080/",'
+    b'"timeout_seconds":60.0,"version":1}'
+)
+
+LIVE_HOST = "approved.example.org"
+LIVE_ORIGIN = f"https://{LIVE_HOST}:443"
+
+
+def make_live_input(**overrides: object) -> RuntimeInput:
+    base: dict[str, object] = {
+        "version": PUBLIC_HTTPS_PROTOCOL_VERSION,
+        "execution_id": "exec-live",
+        "request_id": "crawl-live",
+        "start_url": f"{LIVE_ORIGIN}/docs/guide",
+        "origin_scheme": "https",
+        "origin_host": LIVE_HOST,
+        "origin_port": 443,
+        "credentials": None,
+        "max_pages": 2,
+        "max_requests": 10,
+        "max_depth": 1,
+        "timeout_seconds": 30.0,
+        "max_page_text_bytes": 4096,
+        "network_mode": "public_https_proxy",
+        "allowed_path_prefix": "/docs/",
+    }
+    base.update(overrides)
+    return RuntimeInput(**base)  # type: ignore[arg-type]
+
+
+class TestV1Golden:
+    def test_u20_13_v1_bytes_are_unchanged(self) -> None:
+        assert encode_input(make_input()) == _V1_GOLDEN
+
+    def test_u20_13_v1_round_trip_is_default_isolated(self) -> None:
+        decoded = decode_input(_V1_GOLDEN, max_bytes=65536)
+        assert decoded.network_mode == "isolated"
+        assert decoded.allowed_path_prefix == "/"
+
+
+class TestV2Protocol:
+    def test_u20_14_v2_round_trip_and_new_keys(self) -> None:
+        payload = make_live_input()
+        encoded = encode_input(payload)
+        document = json.loads(encoded)
+        assert document["network_mode"] == "public_https_proxy"
+        assert document["allowed_path_prefix"] == "/docs/"
+        assert decode_input(encoded, max_bytes=65536) == payload
+
+    def test_u20_14_v2_rejects_credentials(self) -> None:
+        with pytest.raises(RuntimeProtocolError):
+            encode_input(make_live_input(credentials=RuntimeCredentials("u", "p")))
+        document = json.loads(encode_input(make_live_input()))
+        document["credentials"] = {"username": "u", "password": "p"}
+        with pytest.raises(RuntimeProtocolError):
+            decode_input(json.dumps(document).encode(), max_bytes=65536)
+
+    def test_u20_14_v2_rejects_invalid_path_prefix(self) -> None:
+        with pytest.raises(RuntimeProtocolError):
+            encode_input(make_live_input(allowed_path_prefix="/docs/%2e%2e/"))
+        document = json.loads(encode_input(make_live_input()))
+        document["allowed_path_prefix"] = "/docs-evil/"
+        with pytest.raises(RuntimeProtocolError):
+            decode_input(json.dumps(document).encode(), max_bytes=65536)
+
+    def test_u20_14_v2_rejects_unauthorized_start_url(self) -> None:
+        with pytest.raises(RuntimeProtocolError):
+            encode_input(make_live_input(start_url=f"{LIVE_ORIGIN}/other"))
+        document = json.loads(encode_input(make_live_input()))
+        document["start_url"] = f"{LIVE_ORIGIN}/other"
+        with pytest.raises(RuntimeProtocolError):
+            decode_input(json.dumps(document).encode(), max_bytes=65536)
+
+    def test_u20_15_v1_rejects_v2_fields(self) -> None:
+        document = json.loads(_V1_GOLDEN)
+        document["network_mode"] = "public_https_proxy"
+        with pytest.raises(RuntimeProtocolError):
+            decode_input(json.dumps(document).encode(), max_bytes=65536)
+
+    def test_u20_15_unknown_version_rejected(self) -> None:
+        document = json.loads(_V1_GOLDEN)
+        document["version"] = 3
+        with pytest.raises(RuntimeProtocolError):
+            decode_input(json.dumps(document).encode(), max_bytes=65536)
+
+    def test_u20_15_v2_unknown_or_duplicate_fields_rejected(self) -> None:
+        document = json.loads(encode_input(make_live_input()))
+        document["extra"] = 1
+        with pytest.raises(RuntimeProtocolError):
+            decode_input(json.dumps(document).encode(), max_bytes=65536)
+        encoded = encode_input(make_live_input()).decode()
+        duplicated = encoded[:-1] + ',"network_mode":"public_https_proxy"}'
+        with pytest.raises(RuntimeProtocolError):
+            decode_input(duplicated.encode(), max_bytes=65536)
+
+    def test_u20_14_v2_output_round_trip(self) -> None:
+        output = make_output(version=PUBLIC_HTTPS_PROTOCOL_VERSION)
+        decoded = decode_output(
+            encode_output(output), max_bytes=65536, max_pages=10, max_links=10
+        )
+        assert decoded.version == PUBLIC_HTTPS_PROTOCOL_VERSION

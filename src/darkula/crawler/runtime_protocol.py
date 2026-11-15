@@ -23,8 +23,20 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+try:  # package import (application/tests)
+    from darkula.crawler import public_https_policy as _public_https_policy
+except ImportError:  # pragma: no cover - runtime image flat copy at /app
+    import public_https_policy as _public_https_policy  # type: ignore[no-redef,import-not-found]
+
+is_allowed_https_url = _public_https_policy.is_allowed_https_url
+is_safe_public_host = _public_https_policy.is_safe_public_host
+validate_live_path_prefix = _public_https_policy.validate_live_path_prefix
+
 #: Explicit schema version of the controller/runtime protocol (v1).
 PROTOCOL_VERSION = 1
+
+#: Explicit public-HTTPS protocol version (PR 20); v1 remains unchanged.
+PUBLIC_HTTPS_PROTOCOL_VERSION = 2
 
 #: Bounded maximum control characters allowed in transport strings.
 _MAX_FIELD_LENGTH = 4000
@@ -90,6 +102,8 @@ class RuntimeInput:
     max_depth: int
     timeout_seconds: float
     max_page_text_bytes: int
+    network_mode: str = "isolated"
+    allowed_path_prefix: str = "/"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,7 +135,11 @@ class RuntimeOutput:
 
 
 def encode_input(payload: RuntimeInput) -> bytes:
-    """Serialize one validated runtime input to bounded UTF-8 JSON."""
+    """Serialize one validated runtime input to bounded UTF-8 JSON.
+
+    v1 produces exactly the legacy document (no new keys); v2 adds exactly
+    ``network_mode`` and ``allowed_path_prefix`` and forbids credentials.
+    """
     document: dict[str, Any] = {
         "version": payload.version,
         "execution_id": payload.execution_id,
@@ -144,6 +162,32 @@ def encode_input(payload: RuntimeInput) -> bytes:
         "timeout_seconds": payload.timeout_seconds,
         "max_page_text_bytes": payload.max_page_text_bytes,
     }
+    if payload.version == PROTOCOL_VERSION:
+        if payload.network_mode != "isolated" or payload.allowed_path_prefix != "/":
+            raise RuntimeProtocolError(
+                "v1 runtime input cannot carry public HTTPS fields"
+            )
+    elif payload.version == PUBLIC_HTTPS_PROTOCOL_VERSION:
+        if payload.credentials is not None:
+            raise RuntimeProtocolError("public HTTPS runtime input forbids credentials")
+        if payload.network_mode != "public_https_proxy":
+            raise RuntimeProtocolError("invalid public HTTPS network mode")
+        try:
+            prefix = validate_live_path_prefix(payload.allowed_path_prefix)
+        except ValueError:
+            raise RuntimeProtocolError("invalid public HTTPS path prefix") from None
+        if payload.origin_scheme != "https" or payload.origin_port != 443:
+            raise RuntimeProtocolError("invalid public HTTPS origin")
+        if not is_safe_public_host(payload.origin_host):
+            raise RuntimeProtocolError("invalid public HTTPS origin")
+        if not is_allowed_https_url(payload.start_url, payload.origin_host, prefix):
+            raise RuntimeProtocolError("public HTTPS start URL is not authorized")
+        document["network_mode"] = "public_https_proxy"
+        document["allowed_path_prefix"] = prefix
+    else:
+        raise RuntimeProtocolError(
+            f"unsupported runtime protocol version: {payload.version}"
+        )
     return json.dumps(
         document, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     ).encode("utf-8")
@@ -163,6 +207,37 @@ def _parse_origin(document: dict[str, Any]) -> tuple[str, str, int]:
     return scheme, host, port
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Return an object only when it contains no duplicate keys."""
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise RuntimeProtocolError("duplicate field in runtime input")
+        document[key] = value
+    return document
+
+
+_V2_INPUT_FIELDS = frozenset(
+    {
+        "version",
+        "execution_id",
+        "request_id",
+        "start_url",
+        "origin",
+        "credentials",
+        "max_pages",
+        "max_requests",
+        "max_depth",
+        "timeout_seconds",
+        "max_page_text_bytes",
+        "network_mode",
+        "allowed_path_prefix",
+    }
+)
+
+_V2_ORIGIN_FIELDS = frozenset({"scheme", "host", "port"})
+
+
 def decode_input(raw: bytes, *, max_bytes: int) -> RuntimeInput:
     """Decode and validate one bounded runtime input document."""
     if not isinstance(raw, bytes) or len(raw) > max_bytes:
@@ -176,8 +251,30 @@ def decode_input(raw: bytes, *, max_bytes: int) -> RuntimeInput:
     version = _require_int(
         document.get("version"), name="version", minimum=1, maximum=256
     )
-    if version != PROTOCOL_VERSION:
+    if version not in (PROTOCOL_VERSION, PUBLIC_HTTPS_PROTOCOL_VERSION):
         raise RuntimeProtocolError(f"unsupported runtime protocol version: {version}")
+    if version == PUBLIC_HTTPS_PROTOCOL_VERSION:
+        # Re-parse strictly so duplicate/unknown public-HTTPS fields fail
+        # closed without changing legacy v1 parsing behavior.
+        try:
+            document = json.loads(
+                raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeProtocolError("runtime input is not valid UTF-8 JSON") from exc
+        if set(document) != _V2_INPUT_FIELDS:
+            raise RuntimeProtocolError(
+                "public HTTPS runtime input has unexpected fields"
+            )
+        if document.get("network_mode") != "public_https_proxy":
+            raise RuntimeProtocolError("invalid public HTTPS network mode")
+        if document.get("credentials") is not None:
+            raise RuntimeProtocolError("public HTTPS runtime input forbids credentials")
+        raw_origin = document.get("origin")
+        if not isinstance(raw_origin, dict) or set(raw_origin) != _V2_ORIGIN_FIELDS:
+            raise RuntimeProtocolError("invalid public HTTPS origin")
+    elif "network_mode" in document or "allowed_path_prefix" in document:
+        raise RuntimeProtocolError("v1 runtime input rejects public HTTPS fields")
     execution_id = _require_str(document.get("execution_id"), name="execution_id")
     request_id = _require_str(document.get("request_id"), name="request_id")
     start_url = _require_str(document.get("start_url"), name="start_url")
@@ -216,6 +313,23 @@ def decode_input(raw: bytes, *, max_bytes: int) -> RuntimeInput:
             ),
         )
     scheme, host, port = _parse_origin(document)
+    network_mode = "isolated"
+    allowed_path_prefix = "/"
+    if version == PUBLIC_HTTPS_PROTOCOL_VERSION:
+        if scheme != "https" or port != 443:
+            raise RuntimeProtocolError("invalid public HTTPS origin")
+        if not is_safe_public_host(host):
+            raise RuntimeProtocolError("invalid public HTTPS origin")
+        raw_prefix = document.get("allowed_path_prefix")
+        if not isinstance(raw_prefix, str):
+            raise RuntimeProtocolError("invalid public HTTPS path prefix")
+        try:
+            allowed_path_prefix = validate_live_path_prefix(raw_prefix)
+        except ValueError:
+            raise RuntimeProtocolError("invalid public HTTPS path prefix") from None
+        if not is_allowed_https_url(start_url, host, allowed_path_prefix):
+            raise RuntimeProtocolError("public HTTPS start URL is not authorized")
+        network_mode = "public_https_proxy"
     return RuntimeInput(
         version=version,
         execution_id=execution_id,
@@ -230,6 +344,8 @@ def decode_input(raw: bytes, *, max_bytes: int) -> RuntimeInput:
         max_depth=max_depth,
         timeout_seconds=timeout_seconds,
         max_page_text_bytes=max_page_text_bytes,
+        network_mode=network_mode,
+        allowed_path_prefix=allowed_path_prefix,
     )
 
 
@@ -308,7 +424,7 @@ def decode_output(
     version = _require_int(
         document.get("version"), name="version", minimum=1, maximum=256
     )
-    if version != PROTOCOL_VERSION:
+    if version not in (PROTOCOL_VERSION, PUBLIC_HTTPS_PROTOCOL_VERSION):
         raise RuntimeProtocolError(f"unsupported runtime protocol version: {version}")
     execution_id = _require_str(document.get("execution_id"), name="execution_id")
     request_id = _require_str(document.get("request_id"), name="request_id")
@@ -368,6 +484,7 @@ def decode_output(
 
 __all__ = [
     "PROTOCOL_VERSION",
+    "PUBLIC_HTTPS_PROTOCOL_VERSION",
     "RuntimeCredentials",
     "RuntimeInput",
     "RuntimeOutput",
